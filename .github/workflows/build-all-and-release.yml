@@ -38,15 +38,6 @@ jobs:
             - Extract the contents of the .ZIP archive to your game directory (place where you have the 'nzp' folder).
           draft: true
           prerelease: false
-      - name: Upload linux_arm64 Archive
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./tmp/pc-nzp-linux_arm64.zip
-          asset_name: pc-nzp-linux_arm64.zip
-          asset_content_type: application/zip
       - name: Upload linux_armhf Archive
         uses: actions/upload-release-asset@v1
         env:

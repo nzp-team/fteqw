@@ -1,0 +1,13 @@
+tmp/*
+*.o
+source/engine/release/*
+source/engine/debug/*
+source/engine/libs*
+freetype*.tar.gz
+jpegsrc*.tar.gz
+libogg*.tar.gz
+libpng*.tar.gz
+libvorbis*.tar.gz
+opus*.tar.gz
+speex*.tar.gz
+zlib*.tar.gz

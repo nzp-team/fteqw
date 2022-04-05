@@ -106,7 +106,7 @@ static clampedmodel_t clampedmodel[] = {
 	{"progs/gib1.mdl", 374},
 	{"progs/gib2.mdl", 1779},
 	{"progs/gib3.mdl", 2066},
-	{"progs/bolt2.mdl", 1160},
+	{"models/misc/bolt2.mdl", 1160},
 	{"progs/end1.mdl", 764},
 	{"progs/end2.mdl", 981},
 	{"progs/end3.mdl", 851},

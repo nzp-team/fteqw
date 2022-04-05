@@ -7324,7 +7324,7 @@ void Radar_DrawEntities(int x, int y, float scale, float player_size, int show_h
 		}
 		else if(radar_show_shaft_p
 			&& (!strcmp(cl_visents.list[i].model->name, "progs/bolt.mdl")
-			|| !strcmp(cl_visents.list[i].model->name, "progs/bolt2.mdl")
+			|| !strcmp(cl_visents.list[i].model->name, "models/misc/bolt2.mdl")
 			|| !strcmp(cl_visents.list[i].model->name, "progs/bolt3.mdl")))
 		{
 			//

@@ -1131,7 +1131,7 @@ static void Mod_LoadModelWorker (void *ctx, void *data, size_t a, size_t b)
 			)
 		mod->engineflags |= MDLF_FLAME;
 	else if (!strcmp(mod->publicname, "progs/bolt.mdl")
-		|| !strcmp(mod->publicname, "progs/bolt2.mdl")
+		|| !strcmp(mod->publicname, "models/misc/bolt2.mdl")
 		|| !strcmp(mod->publicname, "progs/bolt3.mdl")
 		|| !strcmp(mod->publicname, "progs/beam.mdl")
 #ifdef HEXEN2

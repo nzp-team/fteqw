@@ -11,3 +11,5 @@ libvorbis*.tar.gz
 opus*.tar.gz
 speex*.tar.gz
 zlib*.tar.gz
+
+.DS_Store

@@ -14,6 +14,6 @@ rm -rf source/engine/release
 ./build-nzp-linux_armhf.sh
 zip -j ../tmp/pc-nzp-linux_armhf.zip ../source/engine/release/nzportablearmhf
 rm -rf source/engine/release
-#./build-nzp-linux_arm64.sh
-#zip -j ../tmp/pc-nzp-linux_arm64.zip ../source/engine/release/nzportablearm64
-#rm -rf source/engine/release
+./build-nzp-linux_arm64.sh
+zip -j ../tmp/pc-nzp-linux_arm64.zip ../source/engine/release/nzportablearm64
+rm -rf source/engine/release

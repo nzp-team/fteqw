@@ -10,6 +10,7 @@ jobs:
         working-directory: /
         run: |
           cd /emsdk/
+          echo $PWD
           . emsdk_env.sh
       - uses: actions/checkout@v2
       - name: Build

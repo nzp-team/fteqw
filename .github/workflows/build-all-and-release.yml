@@ -2,15 +2,16 @@ name: Build ALL and Publish Release
 on: [push]
 jobs:
   Compile-Release:
-    permissions: write-all
     runs-on: ubuntu-latest
     container:
       image: motolegacy/fteqw:latest
     steps:
       - name: emsdk env
-        working-directory: /emsdk
         run: |
-          . emsdk_env.sh
+          cp -r /emsdk/ ./emsdk/
+          cd emsdk/
+          echo $PWD
+          ls
       - uses: actions/checkout@v2
       - name: Build
         working-directory: ./

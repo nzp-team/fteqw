@@ -7,11 +7,12 @@ jobs:
       image: motolegacy/fteqw:latest
     steps:
       - name: emsdk env
+        working-directory: ./
         run: |
-          cp -r /emsdk/ ./emsdk/
+          cp -r /emsdk/ emsdk/
           cd emsdk/
-          . emsdk_env.sh
           ls
+          . emsdk_env.sh
       - uses: actions/checkout@v2
       - name: Build
         working-directory: ./

@@ -92,6 +92,15 @@ jobs:
           asset_path: ./tmp/pc-nzp-win64.zip
           asset_name: pc-nzp-win64.zip
           asset_content_type: application/zip
+      - name: Upload web Archive
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./tmp/pc-nzp-web.zip
+          asset_name: pc-nzp-web.zip
+          asset_content_type: application/zip
       - name: Publish Release
         uses: StuYarrow/publish-release@v1
         env:

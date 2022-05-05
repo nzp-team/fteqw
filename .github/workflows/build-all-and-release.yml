@@ -9,7 +9,8 @@ jobs:
       - name: emsdk env
         working-directory: /
         run: |
-          . emsdk/emsdk_env.sh
+          cd /emsdk/
+          . emsdk_env.sh
       - uses: actions/checkout@v2
       - name: Build
         working-directory: ./

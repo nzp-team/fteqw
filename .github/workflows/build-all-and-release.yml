@@ -1,4 +1,6 @@
 name: Build ALL and Publish Release
+permissions: read-all|write-all
+
 on: [push]
 jobs:
   Compile-Release:

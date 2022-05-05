@@ -4,7 +4,7 @@ jobs:
   Compile-Release:
     runs-on: ubuntu-latest
     container:
-      image: motolegacy/fteqw
+      image: motolegacy/fteqw:latest
     steps:
       - uses: actions/checkout@v2
       - name: Build

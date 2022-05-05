@@ -2261,12 +2261,8 @@ nacl-dbg:
 ifeq ($(FTE_TARGET),web)
 $(OUT_DIR)/$(EXE_NAME): web/ftejslib.js web/prejs.js
 endif
-ifneq ($(shell which emcc 2> /dev/null),)
+# FIXME THIS BREAKS WINDOWS!!! DONT BUILD WEB ON WINDOWS UNTIL I FIX THIS I GUESS
 EMCC?=emcc
-else
-#EMCC?=/opt/emsdk_portable/emscripten/master/emcc
-EMCC?=emcc.bat --em-config $(shell cygpath -m $(USERPROFILE))/.emscripten
-endif
 ifeq ($(EMSDK),)
 	#just adds some extra paths (WINDOWS HOST ONLY)
 	#assumes you installed the emscripten 1.22.0 sdk to EMSCRIPTENROOT

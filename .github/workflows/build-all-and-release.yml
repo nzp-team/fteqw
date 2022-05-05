@@ -1,9 +1,8 @@
 name: Build ALL and Publish Release
-permissions: read-all|write-all
-
 on: [push]
 jobs:
   Compile-Release:
+    permissions: read-all|write-all
     runs-on: ubuntu-latest
     container:
       image: motolegacy/fteqw:latest

@@ -6,13 +6,16 @@ jobs:
     container:
       image: motolegacy/fteqw:latest
     steps:
+      - name: emsdk env
+        working-directory: /
+        run: |
+          . emsdk/emsdk_env.sh
       - uses: actions/checkout@v2
       - name: Build
         working-directory: ./
         run: |
-          . /emsdk/emsdk_env.sh
           cd tools/
-          sh build-nzp-all.sh
+          sh build-nzp-web.sh
       - name: Generate Build Date
         id: date
         run: echo "::set-output name=date::$(date +'%Y-%m-%d-%H-%M-%S')"

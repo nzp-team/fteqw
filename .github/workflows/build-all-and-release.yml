@@ -11,7 +11,7 @@ jobs:
         working-directory: ./
         run: |
           cd tools/
-          sh build-nzp-web.sh
+          sh build-nzp-all.sh
       - name: Generate Build Date
         id: date
         run: echo "::set-output name=date::$(date +'%Y-%m-%d-%H-%M-%S')"

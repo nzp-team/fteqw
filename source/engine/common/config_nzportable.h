@@ -126,8 +126,8 @@
 //#define VM_LUA				//optionally supports lua instead of ssqc.
 #define Q2SERVER				//q2 server+gamecode.
 #define Q2CLIENT				//q2 client. file formats enabled separately.
-#define Q3CLIENT				//q3 client stuff.
-#define Q3SERVER				//q3 server stuff.
+//#define Q3CLIENT				//q3 client stuff.
+//#define Q3SERVER				//q3 server stuff.
 #define AVAIL_BOTLIB			//q3 botlib
 //#undef BOTLIB_STATIC			//should normally be set only in the makefile, and only if AVAIL_BOTLIB is defined above.
 #define HEXEN2					//runs hexen2 gamecode, supports hexen2 file formats.

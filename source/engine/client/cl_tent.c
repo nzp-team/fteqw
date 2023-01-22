@@ -249,7 +249,7 @@ static int beams_running;
 static tentmodels_t beamtypes[] =
 {
 	{"progs/bolt.mdl",							"TE_LIGHTNING1",				"TE_LIGHTNING1_END"},
-	{"models/misc/bolt2.mdl",					"TE_LIGHTNING2",				"TE_LIGHTNING2_END"},
+	{"models/misc/bolt2.mdl",							"TE_LIGHTNING2",				"TE_LIGHTNING2_END"},
 	{"progs/bolt3.mdl",							"TE_LIGHTNING3",				"TE_LIGHTNING3_END"},
 	{"progs/beam.mdl",							"te_beam",						"te_beam_end"},	//a CTF addition, but has other potential uses, sadly.
 
@@ -1924,7 +1924,7 @@ void CL_ParseTEnt (void)
 void CL_ParseTEnt_Sized (void)
 {
 	unsigned short sz = MSG_ReadShort();
-	int start = msg_readcount;
+	int start = MSG_GetReadCount();
 
 	for(;;)
 	{
@@ -1940,25 +1940,24 @@ void CL_ParseTEnt_Sized (void)
 		CL_ParseTEnt();
 #endif
 
-		if (msg_readcount < start + sz)
+		if (MSG_GetReadCount() < start + sz)
 		{	//try to be more compatible with xonotic.
 			int next = MSG_ReadByte();
 			if (next == svc_temp_entity)
 				continue;
-			msg_readcount--;
 
-			Con_Printf("Sized temp_entity data too large (next byte %i, %i bytes unread)\n", next, (start+sz)-msg_readcount);
-			msg_readcount = start + sz;
+			Con_Printf("Sized temp_entity data too large (next byte %i, %i bytes unread)\n", next, (start+sz)-MSG_GetReadCount()-1);
+			MSG_ReadSkip(start+sz-MSG_GetReadCount());
 			return;
 		}
 		break;
 	}
 
 
-	if (msg_readcount != start + sz)
+	if (MSG_GetReadCount() != start + sz)
 	{
-		Con_Printf("Tempentity size did not match parsed size misread a gamecode packet (%i bytes too much)\n", msg_readcount - (start+sz));
-		msg_readcount = start + sz;
+		Con_Printf("Tempentity size did not match parsed size misread a gamecode packet (%i bytes too much)\n", MSG_GetReadCount() - (start+sz));
+		MSG_ReadSkip(start+sz-MSG_GetReadCount());
 	}
 }
 
@@ -2969,9 +2968,12 @@ void CL_UpdateBeams (float frametime)
 						VectorAngles (org, NULL, ang, false);
 
 						// lerp pitch
+						delta = anglemod(viewang[0] - ang[0]);
+						if (delta > 180)
+							delta -= 360;
 						if (ang[0] < -180)
 							ang[0] += 360;
-						ang[0] += (viewang[0] - ang[0]) * f;
+						ang[0] += delta * f;
 
 						// lerp yaw
 						delta = anglemod(viewang[1] - ang[1]);

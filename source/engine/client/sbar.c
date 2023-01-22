@@ -126,6 +126,9 @@ static qboolean	sbarfailed;
 #ifdef HEXEN2
 static qboolean	sbar_hexen2;
 #endif
+#ifdef NQPROT
+static void Sbar_CTFScores_f(void);
+#endif
 
 vrect_t		sbar_rect;	//screen area that the sbar must fit.
 float		sbar_rect_left;
@@ -408,38 +411,38 @@ void Sbar_ExecuteLayoutString (char *s, int seat)
 	{
 		s = COM_Parse (s);
 		if (!strcmp(com_token, "xl"))
-		{
+		{	//relative to left
 			s = COM_Parse (s);
 			x = sbar_rect.x + atoi(com_token);
 			continue;
 		}
 		if (!strcmp(com_token, "xr"))
-		{
+		{	//relative to right
 			s = COM_Parse (s);
 			x = sbar_rect.x + sbar_rect.width + atoi(com_token);
 			continue;
 		}
 		if (!strcmp(com_token, "xv"))
-		{
+		{	//relative to central 640*480 box.
 			s = COM_Parse (s);
 			x = sbar_rect.x + (sbar_rect.width-320)/2 + atoi(com_token);
 			continue;
 		}
 
 		if (!strcmp(com_token, "yt"))
-		{
+		{	//relative to top
 			s = COM_Parse (s);
 			y = sbar_rect.y + atoi(com_token);
 			continue;
 		}
 		if (!strcmp(com_token, "yb"))
-		{
+		{	//relative to bottom
 			s = COM_Parse (s);
 			y = sbar_rect.y + sbar_rect.height + atoi(com_token);
 			continue;
 		}
 		if (!strcmp(com_token, "yv"))
-		{
+		{	//relative to central 640*480 box.
 			s = COM_Parse (s);
 			y = sbar_rect.y + (sbar_rect.height-240)/2 + atoi(com_token);
 			continue;
@@ -448,7 +451,10 @@ void Sbar_ExecuteLayoutString (char *s, int seat)
 		if (!strcmp(com_token, "pic"))
 		{	// draw a pic from a stat number
 			s = COM_Parse (s);
-			value = ps->stats[atoi(com_token)];
+			index = atoi(com_token);
+			if (index < 0 || index >= countof(ps->stats))
+				Host_EndGame ("Bad stat index");
+			value = ps->stats[index];
 			if (value >= Q2MAX_IMAGES || value < 0)
 				Host_EndGame ("Pic >= Q2MAX_IMAGES");
 			if (*Get_Q2ConfigString(Q2CS_IMAGES+value))
@@ -550,7 +556,10 @@ void Sbar_ExecuteLayoutString (char *s, int seat)
 			s = COM_Parse (s);
 			width = atoi(com_token);
 			s = COM_Parse (s);
-			value = ps->stats[atoi(com_token)];
+			index = atoi(com_token);
+			if (index < 0 || index >= countof(ps->stats))
+				Host_EndGame ("Bad stat index");
+			value = ps->stats[index];
 			SCR_DrawField (x, y, 0, width, value);
 			continue;
 		}
@@ -666,7 +675,10 @@ void Sbar_ExecuteLayoutString (char *s, int seat)
 		if (!strcmp(com_token, "if"))
 		{	// draw a number
 			s = COM_Parse (s);
-			value = ps->stats[atoi(com_token)];
+			index = atoi(com_token);
+			if (index < 0 || index >= countof(ps->stats))
+				Host_EndGame ("Bad stat index");
+			value = ps->stats[index];
 			if (!value)
 			{	// skip to endif
 				while (s && strcmp(com_token, "endif") )
@@ -677,8 +689,16 @@ void Sbar_ExecuteLayoutString (char *s, int seat)
 
 			continue;
 		}
+		if (!strcmp(com_token, "endif"))
+		{	//conditional was taken (so its endif wasn't ignored)
+			continue;
+		}
 
-
+		if (*com_token)
+		{
+			static float throttle;
+			Con_ThrottlePrintf(&throttle, 2, "Unknown layout command \"%s\"\n", com_token);
+		}
 	}
 }
 
@@ -1160,6 +1180,10 @@ void Sbar_Init (void)
 	Cmd_AddCommand ("+showteamscores", Sbar_ShowTeamScores);
 	Cmd_AddCommand ("-showteamscores", Sbar_DontShowTeamScores);
 
+#ifdef NQPROT
+	Cmd_AddCommand ("ctfscores", Sbar_CTFScores_f);	//server->client score updates.
+#endif
+
 #ifdef HEXEN2
 	//stuff to get hexen2 working out-of-the-box
 	Cmd_AddCommand ("invleft", Sbar_Hexen2InvLeft_f);
@@ -1442,9 +1466,69 @@ static void Sbar_Hexen2DrawNum (float x, float y, int num, int digits)
 }
 #endif
 
+#ifdef NQPROT
+//this stuff was added to the rerelease's ctf mod.
+int cl_ctfredscore;
+int cl_ctfbluescore;
+int cl_ctfflags;
+static void Sbar_CTFScores_f(void)
+{	//issued via stuffcmds.
+	cl_ctfredscore = atoi(Cmd_Argv(1));
+	cl_ctfbluescore = atoi(Cmd_Argv(2));
+	cl_ctfflags = atoi(Cmd_Argv(3)) | 0x100;	//base|carried|dropped | base|carried|dropped
+}
+static void Sbar_DrawCTFScores(playerview_t *pv)
+{
+	if (cl_ctfflags)
+	{
+		int i, x, y, sy;
+		static struct
+		{
+			int colour;
+			int *score;
+			const char *base, *held, *dropped;	//at base, held, dropped.
+			int shift;
+		} team[] =
+		{
+			{4, &cl_ctfredscore, "gfx/redf1.lmp", "gfx/redf2.lmp", "gfx/redf3.lmp", 0},
+			{13, &cl_ctfbluescore, "gfx/bluef1.lmp", "gfx/bluef2.lmp", "gfx/bluef3.lmp", 3},
+		};
+
+		x = sbar_rect.x + sbar_rect.width - (48+2);
+		sy = sbar_rect.y + sbar_rect.height-sb_lines;
+
+		if (!cl_sbar.value && sb_lines > 24 && scr_viewsize.value>=100 && !cl_hudswap.value)
+			x -= 42;	//QW hud nudges it in by 24 to not cover ammo.
+
+		for (i = 0, y=sy-17; i < countof(team); i++, y -= 18)
+		{
+			if (cl.players[pv->playernum].rbottomcolor == team[i].colour)
+				Sbar_FillPC (x-1, y-1, 48+2, 16+2, 12);
+			Sbar_FillPC (x+16, y, 32, 16, team[i].colour);
+		}
+		R2D_ImageColours(1.0, 1.0, 1.0, 1.0);
+
+		for (i = 0, y=sy-17; i < countof(team); i++, y -= 18)
+		{
+			int fl = (cl_ctfflags>>team[i].shift)&7;
+			mpic_t *pic = NULL;
+			if (fl == 1)
+				pic = R2D_SafeCachePic(team[i].base);
+			else if (fl == 2)
+				pic = R2D_SafeCachePic(team[i].held);
+			else if (fl == 4)
+				pic = R2D_SafeCachePic(team[i].dropped);
+			if (pic)
+				R2D_ScalePic(x, y, 16, 16, pic);
+		}
+		for (i = 0, y=sy-17; i < countof(team); i++, y -= 18)
+			Draw_FunStringWidth (x+16, y+((16-8)/2), va("%i", *team[i].score), 32, 2, false);
+	}
+}
+#endif
+
 //=============================================================================
 
-int		playerteam[MAX_CLIENTS];
 typedef struct {
 	char team[16+1];
 	int frags;
@@ -1453,11 +1537,13 @@ typedef struct {
 	int topcolour, bottomcolour;
 	qboolean ownteam;
 } team_t;
-team_t teams[MAX_CLIENTS];
-int teamsort[MAX_CLIENTS];
-int scoreboardteams;
+static int		playerteam[MAX_CLIENTS];
+static team_t teams[MAX_CLIENTS];
+static int teamsort[MAX_CLIENTS];
+static int scoreboardteams;
+static qboolean consistentteams;	//can hide the 'team' displays when colours are enough.
 
-struct
+static struct
 {
 	unsigned char upper;
 	short frags;
@@ -1554,9 +1640,12 @@ void Sbar_SortTeams (playerview_t *pv)
 	player_info_t	*s;
 	char t[16+1];
 	int ownnum;
+	unsigned int seen;
+	char *end;
 
 // request new ping times every two second
 	scoreboardteams = 0;
+	consistentteams = false;
 
 	if (!cl.teamplay)
 		return;
@@ -1639,6 +1728,40 @@ void Sbar_SortTeams (playerview_t *pv)
 				teamsort[i] = teamsort[j];
 				teamsort[j] = k;
 			}
+
+	seen = 0;
+	for (i = 0; i < scoreboardteams; i++)
+	{
+		//make sure the colour is one of quake's valid non-fullbright colour ranges.
+		if (teams[i].bottomcolour < 0 || teams[i].bottomcolour > 13)
+			return;
+
+		//don't allow multiple teams with the same colour but different names.
+		if (seen & (1<<teams[i].bottomcolour))
+			return;
+		seen |= (1<<teams[i].bottomcolour);
+
+		if (*teams[i].team == 't')
+		{	//fte servers use t%i for nq team names
+			if (teams[i].bottomcolour != strtoul(teams[i].team+1, &end, 10) || *end)
+				return;
+		}
+		else
+		{
+			if (teams[i].bottomcolour != strtoul(teams[i].team, &end, 10) || *end)
+			{
+				if (teams[i].bottomcolour == 4 && !strcasecmp(teams[i].team, "red"))
+					;
+				else if (teams[i].bottomcolour == 13 && !strcasecmp(teams[i].team, "blue"))
+					;
+				else
+					return;
+			}
+		}
+	}
+
+	//if we got this far, we had no dupe colours and every name checked out.
+	consistentteams = true;
 }
 
 /*
@@ -2591,6 +2714,10 @@ static void Sbar_DrawTeamStatus(playerview_t *pv)
 	int y;
 	int track;
 
+#ifdef NQPROT
+	Sbar_DrawCTFScores(pv);
+#endif
+
 	if (!sbar_teamstatus.ival)
 		return;
 	y = -32;
@@ -2953,7 +3080,7 @@ void Sbar_Draw (playerview_t *pv)
 				{
 					if (!cls.deathmatch)
 					{
-						if (cl_sbar.value)
+						if (cl_sbar.value || (scr_viewsize.value<100))
 							Sbar_DrawPic (0, 0, 320, 24, sb_scorebar);
 						Sbar_CoopScoreboard ();
 					}
@@ -3032,14 +3159,14 @@ void Sbar_IntermissionNumber (float x, float y, int num, int digits, int color, 
 }
 
 #define COL_TEAM_LOWAVGHIGH	COLUMN("low/avg/high", 12*8, {sprintf (num, "%3i/%3i/%3i", plow, pavg, phigh); Draw_FunString ( x, y, num); })
-#define COL_TEAM_TEAM		COLUMN("team", 4*8, 		{Draw_FunStringWidth ( x, y, tm->team, 4*8, false, false); \
+#define COL_TEAM_TEAM		if (!consistentteams){COLUMN("team", 4*8, 		{Draw_FunStringWidth ( x, y, tm->team, 4*8, false, false); })}
+#define COL_TEAM_TOTAL		COLUMN("total", 5*8, 		{Draw_FunString ( x, y, va("%5i", tm->frags)); \
 		if (ourteam)\
 		{\
 			Draw_FunString ( x - 1*8, y, "^Ue010");\
-			Draw_FunString ( x + 4*8, y, "^Ue011");\
+			Draw_FunString ( x + 5*8, y, "^Ue011");\
 		}\
 	})
-#define COL_TEAM_TOTAL		COLUMN("total", 5*8, 		{Draw_FunString ( x, y, va("%5i", tm->frags)); })
 #define COL_TEAM_PLAYERS	COLUMN("players", 7*8,		{Draw_FunString ( x, y, va("%5i", tm->players)); })
 #define ALL_TEAM_COLUMNS	COL_TEAM_LOWAVGHIGH COL_TEAM_TEAM COL_TEAM_TOTAL COL_TEAM_PLAYERS
 
@@ -3078,6 +3205,9 @@ void Sbar_TeamOverlay (playerview_t *pv)
 		Sbar_DeathmatchOverlay(pv, 0);
 		return;
 	}
+
+	// sort the teams
+	Sbar_SortTeams(pv);
 
 	y = gr.y;
 
@@ -3143,9 +3273,6 @@ void Sbar_TeamOverlay (playerview_t *pv)
 
 #undef COLUMN
 	}
-
-// sort the teams
-	Sbar_SortTeams(pv);
 
 	if (pv->spectator)
 		trackplayer = Cam_TrackNum(pv);
@@ -3313,7 +3440,7 @@ ping time frags name
 		Sbar_FillPC(x, y+4, 40, 4, bottom);				\
 	}													\
 })
-#define COLUMN_TEAMNAME COLUMN(team, 4*8,				\
+#define COLUMN_TEAMNAME COLUMN(team, (consistentteams?0:(4*8)),				\
 {														\
 	if (!s->spectator)									\
 	{													\
@@ -3374,13 +3501,13 @@ void Sbar_DeathmatchOverlay (playerview_t *pv, int start)
 			cl.last_ping_request = realtime;
 			CL_SendClientCommand(true, "pings");
 		}
-		else if (cls.protocol == CP_NETQUAKE)
+		else if (cls.protocol == CP_NETQUAKE && !cls.qex)
 		{
 			cl.last_ping_request = realtime;
 			CL_SendClientCommand(true, "ping");
 		}
 	}
-	if (cls.protocol == CP_NETQUAKE)
+	if (cls.protocol == CP_NETQUAKE && !cls.qex)
 	{
 		if (cl.nqplayernamechanged && cl.nqplayernamechanged < realtime)
 		{
@@ -3441,7 +3568,7 @@ void Sbar_DeathmatchOverlay (playerview_t *pv, int start)
 
 	rank_width = 0;
 
-#define COLUMN(title, cwidth, code, fill) if (rank_width+(cwidth)+8 <= gr.width) {showcolumns |= (1<<COLUMN##title); rank_width += cwidth+8;}
+#define COLUMN(title, cwidth, code, fill) if (rank_width+(cwidth)+8 <= gr.width && cwidth) {showcolumns |= (1<<COLUMN##title); rank_width += cwidth+8;}
 //columns are listed here in priority order (if the screen is too narrow, later ones will be hidden)
 	COLUMN_NAME
 	COLUMN_PING
@@ -3516,7 +3643,7 @@ void Sbar_DeathmatchOverlay (playerview_t *pv, int start)
 		}
 
 		x = startx;
-#define COLUMN(title, width, code, fill) if (width && (showcolumns & (1<<COLUMN##title))) {Draw_FunString(x, y, #title); x += width+8;}
+#define COLUMN(title, width, code, fill) if (showcolumns & (1<<COLUMN##title)) {Draw_FunString(x, y, #title); x += width+8;}
 	ALLCOLUMNS
 #undef COLUMN
 
@@ -3683,8 +3810,8 @@ static void Sbar_MiniDeathmatchOverlay (playerview_t *pv)
 
 // scores
 	Sbar_SortFrags (false, false);
-	if (sbar_rect.width >= 640)
-		Sbar_SortTeams(pv);
+//	if (sbar_rect.width >= 640)
+	Sbar_SortTeams(pv);
 
 	if (!scoreboardlines)
 		return; // no one there?
@@ -3756,7 +3883,7 @@ static void Sbar_MiniDeathmatchOverlay (playerview_t *pv)
 
 		Q_strncpyz(name, s->name, sizeof(name));
 	// team and name
-		if (cl.teamplay)
+		if (cl.teamplay && !consistentteams)
 		{
 			Draw_FunStringWidth (x+48, y, s->team, 32, false, false);
 			Draw_FunStringWidth (x+48+40, y, name, MAX_DISPLAYEDNAME*8, false, false);
@@ -3765,38 +3892,67 @@ static void Sbar_MiniDeathmatchOverlay (playerview_t *pv)
 			Draw_FunStringWidth (x+48, y, name, MAX_DISPLAYEDNAME*8, false, false);
 		y += 8;
 	}
+	x += 48;
+	if (cl.teamplay && !consistentteams)
+		x += 40;
+	x += MAX_DISPLAYEDNAME*8;
+	x += 8;
 
 	// draw teams if room
-	if (sbar_rect.width < 640 || !cl.teamplay)
+	if (x + (consistentteams?40:80) > sbar_rect.x+sbar_rect.width || !cl.teamplay)
 		return;
 
+	y = sbar_rect.y + sbar_rect.height - sb_lines;
+
 	// draw seperator
-	x += 208;
+	R2D_ImageColours(0.3, 0.3, 0.3, 1);
+	R2D_FillBlock(x, y, 2, sb_lines);
+	R2D_ImageColours(1,1,1,1);
+	x += 2;
 //	for (y = sbar_rect.height - sb_lines; y < sbar_rect.height - 6; y += 2)
 //		Draw_ColouredCharacter(x, y, CON_WHITEMASK|14);
 
-	x += 16;
+	x += 8;
 
-	y = sbar_rect.height - sb_lines;
-	for (i=0 ; i < scoreboardteams && y <= sbar_rect.height; i++)
+	for (i=0 ; i < scoreboardteams && y <= sbar_rect.y+sbar_rect.height; i++)
 	{
 		k = teamsort[i];
 		tm = teams + k;
 
-	// draw pings
-		Draw_FunStringWidth (x, y, tm->team, 32, false, false);
-
-	// draw total
-		sprintf (num, "%5i", tm->frags);
-		Draw_FunString(x + 40, y, num);
-
-		if (!strncmp(cl.players[pv->playernum].team, tm->team, 16))
+		if (consistentteams)
 		{
-			Font_BeginString(font_default, x-8, y, &px, &py);
-			Font_DrawChar(px, py, CON_WHITEMASK, 16|0xe000);
-			Font_BeginString(font_default, x+32, y, &px, &py);
-			Font_DrawChar(px, py, CON_WHITEMASK, 17|0xe000);
-			Font_EndString(font_default);
+		// draw total
+			Sbar_FillPC ( x, y+1, 48, 3, tm->topcolour);
+			Sbar_FillPC ( x, y+4, 48, 4, tm->bottomcolour);
+			R2D_ImageColours(1,1,1,1);
+			sprintf (num, "%i", tm->frags);
+			Draw_FunStringWidth(x,y,num, 40, true, false);
+			if (!strncmp(cl.players[pv->playernum].team, tm->team, 16))
+			{
+				Font_BeginString(font_default, x, y, &px, &py);
+				Font_DrawChar(px, py, CON_WHITEMASK, 16|0xe000);
+				Font_BeginString(font_default, x+40, y, &px, &py);
+				Font_DrawChar(px, py, CON_WHITEMASK, 17|0xe000);
+				Font_EndString(font_default);
+			}
+		}
+		else
+		{
+		// draw name
+			Draw_FunStringWidth (x, y, tm->team, 32, false, false);
+
+		// draw total
+			sprintf (num, "%5i", tm->frags);
+			Draw_FunString(x + 40, y, num);
+
+			if (!strncmp(cl.players[pv->playernum].team, tm->team, 16))
+			{
+				Font_BeginString(font_default, x-8, y, &px, &py);
+				Font_DrawChar(px, py, CON_WHITEMASK, 16|0xe000);
+				Font_BeginString(font_default, x+32, y, &px, &py);
+				Font_DrawChar(px, py, CON_WHITEMASK, 17|0xe000);
+				Font_EndString(font_default);
+			}
 		}
 
 		y += 8;

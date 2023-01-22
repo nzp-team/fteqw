@@ -709,7 +709,7 @@ void INS_UpdateGrabs(int fullscreen, int activeapp)
 		grabmouse = false;
 	else if (fullscreen || in_simulatemultitouch.ival || in_windowed_mouse.value)
 	{
-		if (!Key_MouseShouldBeFree())
+		if (vrui.enabled || !Key_MouseShouldBeFree())
 			grabmouse = true;
 		else
 			grabmouse = false;
@@ -2137,10 +2137,10 @@ static qboolean INS_ReadJoystick (struct wjoy_s *joy)
 				if (joy->devid != DEVID_UNSET)
 				{
 					IN_JoystickAxisEvent(joy->devid, GPAXIS_LT_RIGHT, xistate.Gamepad.sThumbLX / 32768.0);
-					IN_JoystickAxisEvent(joy->devid, GPAXIS_LT_DOWN, xistate.Gamepad.sThumbLY / 32768.0);
+					IN_JoystickAxisEvent(joy->devid, GPAXIS_LT_DOWN, -xistate.Gamepad.sThumbLY / 32768.0);
 					IN_JoystickAxisEvent(joy->devid, GPAXIS_LT_TRIGGER, xistate.Gamepad.bLeftTrigger/255.0);
 					IN_JoystickAxisEvent(joy->devid, GPAXIS_RT_RIGHT, xistate.Gamepad.sThumbRX / 32768.0);
-					IN_JoystickAxisEvent(joy->devid, GPAXIS_RT_DOWN, xistate.Gamepad.sThumbRY / 32768.0);
+					IN_JoystickAxisEvent(joy->devid, GPAXIS_RT_DOWN, -xistate.Gamepad.sThumbRY / 32768.0);
 					IN_JoystickAxisEvent(joy->devid, GPAXIS_RT_TRIGGER, xistate.Gamepad.bRightTrigger/255.0);
 
 					vibrator.wLeftMotorSpeed = xinput_leftvibrator.value * 0xffff;
@@ -2411,6 +2411,28 @@ void INS_TranslateKeyEvent(WPARAM wParam, LPARAM lParam, qboolean down, int qdev
 			unicode = keyshift[unicode]; 
 	}
 	IN_KeyEvent(qdeviceid, down, qcode, unicode);
+}
+
+qboolean INS_KeyToLocalName(int qkey, char *buf, size_t bufsize)
+{
+	int i;
+	*buf = 0;	//assume failure
+	for (i = 0; i < countof(scantokey); i++)
+	{
+		if (!scantokey[i])
+			continue;	//not a vkey that quake understands
+		if (scantokey[i] == qkey)
+		{
+			wchar_t tmpbuf[64];
+			if (GetKeyNameTextW(i<<16, tmpbuf, sizeof(tmpbuf)))
+			{
+				narrowen(buf, bufsize, tmpbuf);	//yay for utf-8
+				return true;
+			}
+			break;
+		}
+	}
+	return false;
 }
 
 

@@ -2519,7 +2519,7 @@ qboolean SV_Physics (void)
 {
 	int		i;
 	qboolean moved = false;
-	int maxtics;
+	int maxtics = sv_limittics.ival;
 	double trueframetime = host_frametime;
 	double maxtic = sv_maxtic.value;
 	double mintic = sv_mintic.value;
@@ -2529,6 +2529,9 @@ qboolean SV_Physics (void)
 			mintic = 0.013;	//NQ physics can't cope with low rates and just generally bugs out.
 	if (maxtic < mintic)
 		maxtic = mintic;
+
+	if (maxtics>1&&sv.spawned_observer_slots==0&&sv.spawned_client_slots==0)
+		maxtics = 1;	//no players on the server. let timings slide
 
 	//keep gravity tracking the cvar properly
 	movevars.gravity = sv_gravity.value;
@@ -2540,43 +2543,48 @@ qboolean SV_Physics (void)
 		)	//make tics multiples of sv_maxtic (defaults to 0.1)
 	{
 		if (svs.gametype == GT_QUAKE2)
-			maxtic = 0.1;	//fucking fuckity fuck. we should warn about this.
+			mintic = maxtic = 0.1;	//fucking fuckity fuck. we should warn about this.
+		mintic = max(mintic, 1/1000.0);
 
-		host_frametime = sv.time - sv.world.physicstime;
-		if (host_frametime<0)
+		for(;;)
 		{
-			if (host_frametime < -1)
+			host_frametime = sv.time - sv.world.physicstime;
+			if (host_frametime<0)
+			{
+				if (host_frametime < -1)
+					sv.world.physicstime = sv.time;
+				host_frametime = 0;
+			}
+			if (!maxtics--)
+			{	//don't loop infinitely if we froze (eg debugger or suspend/hibernate)
 				sv.world.physicstime = sv.time;
-			host_frametime = 0;
-		}
-		if (svs.gametype != GT_QUAKE3)
-		if (host_frametime < maxtic && realtime)
-		{
-//			sv.time+=host_frametime;
-			host_frametime = trueframetime;
-			return false;	//don't bother with the whole server thing for a bit longer
-		}
-		if (host_frametime > maxtic)
-			host_frametime = maxtic;
-		sv.world.physicstime = sv.time;
+				break;
+			}
+			if (!host_frametime || (host_frametime < mintic && realtime))
+				break;
+			if (host_frametime > maxtic)
+				host_frametime = maxtic;
+			sv.world.physicstime += host_frametime;
+			moved = true;
 
-		switch(svs.gametype)
-		{
+			switch(svs.gametype)
+			{
 #ifdef Q2SERVER
-		case GT_QUAKE2:
-			ge->RunFrame();
-			break;
+			case GT_QUAKE2:
+				ge->RunFrame();
+				break;
 #endif
 #ifdef Q3SERVER
-		case GT_QUAKE3:
-			SVQ3_RunFrame();
-			break;
+			case GT_QUAKE3:
+				q3->sv.RunFrame();
+				break;
 #endif
-		default:
-			break;
+			default:
+				break;
+			}
 		}
 		host_frametime = trueframetime;
-		return true;
+		return moved;
 	}
 
 	if (svs.gametype != GT_HALFLIFE && /*sv.botsonthemap &&*/ progstype == PROG_QW)
@@ -2603,7 +2611,7 @@ qboolean SV_Physics (void)
 			memset(&ucmd, 0, sizeof(ucmd));
 			for (i = 0; i < sv.allocated_client_slots; i++)
 			{
-				if (svs.clients[i].state > cs_zombie && svs.clients[i].protocol == SCP_BAD && svs.clients[i].msecs >= 1000/77)
+				if (svs.clients[i].state > cs_zombie && svs.clients[i].protocol == SCP_BAD && svs.clients[i].msecs >= 1000.0/77)
 				{	//then this is a bot
 					oldhost = host_client;
 					oldplayer = sv_player;
@@ -2643,10 +2651,6 @@ qboolean SV_Physics (void)
 			}
 		}
 	}
-
-	maxtics = sv_limittics.ival;
-	if (sv.spawned_observer_slots==0&&sv.spawned_client_slots==0)
-		maxtics = 1;	//no players on the server. let timings slide
 
 // don't bother running a frame if sys_ticrate seconds haven't passed
 	while (1)

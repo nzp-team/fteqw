@@ -850,7 +850,7 @@ qboolean Con_Editor_Close(console_t *con, qboolean force)
 	{
 		if (!strncmp(con->title, "MODIFIED: ", 10))
 		{
-			Menu_Prompt(Con_Editor_CloseCallback, con, va("Save changes?\n%s\n", con->name), "Yes", "No", "Cancel");
+			Menu_Prompt(Con_Editor_CloseCallback, con, va("Save changes?\n%s\n", con->name), "Yes", "No", "Cancel", true);
 			return false;
 		}
 	}
@@ -1046,7 +1046,8 @@ void Con_TextEditor_f(void)
 {
 	char *fname = Cmd_Argv(1);
 	char *line = strrchr(fname, ':');
-	if (line)
+	char *lineend = NULL;
+	if (line && strtol(line+1, &lineend, 0) && !lineend)
 		*line++ = 0;
 	if (!*fname)
 	{

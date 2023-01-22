@@ -105,6 +105,10 @@ void Sys_Vibrate(float count)
 //	vibrateduration += count*10*sys_vibrate.value;
 }
 
+qboolean INS_KeyToLocalName(int qkey, char *buf, size_t bufsize)
+{	//onscreen keyboard? erk.
+	return false;
+}
 static int mapkey(int androidkey)
 {
 	switch(androidkey)
@@ -586,7 +590,7 @@ static void FTENativeActivity_motion(JNIEnv *env, jobject this, jint ptrid, jint
 	{
 	case 2:	//mouse down
 	case 3:	//mouse up
-		IN_KeyEvent(ptrid, act==2, K_MOUSE1, 0);
+		IN_KeyEvent(ptrid, act==2, K_TOUCH, 0);
 		break;
 	case 1:	//relative motion
 	case 0: //absolute motion (android sucks)

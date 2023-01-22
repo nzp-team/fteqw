@@ -89,6 +89,10 @@ int MP_TranslateFTEtoQCCodes(keynum_t code)
 //	case K_MOUSE14:			return 527;
 //	case K_MOUSE15:			return 528;
 //	case K_MOUSE16:			return 529;
+	case K_TOUCH:			return 600;
+	case K_TOUCHSLIDE:		return 601;
+	case K_TOUCHTAP:		return 602;
+	case K_TOUCHLONG:		return 603;
 
 	case K_JOY1:			return 768;
 	case K_JOY2:			return 769;
@@ -286,6 +290,10 @@ keynum_t MP_TranslateQCtoFTECodes(int code)
 //	case 527:		return K_MOUSE14;
 //	case 528:		return K_MOUSE15;
 //	case 529:		return K_MOUSE16;
+	case 600:		return K_TOUCH;
+	case 601:		return K_TOUCHSLIDE;
+	case 602:		return K_TOUCHTAP;
+	case 603:		return K_TOUCHLONG;
 
 	case 768:		return K_JOY1;
 	case 769:		return K_JOY2;
@@ -1038,8 +1046,8 @@ void QCBUILTIN PF_cl_clipboard_set(pubprogfuncs_t *prinst, struct globalvars_s *
 void QCBUILTIN PF_cl_localsound(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	const char * s = PR_GetStringOfs(prinst, OFS_PARM0);
-	float chan = (prinst->callargc>=1)?G_FLOAT(OFS_PARM1):0;
-	float vol = (prinst->callargc>=2)?G_FLOAT(OFS_PARM2):1;
+	float chan = (prinst->callargc>1)?G_FLOAT(OFS_PARM1):0;
+	float vol = (prinst->callargc>2)?G_FLOAT(OFS_PARM2):1;
 
 	S_LocalSound2(s, chan, vol);
 }

@@ -30,16 +30,11 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include <time.h>
 #include <sys/time.h>
 #include <sys/types.h>
-#include <unistd.h>
 #include <fcntl.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <dlfcn.h>
 #include <dirent.h>
-#if !defined(__CYGWIN__) && !defined(__DJGPP__)
-# include <sys/ipc.h>
-# include <sys/shm.h>
-#endif
 #include <sys/stat.h>
 #include <string.h>
 #include <ctype.h>
@@ -67,6 +62,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define FTEENGINE
 #include "../plugins/plugin.h"
 #endif
+#include "fs.h"
 
 #undef malloc
 
@@ -776,8 +772,8 @@ static int Sys_EnumerateFiles2 (const char *truepath, int apathofs, const char *
 						return false;
 					}
 				}
-				else
-					Con_DPrintf("Stat failed for \"%s\"\n", file);	//can happen with dead symlinks
+//				else
+//					Con_DPrintf("Stat failed for \"%s\"\n", file);	//can happen with dead symlinks
 			}
 		}
 	} while(1);
@@ -1082,7 +1078,7 @@ static void Friendly_Crash_Handler(int sig, siginfo_t *info, void *vcontext)
 #endif
 	backtrace_symbols_fd(array+firstframe, size-firstframe, 2);
 
-	if (sig == SIGINT)
+	if (sig == SIGINT || fs_readonly)
 		fd = -1;	//don't write out crash logs on ctrl+c
 	else
 		fd = open("crash.log", O_WRONLY|O_CREAT|O_APPEND, S_IRUSR | S_IWUSR | S_IRGRP);
@@ -1186,7 +1182,6 @@ char *Sys_ConsoleInput(void)
 }
 
 //begin meta generation helper
-#include "fs.h"
 static int Crypto_GenerateSignature(qbyte *hashdata, size_t hashsize, qbyte *signdata, size_t signsizemax)
 {
 	int i;

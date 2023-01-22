@@ -71,6 +71,7 @@ extern ftemanifest_t	*fs_manifest;
 
 netadr_t	net_local_cl_ipadr;	//still used to match local ui requests (quake/gamespy), and to generate ip reports for q3 servers (which is probably pointless).
 
+struct ftenet_generic_connection_s *net_from_connection;
 netadr_t	net_from;
 sizebuf_t	net_message;
 
@@ -150,10 +151,11 @@ cvar_t	net_enable_websockets	= CVARD("net_enable_websockets",	"1", "If enabled, 
 #endif
 #endif
 #endif
-extern cvar_t net_ice_exchangeprivateips;
-#if defined(HAVE_DTLS) && defined(HAVE_SERVER)
+#if defined(HAVE_DTLS)
+#if defined(HAVE_SERVER)
 static void QDECL NET_Enable_DTLS_Changed(struct cvar_s *var, char *oldvalue)
 {
+	var->ival = var->value;
 	//set up the default value
 	if (!*var->string)
 		var->ival = 0;	//FIXME: change to 1 then 2 when better tested.
@@ -165,12 +167,16 @@ static void QDECL NET_Enable_DTLS_Changed(struct cvar_s *var, char *oldvalue)
 		if (!svs.sockets->dtlsfuncs)
 		{
 			if (var->ival >= 2)
-				Con_Printf("%sUnable to set %s to \"%s\", no DTLS certificate available.\n", (var->ival >= 2)?CON_ERROR:CON_WARNING, var->name, var->string);
+				Con_Printf("%sUnable to set %s to \"%s\", no DTLS provider available.\n", (var->ival >= 2)?CON_ERROR:CON_WARNING, var->name, var->string);
 			var->ival = 0;	//disable the cvar (internally) if we don't have a usable certificate. this allows us to default the cvar to enabled without it breaking otherwise.
 		}
 	}
 }
 cvar_t net_enable_dtls		= CVARAFCD("net_enable_dtls", "", "sv_listen_dtls", 0, NET_Enable_DTLS_Changed, "Controls serverside dtls support.\n0: dtls blocked, not advertised.\n1: clientside choice.\n2: used where possible (recommended setting).\n3: disallow non-dtls clients (sv_port_tcp should be eg tls://[::]:27500 to also disallow unencrypted tcp connections).");
+#endif
+cvar_t dtls_psk_hint		= CVARFD("dtls_psk_hint", "", CVAR_NOUNSAFEEXPAND, "For DTLS-PSK handshakes. This specifies the public server identity.");
+cvar_t dtls_psk_user		= CVARFD("dtls_psk_user", "", CVAR_NOUNSAFEEXPAND, "For DTLS-PSK handshakes. This specifies the username to use when the client+server's hints match.");
+cvar_t dtls_psk_key			= CVARFD("dtls_psk_key",  "", CVAR_NOUNSAFEEXPAND, "For DTLS-PSK handshakes. This specifies the hexadecimal key which must match between client+server. Will only be used when client+server's hint settings match.");
 #endif
 
 #ifdef HAVE_CLIENT
@@ -245,6 +251,10 @@ static void NET_TLS_Provider_Changed(struct cvar_s *var, char *oldvalue)
 				Con_Printf(" %s", cryptolib[i]->drivername);
 		Con_Printf("\n");
 	}
+
+#if defined(HAVE_DTLS) && defined(HAVE_SERVER)
+	Cvar_ForceCallback(&net_enable_dtls);
+#endif
 }
 #endif
 qboolean NET_RegisterCrypto(void *module, ftecrypto_t *driver)
@@ -546,6 +556,15 @@ qboolean	NET_CompareAdr (netadr_t *a, netadr_t *b)
 	}
 #endif
 
+#ifdef SUPPORT_ICE
+	if (a->type == NA_ICE)
+	{
+		if (!strcmp(a->address.icename, b->address.icename))
+			return true;
+		return false;
+	}
+#endif
+
 	if (a->type == NA_INVALID && a->prot)
 		return true;	//mneh...
 
@@ -658,6 +677,15 @@ qboolean	NET_CompareBaseAdr (netadr_t *a, netadr_t *b)
 	if (a->type == NA_UNIX)
 	{
 		if (a->address.un.len == b->address.un.len && !memcmp(a->address.un.path, b->address.un.path, a->address.un.len))
+			return true;
+		return false;
+	}
+#endif
+
+#ifdef SUPPORT_ICE
+	if (a->type == NA_ICE)
+	{
+		if (!strcmp(a->address.icename, b->address.icename))
 			return true;
 		return false;
 	}
@@ -997,6 +1025,12 @@ char	*NET_AdrToString (char *s, int len, netadr_t *a)
 		break;
 #endif
 
+#ifdef SUPPORT_ICE
+	case NA_ICE:
+		snprintf (s, len, "%s[%s]", prot, a->address.icename);
+		break;
+#endif
+
 	default:
 		if (a->prot == NP_RTC_TCP || a->prot == NP_RTC_TLS)
 			Q_strncpyz(s, prot, len);
@@ -1132,6 +1166,12 @@ char	*NET_BaseAdrToString (char *s, int len, netadr_t *a)
 	case NA_UNIX:
 		//no ports, so no base paths.
 		return NET_AdrToString(s, len, a);
+#endif
+
+#ifdef SUPPORT_ICE
+	case NA_ICE:
+		snprintf (s, len, "%s[%s]", prot, a->address.icename);
+		break;
 #endif
 
 	default:
@@ -1762,16 +1802,12 @@ size_t	NET_StringToAdr2 (const char *s, int defaultport, netadr_t *a, size_t num
 	if (path == s && fs_manifest->rtcbroker && *fs_manifest->rtcbroker)
 	{
 		s = fs_manifest->rtcbroker;
-		if (!strncmp(s, "tls://", 6))
-		{
-			s += 6;
-			prot = NP_RTC_TLS;
-		}
+		if (!strncmp(s, "tls://", 6) || !strncmp(s, "wss://", 6))
+			s+=6, prot=NP_RTC_TLS;
 		else if (!strncmp(s, "tcp://", 6))
-		{
-			s+=6;
-			prot = NP_RTC_TCP;
-		}
+			s+=6, prot=NP_RTC_TCP;
+		else if (!strncmp(s, "ws://", 5))
+			s+=5, prot=NP_RTC_TCP;
 		else
 			prot = NP_RTC_TLS;	//best-practise by default.
 		if (pathstart)
@@ -1889,6 +1925,9 @@ void NET_IntegerToMask (netadr_t *a, netadr_t *amask, int bits)
 #ifdef IRCCONNECT
 	case NA_IRC:
 #endif
+#ifdef SUPPORT_ICE
+	case NA_ICE:
+#endif
 		break;
 
 	}
@@ -1906,29 +1945,37 @@ int ParsePartialIP(const char *s, netadr_t *a)
 
 	memset (a, 0, sizeof(*a));
 
+	//if its ::ffff:a.b.c.d then parse it as ipv4 by just skipping the prefix.
+	//we ought to leave it as ipv6, but any printing will show it as ipv4 anyway.
+	if (!strncasecmp(s, "::ffff:", 7) && strchr(s+7, '.') && !strchr(s+7, ':'))
+		s += 7;
+
 	//multiple colons == ipv6
+	//single colon = ipv4:port
 	colon = strchr(s, ':');
 	if (colon && strchr(colon+1, ':'))
 	{
 		qbyte *address = a->address.ip6;
 		unsigned long tmp;
+		int gapstart = -1;	//in bytes...
 		bits = 0;
-		//FIXME: check for ::ffff:a.b.c.d
-		//FIXME: check for xx::xx
 
-		if (s[0] == ':' && s[1] == ':' && !s[2])
-		{
-			s+=2;
-			bits = 1;
-		}
-		else while(*s)
+		while(*s)
 		{
 			tmp = strtoul(s, &colon, 16);
-			if (tmp > 0xffff)
-				return 0;	//invalid
-			*address++ = (tmp>>8)&0xff;
-			*address++ = (tmp>>0)&0xff;
-			bits += 16;
+			if (colon == s)
+			{
+				if (bits)
+					return 0;
+			}
+			else
+			{
+				if (tmp > 0xffff)
+					return 0;	//invalid
+				*address++ = (tmp>>8)&0xff;
+				*address++ = (tmp>>0)&0xff;
+				bits += 16;
+			}
 
 			if (bits == 128)
 			{
@@ -1938,16 +1985,35 @@ int ParsePartialIP(const char *s, netadr_t *a)
 			}
 
 
-			//double-colon ends it here. we can't parse xx::xx
+			//double-colon is a gap (or partial end).
 			//hopefully the last 64 bits or whatever will be irrelevant anyway, so such addresses won't be common
-			if (colon[0] == ':' && colon[1] == ':' && !colon[2])
-				break;
-			if (*colon == ':')
+			if (colon[0] == ':' && colon[1] == ':')
+			{
+				if (gapstart >= 0)
+					return 0; //only one gap...
+				if (!colon[2])
+					break;	//nothing after. its partial.
+				gapstart = bits/8;
+				colon+=2;
+			}
+			else if (*colon == ':' && bits)
 				colon++;
+			else if (*colon)
+				return 0; //gibberish here...
 			else
-				return 0; //don't allow it if it just ended without a double-colon.
+				break;	//end of address... anything more is a partial.
 			s = colon;
 		}
+		if (gapstart >= 0)
+		{
+			int tailsize = (bits/8)-gapstart;	//bits to move to the end
+			int gapsize = 16 - gapstart - tailsize;
+			memmove(a->address.ip6+gapstart+gapsize, a->address.ip6+gapstart, tailsize);	//move the bits we found to the end
+			memset(a->address.ip6+gapstart, 0, gapsize);	//and make sure the gap is cleared
+			bits = 128;	//found it all, or something.
+		}
+		if (!bits)
+			bits = 1;	//FIXME: return of 0 is an error, but :: is 0-length... lie.
 		a->type = NA_IPV6;
 		a->port = 0;
 	}
@@ -2063,6 +2129,17 @@ qboolean NET_StringToAdrMasked (const char *s, qboolean allowdns, netadr_t *a, n
 	}
 
 	return true;
+}
+
+qboolean NET_IsEncrypted(netadr_t *adr)
+{
+#ifdef SUPPORT_ICE
+	if (adr->type == NA_ICE && ICE_IsEncrypted(adr))
+		return true;
+#endif
+	if (adr->prot == NP_DTLS || adr->prot == NP_TLS || adr->prot == NP_WSS)
+		return true;
+	return false;
 }
 
 // NET_CompareAdrMasked: given 3 addresses, 2 to compare with a complimentary mask,
@@ -2652,7 +2729,7 @@ ftenet_connections_t *FTENET_CreateCollection(qboolean listen, void(*ReadPacket)
 static ftenet_generic_connection_t *FTENET_Loop_EstablishConnection(ftenet_connections_t *col, const char *address, netadr_t adr);
 #endif
 #ifdef HAVE_PACKET
-static ftenet_generic_connection_t *FTENET_Datagram_EstablishConnection(ftenet_connections_t *col, const char *address, netadr_t adr);
+ftenet_generic_connection_t *FTENET_Datagram_EstablishConnection(ftenet_connections_t *col, const char *address, netadr_t adr);
 #endif
 #ifdef TCPCONNECT
 static ftenet_generic_connection_t *FTENET_TCP_EstablishConnection(ftenet_connections_t *col, const char *address, netadr_t adr);
@@ -2968,13 +3045,24 @@ const dtlsfuncs_t *DTLS_InitServer(void)
 {
 	const dtlsfuncs_t *f = NULL;
 	int i;
+	const char *provname;
 	if (tls_provider.ival>0 && tls_provider.ival <= cryptolib_count && cryptolib[tls_provider.ival-1])
+	{
 		f = !cryptolib[tls_provider.ival-1]->DTLS_InitServer?NULL:cryptolib[tls_provider.ival-1]->DTLS_InitServer();
+		provname = cryptolib[tls_provider.ival-1]->drivername;
+	}
 	else for (i = 0; !f && i < cryptolib_count; i++)
 	{
 		if (cryptolib[i] && cryptolib[i]->DTLS_InitServer)
+		{
 			f = cryptolib[i]->DTLS_InitServer();
+			provname = cryptolib[i]->drivername;
+			if (!f)
+				Con_Printf("DTLS provider %s failed\n", cryptolib[i]->drivername);
+		}
 	}
+	if (f)
+		Con_DPrintf("Using DTLS provider %s\n", provname);
 	return f;
 }
 const dtlsfuncs_t *DTLS_InitClient(void)
@@ -2997,7 +3085,7 @@ static neterr_t FTENET_DTLS_DoSendPacket(void *cbctx, const qbyte *data, size_t 
 	struct dtlspeer_s *peer = cbctx;
 	return NET_SendPacketCol(peer->col, length, data, &peer->addr);
 }
-qboolean NET_DTLS_Create(ftenet_connections_t *col, netadr_t *to)
+qboolean NET_DTLS_Create(ftenet_connections_t *col, netadr_t *to, const dtlscred_t *cred)
 {
 	extern cvar_t timeout;
 	struct dtlspeer_s *peer;
@@ -3010,7 +3098,6 @@ qboolean NET_DTLS_Create(ftenet_connections_t *col, netadr_t *to)
 	}
 	if (!peer)
 	{
-		char hostname[256];
 		peer = Z_Malloc(sizeof(*peer));
 		peer->addr = *to;
 		peer->col = col;
@@ -3020,15 +3107,15 @@ qboolean NET_DTLS_Create(ftenet_connections_t *col, netadr_t *to)
 		else
 			peer->funcs = DTLS_InitClient();
 		if (peer->funcs)
-			peer->dtlsstate = peer->funcs->CreateContext(NET_BaseAdrToString(hostname, sizeof(hostname), to), peer, FTENET_DTLS_DoSendPacket, col->islisten);
+			peer->dtlsstate = peer->funcs->CreateContext(cred, peer, FTENET_DTLS_DoSendPacket, col->islisten);
 
 		peer->timeout = realtime+timeout.value;
 		if (peer->dtlsstate)
 		{
-			if (peer->next)
-				peer->next->link = &peer->next;
 			peer->link = &col->dtls;
 			peer->next = col->dtls;
+			if (peer->next)
+				peer->next->link = &peer->next;
 			col->dtls = peer;
 		}
 		else
@@ -3039,10 +3126,56 @@ qboolean NET_DTLS_Create(ftenet_connections_t *col, netadr_t *to)
 	}
 	return peer!=NULL;
 }
+#ifdef HAVE_SERVER
+static void FTENET_DTLS_Established(void **ctx, void *state)
+{
+	ftenet_connections_t *col;
+	struct dtlspeer_s *peer = Z_Malloc(sizeof(*peer));
+	memcpy(peer, *ctx, sizeof(*peer));
+	*ctx = peer;
+	col = peer->col;
+
+	peer->dtlsstate = state;
+
+	peer->timeout = realtime+timeout.value;
+	peer->link = &col->dtls;
+	peer->next = col->dtls;
+	if (peer->next)
+		peer->next->link = &peer->next;
+	col->dtls = peer;
+}
+qboolean NET_DTLS_CheckInbound(ftenet_connections_t *col)
+{
+	extern cvar_t timeout, net_enable_dtls;
+	struct dtlspeer_s *peer;
+	netadr_t *from = &net_from;
+	if (from->prot != NP_DGRAM || !net_enable_dtls.ival || !col->dtlsfuncs)
+		return false;
+	if (!net_message.cursize || !(20 <= net_message.data[0] && net_message.data[0] <= 63))
+		return false;	//lead byte must be between 20 and 63 to be valid dtls.
+	for (peer = col->dtls; peer; peer = peer->next)
+	{
+		if (NET_CompareAdr(&peer->addr, from))
+			break;
+	}
+	if (!peer)
+	{
+		if (col->dtlsfuncs->CheckConnection)
+		{
+			struct dtlspeer_s peer;
+			//fill it with preliminary info
+			peer.addr = *from;
+			peer.col = col;
+			peer.funcs = col->dtlsfuncs;
+			return col->dtlsfuncs->CheckConnection(&peer, from, sizeof(*from), net_message.data, net_message.cursize, FTENET_DTLS_DoSendPacket, FTENET_DTLS_Established);
+		}
+	}
+	return false;
+}
+#endif
 static void NET_DTLS_DisconnectPeer(ftenet_connections_t *col, struct dtlspeer_s *peer)
 {
 //	Sys_Printf("Destroy %p\n", peer->dtlsstate);
-
 	if (peer->next)
 		peer->next->link = peer->link;
 	*peer->link = peer->next;
@@ -3095,8 +3228,8 @@ qboolean NET_DTLS_Decode(ftenet_connections_t *col)
 			switch(peer->funcs->Received(peer->dtlsstate, &net_message))
 			{
 			case NETERR_DISCONNECTED:
-				Sys_Printf("disconnected %p\n", peer->dtlsstate);
 				NET_DTLS_DisconnectPeer(col, peer);
+				net_message.cursize = 0;
 				break;
 			case NETERR_NOROUTE:
 				return false;	//not a valid dtls packet.
@@ -3107,6 +3240,7 @@ qboolean NET_DTLS_Decode(ftenet_connections_t *col)
 				break;
 			case NETERR_SENT:
 				//we decoded it properly
+				net_from.prot = NP_DTLS;
 				break;
 			}
 			net_from.prot = NP_DTLS;
@@ -3167,7 +3301,7 @@ static qboolean FTENET_AddToCollection_Ptr(ftenet_connections_t *col, const char
 			if (col->conn[i])
 			if (*col->conn[i]->name && !strcmp(col->conn[i]->name, name))
 			{
-				if (adr && adr->type != NA_INVALID && col->islisten)
+				if (adr && (adr->type != NA_INVALID||adr->prot != NP_INVALID) && col->islisten)
 				if (col->conn[i]->ChangeLocalAddress)
 				{
 					if (col->conn[i]->ChangeLocalAddress(col->conn[i], address, adr))
@@ -3824,6 +3958,7 @@ static void FTENET_Datagram_Polled(epollctx_t *ctx, unsigned int events)
 	while (FTENET_Datagram_GetPacket(con))
 	{
 		net_from.connum = con->connum;
+		net_from_connection = con;
 		con->owner->ReadGamePacket();
 	}
 }
@@ -4002,7 +4137,10 @@ ftenet_generic_connection_t *FTENET_Datagram_EstablishConnection(ftenet_connecti
 		{
 			SockadrToNetadr(&qs, temp, &adr);
 			NET_AdrToString(addrstr, sizeof(addrstr), &adr);
-			Con_Printf(CON_ERROR "Unable to bind to port %i, bound to %s instead\n", port, addrstr);
+			if (SSV_IsSubServer())
+				Con_DLPrintf(2, CON_ERROR "Unable to bind to port %i, bound to %s instead\n", port, addrstr);
+			else
+				Con_Printf(CON_ERROR "Unable to bind to port %i, bound to %s instead\n", port, addrstr);
 		}
 		break;
 	}
@@ -5112,6 +5250,10 @@ qboolean FTENET_TCP_ParseHTTPRequest(ftenet_tcp_connection_t *con, ftenet_tcp_st
 					{
 						if (o != st && o->clienttype == TCPC_WEBRTC_HOST && !strcmp(st->webrtc.resource, o->webrtc.resource))
 						{
+							net_message_buffer[0] = ICEMSG_NAMEINUSE;
+							strcpy(net_message_buffer+1, st->webrtc.resource);
+							FTENET_TCP_WebSocket_Splurge(st, WS_PACKETTYPE_BINARYFRAME, net_message_buffer, strlen(net_message_buffer));
+
 							*st->webrtc.resource = 0; //don't trigger shutdown broadcasts to valid clients.
 							return false;	//conflict! can't have two servers listening on the same url
 						}
@@ -5156,6 +5298,7 @@ qboolean FTENET_TCP_ParseHTTPRequest(ftenet_tcp_connection_t *con, ftenet_tcp_st
 				net_message.currentbit = 0;
 				net_from = st->remoteaddr;
 				net_from.connum = con->generic.connum;
+				net_from_connection = &con->generic;
 				MSG_WriteLong(&net_message, LongSwap(NETFLAG_CTL | (strlen(NQ_NETCHAN_GAMENAME)+7)));
 				MSG_WriteByte(&net_message, CCREQ_CONNECT);
 				MSG_WriteString(&net_message, NQ_NETCHAN_GAMENAME);
@@ -5244,7 +5387,7 @@ static qboolean FTENET_TCP_KillStream(ftenet_tcp_connection_t *con, ftenet_tcp_s
 			if (o->clienttype == TCPC_WEBRTC_HOST && !strcmp(o->webrtc.resource, st->webrtc.resource))
 			{
 				qbyte msg[3];
-				msg[0] = ICEMSG_PEERDROP;
+				msg[0] = ICEMSG_PEERLOST;
 				msg[1] = (st->webrtc.clientnum>>0)&0xff;
 				msg[2] = (st->webrtc.clientnum>>8)&0xff;
 
@@ -5261,7 +5404,7 @@ static qboolean FTENET_TCP_KillStream(ftenet_tcp_connection_t *con, ftenet_tcp_s
 			if (o->clienttype == TCPC_WEBRTC_CLIENT && !strcmp(o->webrtc.resource, st->webrtc.resource))
 			{
 				qbyte msg[3];
-				msg[0] = ICEMSG_PEERDROP;
+				msg[0] = ICEMSG_PEERLOST;
 				msg[1] = (st->webrtc.clientnum>>0)&0xff;
 				msg[2] = (st->webrtc.clientnum>>8)&0xff;
 
@@ -5538,6 +5681,7 @@ static enum{
 		net_message.currentbit = 0;
 		net_from = st->remoteaddr;
 		net_from.connum = con->generic.connum;
+		net_from_connection = &con->generic;
 
 		con->generic.owner->ReadGamePacket();
 		return FTETCP_RETRY;
@@ -5783,6 +5927,7 @@ static enum{
 				net_message.currentbit = 0;
 				net_from = st->remoteaddr;
 				net_from.connum = con->generic.connum;
+				net_from_connection = &con->generic;
 				con->generic.owner->ReadGamePacket();
 				return FTETCP_RETRY;
 			}
@@ -6276,7 +6421,7 @@ ftenet_generic_connection_t *FTENET_TCP_EstablishConnection(ftenet_connections_t
 	}
 	else
 	{
-		newsocket = TCP_OpenStream(&adr);
+		newsocket = TCP_OpenStream(&adr, address);
 		if (newsocket == INVALID_SOCKET)
 		{
 			Z_Free(newcon);
@@ -6955,6 +7100,9 @@ struct ftenet_generic_connection_s *FTENET_IRCConnect_EstablishConnection(qboole
 #endif
 
 #ifdef FTE_TARGET_WEB
+cvar_t  net_ice_servers = CVAR("net_ice_servers", "");
+cvar_t  net_ice_relayonly = CVAR("net_ice_relayonly", "0");
+
 #include "web/ftejslib.h"
 
 typedef struct
@@ -7039,7 +7187,7 @@ static void FTENET_WebRTC_Heartbeat(ftenet_websocket_connection_t *b)
 		info[1] =
 		info[2] = 0xff;	//to the broker rather than any actual client
 		info[3] = 0;
-		Info_SetValueForKey(info+3, "protocol", com_protocolversion.string, sizeof(info)-3);
+		Info_SetValueForKey(info+3, "protocol", SV_GetProtocolVersionString(), sizeof(info)-3);
 		Info_SetValueForKey(info+3, "maxclients", maxclients.string, sizeof(info)-3);
 		Info_SetValueForKey(info+3, "clients", va("%i", numclients), sizeof(info)-3);
 		Info_SetValueForKey(info+3, "hostname", hostname.string, sizeof(info)-3);
@@ -7065,9 +7213,109 @@ static void FTENET_WebRTC_Callback(void *ctxp, int ctxi, int/*enum icemsgtype_s*
 	*o++ = (ctxi>>8)&0xff;
 	memcpy(o, data, dl);
 	o+=dl;
-	//Con_Printf("To Broker: %i %i\n", evtype, ctxi);
+	//Con_Printf("To Broker: %i %i %s\n", evtype, ctxi, data);
 	emscriptenfte_ws_send(wcs->brokersock, net_message_buffer, o-net_message_buffer);
 }
+static int FTENET_WebRTC_Create(qboolean initiator, ftenet_websocket_connection_t *wsc, int clid)
+{
+	char config[4096], tmp[256];
+	qboolean first = true;
+	const char *servers;
+
+	*config = 0;
+	Q_strncatz(config, "{\"iceServers\":[",	sizeof(config));
+	{
+		/*
+			rtc://broker/id
+			rtc:///id
+			/id
+		*/
+		char *c;
+		int i;
+		const char *brokeraddress = wsc->remoteadr.address.websocketurl;
+
+		char *pre[] = {	"wss://",	"ices://",	"rtcs://",	"tls://",
+						"ws://",	"ice://",	"rtc://",	"tcp://"};
+
+		//try and clean up the prefix, if specified
+		for (i = countof(pre); i --> 0; )
+		{
+			if (!strncmp(brokeraddress, pre[i], strlen(pre[i])))
+			{
+				brokeraddress += strlen(pre[i]);
+				break;
+			}
+		}
+		if (*brokeraddress == '/')
+		{
+			brokeraddress = fs_manifest->rtcbroker;
+			for (i = countof(pre); i --> 0; )
+			{
+				if (!strncmp(brokeraddress, pre[i], strlen(pre[i])))
+				{
+					brokeraddress += strlen(pre[i]);
+					break;
+				}
+			}
+		}
+		Q_strncpyz(com_token, brokeraddress, sizeof(com_token));
+		c = strchr(com_token, '/');
+		if (c) *c = 0;
+
+		first = false;
+		Q_strncatz(config, va("\n{\"urls\":[\"stun:%s\"]}", COM_QuotedString(com_token, tmp,sizeof(tmp), true)), sizeof(config));
+	}
+
+	for(servers = net_ice_servers.string; (servers=COM_Parse(servers)); )
+	{
+		//we don't do the ?foo stuff properly (RFCs say only ?transport= and only for stun)
+		char *s = strchr(com_token, '?'), *next;
+		const char *transport = NULL;
+		const char *user = NULL;
+		const char *auth = NULL;
+		for (;s;s=next)
+		{
+			*s++ = 0;
+			next = strchr(s, '?');
+			if (next)
+				*next = 0;
+
+			if (!strncmp(s, "transport=", 10))
+				transport = s+10;
+			else if (!strncmp(s, "user=", 5))
+				user = s+5;
+			else if (!strncmp(s, "auth=", 5))
+				auth = s+5;
+			else if (!strncmp(s, "fam=", 4))
+				;
+		}
+
+		if (!strncmp(com_token, "turn:", 5) || !strncmp(com_token, "turns:", 6))
+			if (!user || !auth)
+				continue;
+
+		if (first)
+			first = false;
+		else
+			Q_strncatz(config, ",", sizeof(config));
+		if (transport)
+			Q_strncatz(config, va("\n{\"urls\":[\"%s?transport=%s\"]", COM_QuotedString(com_token, tmp,sizeof(tmp), true), transport), sizeof(config));
+		else
+			Q_strncatz(config, va("\n{\"urls\":[\"%s\"]", COM_QuotedString(com_token, tmp,sizeof(tmp), true)), sizeof(config));
+		if (user)
+			Q_strncatz(config, va(",\"username\":\"%s\"", COM_QuotedString(user, tmp,sizeof(tmp), true)), sizeof(config));
+		if (auth)
+			Q_strncatz(config, va(",\"credential\":\"%s\"", COM_QuotedString(auth, tmp,sizeof(tmp), true)), sizeof(config));
+		Q_strncatz(config, "}", sizeof(config));
+	}
+	Q_strncatz(config, va("]"
+//		",\"bundlePolicy\":\"max-bundle\""
+		",\"iceTransportPolicy\":\"%s\""
+		"}",net_ice_relayonly.ival?"relay":"all"),	sizeof(config));
+
+	return emscriptenfte_rtc_create(initiator, wsc, clid, FTENET_WebRTC_Callback, config);
+}
+
 static qboolean FTENET_WebRTC_GetPacket(ftenet_generic_connection_t *gcon)
 {
 	ftenet_websocket_connection_t *wsc = (void*)gcon;
@@ -7102,7 +7350,7 @@ static qboolean FTENET_WebRTC_GetPacket(ftenet_generic_connection_t *gcon)
 		const char *s;
 		char *p;
 
-		MSG_BeginReading(msg_nullnetprim);
+		MSG_BeginReading(&net_message, msg_nullnetprim);
 		cmd = MSG_ReadByte();
 		cl = MSG_ReadShort();
 
@@ -7110,11 +7358,11 @@ static qboolean FTENET_WebRTC_GetPacket(ftenet_generic_connection_t *gcon)
 
 		switch(cmd)
 		{
-		case ICEMSG_PEERDROP:	//connection closing...
+		case ICEMSG_PEERLOST:	//connection closing...
 			if (cl == -1)
 			{
 				wsc->failed = true;
-				Con_Printf("Broker closing connection: %s\n", MSG_ReadString());
+//				Con_Printf("Broker closing connection: %s\n", MSG_ReadString());
 			}
 			else if (cl >= 0 && cl < wsc->numclients)
 			{
@@ -7122,7 +7370,7 @@ static qboolean FTENET_WebRTC_GetPacket(ftenet_generic_connection_t *gcon)
 				if (wsc->clients[cl].datasock != INVALID_SOCKET)
 					emscriptenfte_ws_close(wsc->clients[cl].datasock);
 				wsc->clients[cl].datasock = INVALID_SOCKET;
-				Con_Printf("Broker closing connection: %s\n", MSG_ReadString());
+//				Con_Printf("Broker closing connection: %s\n", MSG_ReadString());
 			}
 			break;
 		case ICEMSG_GREETING:	//reports the trailing url we're 'listening' on. anyone else using that url will connect to us.
@@ -7169,14 +7417,14 @@ static qboolean FTENET_WebRTC_GetPacket(ftenet_generic_connection_t *gcon)
 					memcpy(&wsc->clients[cl].remoteadr, &wsc->remoteadr, sizeof(netadr_t));
 					Q_strncatz(wsc->clients[cl].remoteadr.address.websocketurl, id, sizeof(wsc->clients[cl].remoteadr.address.websocketurl));
 					wsc->clients[cl].remoteadr.port = htons(cl+1);
-					wsc->clients[cl].datasock = emscriptenfte_rtc_create(false, wsc, cl, FTENET_WebRTC_Callback);
+					wsc->clients[cl].datasock = FTENET_WebRTC_Create(false, wsc, cl);
 				}
 			}
 			else
 			{
 				if (wsc->datasock != INVALID_SOCKET)
 					emscriptenfte_ws_close(wsc->datasock);
-				wsc->datasock = emscriptenfte_rtc_create(true, wsc, cl, FTENET_WebRTC_Callback);
+				wsc->datasock = FTENET_WebRTC_Create(true, wsc, cl);
 			}
 			break;
 		case ICEMSG_OFFER:	//we received an offer from a client
@@ -7795,6 +8043,11 @@ void NET_ReadPackets (ftenet_connections_t *collection)
 	while ((p = collection->delayed_packets) && (int)(Sys_Milliseconds()-p->sendtime) > 0)
 	{
 		collection->delayed_packets = p->next;
+#ifdef SUPPORT_ICE
+		if (p->dest.type == NA_ICE)
+			NET_SendPacketCol (collection, p->cursize, p->data, &p->dest);
+		else
+#endif
 #ifdef HAVE_DTLS
 		if (p->dest.prot == NP_DTLS)
 			FTENET_DTLS_SendPacket(collection, p->cursize, p->data, &p->dest);
@@ -7819,6 +8072,7 @@ void NET_ReadPackets (ftenet_connections_t *collection)
 				collection->bytesin += net_message.cursize;
 				collection->packetsin += 1;
 				net_from.connum = c+1;
+				net_from_connection = collection->conn[c];
 				collection->ReadGamePacket();
 			}
 		}
@@ -7876,9 +8130,10 @@ static neterr_t NET_SendPacketCol (ftenet_connections_t *collection, int length,
 
 	if (to->connum)
 	{
-		if (collection->conn[to->connum-1])
+		i = to->connum-1;
+		if (i < MAX_CONNECTIONS && collection->conn[i])
 		{
-			err = collection->conn[to->connum-1]->SendPacket(collection->conn[to->connum-1], length, data, to);
+			err = collection->conn[i]->SendPacket(collection->conn[i], length, data, to);
 			if (err != NETERR_NOROUTE)
 			{
 				/*if (err == NETERR_DISCONNECTED)
@@ -7893,6 +8148,7 @@ static neterr_t NET_SendPacketCol (ftenet_connections_t *collection, int length,
 				return err;
 			}
 		}
+		return NETERR_NOROUTE;
 	}
 
 	for (i = 0; i < MAX_CONNECTIONS; i++)
@@ -7943,6 +8199,10 @@ neterr_t NET_SendPacket (ftenet_connections_t *collection, int length, const voi
 	}
 #endif
 
+#ifdef SUPPORT_ICE
+	if (to->type == NA_ICE)
+		return ICE_SendPacket(length, data, to);
+#endif
 #ifdef HAVE_DTLS
 	if (to->prot == NP_DTLS)
 		return FTENET_DTLS_SendPacket(collection, length, data, to);
@@ -7961,7 +8221,22 @@ qboolean NET_EnsureRoute(ftenet_connections_t *collection, char *routename, char
 			return false;
 		break;
 	case NP_DTLS:
-		break;
+#ifdef HAVE_DTLS
+		adr->prot = NP_DGRAM;
+		if (NET_EnsureRoute(collection, routename, host, adr))
+		{
+			dtlscred_t cred;
+			memset(&cred, 0, sizeof(cred));
+			cred.peer.name = host;
+			if (NET_DTLS_Create(collection, adr, &cred))
+			{
+				adr->prot = NP_DTLS;
+				return true;
+			}
+		}
+		adr->prot = NP_DTLS;
+#endif
+		return false;
 	case NP_WS:
 	case NP_WSS:
 	case NP_TLS:
@@ -7982,6 +8257,24 @@ qboolean NET_EnsureRoute(ftenet_connections_t *collection, char *routename, char
 		break;
 	}
 	return true;
+}
+void NET_TerminateRoute(ftenet_connections_t *collection, netadr_t *adr)
+{
+	switch(adr->prot)
+	{
+	case NP_DTLS:
+#ifdef HAVE_DTLS
+		NET_DTLS_Disconnect(collection, adr);
+#endif
+		break;
+	default:
+		break;
+	}
+
+#ifdef SUPPORT_ICE
+	if (adr->type == NA_ICE)
+		ICE_Terminate(adr);
+#endif
 }
 
 int NET_EnumerateAddresses(ftenet_connections_t *collection, struct ftenet_generic_connection_s **con, unsigned int *adrflags, netadr_t *addresses, const char **adrparams, int maxaddresses)
@@ -8035,7 +8328,7 @@ static enum addressscope_e NET_ClassifyAddressipv4(int ip, const char **outdesc)
 	else if ((ip&BigLong(0xffc00000)) == BigLong(0x64400000))	//100.64.x.x/10
 		scope = ASCOPE_LAN, desc = localtext("CGNAT");
 	else if (ip == BigLong(0x00000000))	//0.0.0.0/32
-		scope = ASCOPE_LAN, desc = "any";
+		scope = ASCOPE_HOST, desc = "any";
 
 	*outdesc = desc;
 	return scope;
@@ -8063,7 +8356,7 @@ enum addressscope_e NET_ClassifyAddress(netadr_t *adr, const char **outdesc)
 		else if (memcmp(adr->address.ip6, "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\1", 16) == 0)	//::1
 			scope = ASCOPE_HOST, desc = "localhost";
 		else if (memcmp(adr->address.ip6, "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", 16) == 0)	//::
-			scope = ASCOPE_NET, desc = "any";
+			scope = ASCOPE_HOST, desc = "any";
 		else if (memcmp(adr->address.ip6, "\0\0\0\0\0\0\0\0\0\0\xff\xff", 12) == 0)	//::ffff:x.y.z.w
 		{
 			scope = NET_ClassifyAddressipv4(*(int*)(adr->address.ip6+12), &desc);
@@ -8090,8 +8383,9 @@ void NET_PrintAddresses(ftenet_connections_t *collection)
 	int i;
 	char adrbuf[MAX_ADR_SIZE];
 	int m;
+	qboolean shown = false;
 	netadr_t	addr[64];
-	struct ftenet_generic_connection_s			*con[sizeof(addr)/sizeof(addr[0])];
+	struct ftenet_generic_connection_s			*con[sizeof(addr)/sizeof(addr[0])], *nc;
 	int			flags[sizeof(addr)/sizeof(addr[0])];
 	const char *params[sizeof(addr)/sizeof(addr[0])];
 	qboolean	warn = true;
@@ -8108,8 +8402,19 @@ void NET_PrintAddresses(ftenet_connections_t *collection)
 		if (addr[i].type != NA_INVALID)
 		{
 			enum addressscope_e scope = NET_ClassifyAddress(&addr[i], &desc);
+			if (i+1 < m)
+				nc = con[i+1];
+			else
+				nc = NULL;
+			if (nc != con[i])
+			{	//next is a different family.
+				if (!shown && (scope == ASCOPE_LINK || scope == ASCOPE_HOST))
+					scope = ASCOPE_LAN;	//force it visible.
+				shown = false;
+			}
 			if (developer.ival || scope >= ASCOPE_LAN)
 			{
+				shown = true;
 				warn = false;
 				if ((addr[i].prot == NP_RTC_TCP || addr[i].prot == NP_RTC_TLS) && params[i])
 				{
@@ -8165,7 +8470,7 @@ void NET_PrintConnectionsStatus(ftenet_connections_t *collection)
 
 //=============================================================================
 
-int TCP_OpenStream (netadr_t *remoteaddr)
+int TCP_OpenStream (netadr_t *remoteaddr, const char *remotename)
 {
 #ifndef HAVE_TCP
 	return (int)INVALID_SOCKET;
@@ -8226,21 +8531,21 @@ int TCP_OpenStream (netadr_t *remoteaddr)
 		int err = neterrno();
 		if (err != NET_EWOULDBLOCK && err != NET_EINPROGRESS)
 		{
-			char buf[256];
-			NET_AdrToString(buf, sizeof(buf), remoteaddr);
 			if (err == NET_EADDRNOTAVAIL)
 			{
 				if (remoteaddr->port == 0 && (remoteaddr->type == NA_IP || remoteaddr->type == NA_IPV6))
-					Con_Printf ("TCP_OpenStream: no port specified (%s)\n", buf);
+					Con_Printf ("TCP_OpenStream: no port specified (%s)\n", remotename);
 				else
-					Con_Printf ("TCP_OpenStream: invalid address trying to connect to %s\n", buf);
+					Con_Printf ("TCP_OpenStream: invalid address trying to connect to %s\n", remotename);
 			}
 			else if (err == NET_ECONNREFUSED)
-				Con_Printf ("TCP_OpenStream: connection refused (%s)\n", buf);
+				Con_Printf ("TCP_OpenStream: connection refused (%s)\n", remotename);
 			else if (err == NET_EACCES)
-				Con_Printf ("TCP_OpenStream: access denied: check firewall (%s)\n", buf);
+				Con_Printf ("TCP_OpenStream: access denied: check firewall (%s)\n", remotename);
+			else if (err == NET_ENETUNREACH)
+				Con_Printf ("TCP_OpenStream: unreachable (%s)\n", remotename);
 			else
-				Con_Printf ("TCP_OpenStream: connect: error %i (%s)\n", err, buf);
+				Con_Printf ("TCP_OpenStream: connect: error %i (%s)\n", err, remotename);
 			closesocket(newsocket);
 			return (int)INVALID_SOCKET;
 		}
@@ -8422,6 +8727,7 @@ void IPX_CloseSocket (int socket)
 
 #ifdef HAVE_EPOLL
 static qboolean stdin_ready;
+static qboolean stdin_epolling;
 static void StdIn_Now_Ready (struct epollctx_s *ctx, unsigned int events)
 {
 	stdin_ready = true;
@@ -8430,13 +8736,14 @@ qboolean NET_Sleep(float seconds, qboolean stdinissocket)
 {
 	int waitms;
 	struct epoll_event waitevents[256];
-	static int stdinadded = false;
 	int n, i;
-	if (stdinadded != stdinissocket)
+	if (epoll_fd < 0)
+		return false; // o.O
+	if (stdin_epolling != stdinissocket)
 	{
 		static epollctx_t stdinctx = {StdIn_Now_Ready};
 		struct epoll_event event = {EPOLLIN, {&stdinctx}};
-		stdinadded = stdinissocket;
+		stdin_epolling = stdinissocket;
 		if (stdinissocket)
 			epoll_ctl(epoll_fd, EPOLL_CTL_ADD, STDIN_FILENO, &event);
 		else
@@ -8453,7 +8760,7 @@ qboolean NET_Sleep(float seconds, qboolean stdinissocket)
 		case EINTR:
 			break;
 		default:
-			Con_Printf("EPoll error: %i\n", err);
+			Con_Printf("EPoll error: %s\n", strerror(err));
 			break;
 		}
 	}
@@ -8685,6 +8992,11 @@ qboolean NET_WasSpecialPacket(ftenet_connections_t *collection)
 		return true;
 #endif
 
+#if defined(HAVE_DTLS) && defined(HAVE_SERVER)
+	if (collection->islisten && NET_DTLS_CheckInbound(collection))
+		return true;
+#endif
+
 	return false;
 }
 
@@ -8779,7 +9091,7 @@ void NET_Init (void)
 #endif
 
 #ifdef SUPPORT_ICE
-	Cvar_Register(&net_ice_exchangeprivateips, "networking");
+	ICE_Init();
 #endif
 
 #if defined(HAVE_CLIENT)||defined(HAVE_SERVER)
@@ -8934,6 +9246,8 @@ cvar_t  sv_port_rtc = CVARCD("sv_port_rtc", "/", SV_PortRTC_Callback, "This spec
 void SVNET_RegisterCvars(void)
 {
 #ifdef FTE_TARGET_WEB
+	Cvar_Register (&net_ice_relayonly,	"networking");
+	Cvar_Register (&net_ice_servers,	"networking");
 	Cvar_Register (&sv_port_rtc,	"networking");
 //	sv_port_rtc.restriction = RESTRICT_MAX;
 #endif
@@ -8972,6 +9286,11 @@ void SVNET_RegisterCvars(void)
 #if defined(HAVE_DTLS) && defined(HAVE_SERVER)
 	Cvar_Register (&net_enable_dtls,			"networking");
 #endif
+#ifdef HAVE_DTLS
+	Cvar_Register (&dtls_psk_hint,			"networking");
+	Cvar_Register (&dtls_psk_user,			"networking");
+	Cvar_Register (&dtls_psk_key,			"networking");
+#endif
 }
 
 void NET_CloseServer(void)
@@ -8983,6 +9302,12 @@ void NET_CloseServer(void)
 void NET_InitServer(void)
 {
 	qboolean singleplayer = (sv.allocated_client_slots == 1) && !isDedicated;
+
+#ifdef HAVE_EPOLL
+	if (epoll_fd < 0)
+		epoll_fd = epoll_create1(EPOLL_CLOEXEC);
+#endif
+
 	if ((sv_listen_nq.value || sv_listen_dp.value || sv_listen_qw.value
 #ifdef QWOVERQ3
 		|| sv_listen_q3.ival
@@ -9066,8 +9391,10 @@ void	NET_Shutdown (void)
 
 
 #ifdef HAVE_EPOLL
-	close(epoll_fd);
+	if (epoll_fd >= 0)
+		close(epoll_fd);
 	epoll_fd = -1;
+	stdin_epolling = false;
 #endif
 
 
@@ -9088,7 +9415,7 @@ void	NET_Shutdown (void)
 #ifdef HAVE_EPOLL
 #include <poll.h>
 #endif
-static qboolean VFSTCP_IsStillConnecting(SOCKET sock)
+static int VFSTCP_IsStillConnecting(SOCKET sock)
 {
 #ifdef HAVE_EPOLL
 	//poll has no arbitrary fd limit. use it instead of select where possible.
@@ -9097,7 +9424,13 @@ static qboolean VFSTCP_IsStillConnecting(SOCKET sock)
 	ourfd[0].events = POLLOUT;
 	ourfd[0].revents = 0;
 	if (!poll(ourfd, countof(ourfd), 0))
+	{
+		if (ourfd[0].revents & POLLERR)
+			return VFS_ERROR_UNSPECIFIED;
+		if (ourfd[0].revents & POLLHUP)
+			return VFS_ERROR_REFUSED;
 		return true;	//no events yet.
+	}
 #else
 	//okay on windows where sock+1 is ignored, has issues when lots of other fds are already open (for any reason).
 	fd_set fdw, fdx;
@@ -9141,7 +9474,10 @@ int QDECL VFSTCP_ReadBytes (struct vfsfile_s *file, void *buffer, int bytestorea
 
 	if (tf->conpending)
 	{
-		if (VFSTCP_IsStillConnecting(tf->sock))
+		trying = VFSTCP_IsStillConnecting(tf->sock);
+		if (trying < 0)
+			tf->readaborted = trying;
+		else if (trying)
 			return 0;
 		tf->conpending = false;
 	}
@@ -9229,7 +9565,14 @@ int QDECL VFSTCP_WriteBytes (struct vfsfile_s *file, const void *buffer, int byt
 
 	if (tf->conpending)
 	{
-		if (VFSTCP_IsStillConnecting(tf->sock))
+		len = VFSTCP_IsStillConnecting(tf->sock);
+		if (len < 0)
+		{
+			tf->writeaborted = true;
+			tf->conpending = false;
+			return len;
+		}
+		if (len)
 			return 0;
 		tf->conpending = false;
 	}
@@ -9333,7 +9676,7 @@ vfsfile_t *FS_OpenTCP(const char *name, int defaultport, qboolean assumetls)
 		if (wanttls)
 			return NULL;	//don't even make the connection if we can't satisfy it.
 #endif
-		f = FS_WrapTCPSocket(TCP_OpenStream(&adr), true, name);
+		f = FS_WrapTCPSocket(TCP_OpenStream(&adr, name), true, name);
 #ifdef HAVE_SSL
 		if (f && wanttls)
 			f = FS_OpenSSL(name, f, false);

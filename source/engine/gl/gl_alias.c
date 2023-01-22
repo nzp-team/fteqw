@@ -85,6 +85,7 @@ void Mod_WipeSkin(skinid_t id, qboolean force)
 		return;
 	if (!force && --sk->refcount > 0)
 		return; //still in use.
+	registeredskins[id] = NULL;
 
 	for (i = 0; i < sk->nummappings; i++)
 	{
@@ -95,8 +96,7 @@ void Mod_WipeSkin(skinid_t id, qboolean force)
 		}
 		R_UnloadShader(sk->mappings[i].shader);
 	}
-	Z_Free(registeredskins[id]);
-	registeredskins[id] = NULL;
+	Z_Free(sk);
 }
 static void Mod_WipeAllSkins(qboolean final)
 {
@@ -275,6 +275,7 @@ skinid_t Mod_ReadSkinFile(const char *skinname, const char *skintext)
 	skin->q1upper = Q1UNSPECIFIED;
 #endif
 
+
 	while(skintext)
 	{
 		if (skin->nummappings == skin->maxmappings)
@@ -414,6 +415,7 @@ skinid_t Mod_ReadSkinFile(const char *skinname, const char *skintext)
 		if (!*skintext)
 			break;
 	}
+
 	registeredskins[id] = skin;
 
 #ifdef QWSKINS
@@ -1211,13 +1213,8 @@ static shader_t *GL_ChooseSkin(galiasinfo_t *inf, model_t *model, int surfnum, e
 		skins += e->skinnum;
 	else
 	{
-		if (developer.ival)
-		{
-			static int lastframe;
-			if (lastframe != r_framecount && lastframe != r_framecount-1)	//patented anti-spam technology!... actually, I wonder if it would actually be eligable for a patent.
-				Con_DPrintf("Skin number out of range (%u >= %u - %s)\n", e->skinnum, inf->numskins, model->name);
-			lastframe = r_framecount;
-		}
+		static float timer;
+		Con_ThrottlePrintf(&timer, 1, "Skin number out of range (%u >= %u - %s)\n", e->skinnum, inf->numskins, model->name);
 		if (!inf->numskins)
 			return NULL;
 	}
@@ -1388,7 +1385,7 @@ qboolean R_CalcModelLighting(entity_t *e, model_t *clmodel)
 		return e->light_known-1;
 	}
 
-	if (!(r_refdef.flags & RDF_NOWORLDMODEL))
+	if (!(r_refdef.flags & RDF_NOWORLDMODEL) && cl.worldmodel)
 	{
 		if (e->flags & RF_WEAPONMODEL)
 		{
@@ -1484,6 +1481,17 @@ qboolean R_CalcModelLighting(entity_t *e, model_t *clmodel)
 	}
 	else
 	{
+#ifdef HEXEN2
+		if ((e->drawflags & MLS_MASK) == MLS_ADDLIGHT)
+		{
+			ambientlight[0] += e->abslight;
+			ambientlight[1] += e->abslight;
+			ambientlight[2] += e->abslight;
+			shadelight[0] += e->abslight;
+			shadelight[1] += e->abslight;
+			shadelight[2] += e->abslight;
+		}
+#endif
 		if (!r_vertexdlights.ival && r_dynamic.ival > 0)
 		{
 			float *org = e->origin;
@@ -1556,10 +1564,10 @@ qboolean R_CalcModelLighting(entity_t *e, model_t *clmodel)
 			break;
 		}
 
-	//MORE HUGE HACKS! WHEN WILL THEY CEASE!
+		//MORE HUGE HACKS! WHEN WILL THEY CEASE!
 		// clamp lighting so it doesn't overbright as much
 		// ZOID: never allow players to go totally black
-		if (clmodel->engineflags & MDLF_PLAYER)
+		if (e->playerindex >= 0 && !(e->flags & (RF_WEAPONMODEL|RF_WEAPONMODELNOBOB|RF_DEPTHHACK)))
 		{
 			float fb = r_fullbrightSkins.value;
 			if (fb > cls.allow_fbskins)
@@ -2582,14 +2590,26 @@ static void R_Sprite_GenerateTrisoup(entity_t *e, int bemode)
 			lightmap = 1;
 	}
 
-	if ((e->flags & RF_WEAPONMODEL) && r_refdef.playerview->viewentity > 0)
+	if (e->flags & RF_WEAPONMODELNOBOB)
 	{
-		sprorigin[0] = r_refdef.playerview->vw_origin[0];
-		sprorigin[1] = r_refdef.playerview->vw_origin[1];
-		sprorigin[2] = r_refdef.playerview->vw_origin[2];
-		VectorMA(sprorigin, e->origin[0], r_refdef.playerview->vw_axis[0], sprorigin);
-		VectorMA(sprorigin, e->origin[1], r_refdef.playerview->vw_axis[1], sprorigin);
-		VectorMA(sprorigin, e->origin[2], r_refdef.playerview->vw_axis[2], sprorigin);
+		sprorigin[0] = r_refdef.weaponmatrix[3][0];
+		sprorigin[1] = r_refdef.weaponmatrix[3][1];
+		sprorigin[2] = r_refdef.weaponmatrix[3][2];
+		VectorMA(sprorigin, e->origin[0], r_refdef.weaponmatrix[0], sprorigin);
+		VectorMA(sprorigin, e->origin[1], r_refdef.weaponmatrix[1], sprorigin);
+		VectorMA(sprorigin, e->origin[2], r_refdef.weaponmatrix[2], sprorigin);
+//		VectorMA(sprorigin, 12, vpn, sprorigin);
+
+//		batchflags |= BEF_FORCENODEPTH;
+	}
+	else if (e->flags & RF_WEAPONMODEL)
+	{
+		sprorigin[0] = r_refdef.weaponmatrix_bob[3][0];
+		sprorigin[1] = r_refdef.weaponmatrix_bob[3][1];
+		sprorigin[2] = r_refdef.weaponmatrix_bob[3][2];
+		VectorMA(sprorigin, e->origin[0], r_refdef.weaponmatrix_bob[0], sprorigin);
+		VectorMA(sprorigin, e->origin[1], r_refdef.weaponmatrix_bob[1], sprorigin);
+		VectorMA(sprorigin, e->origin[2], r_refdef.weaponmatrix_bob[2], sprorigin);
 //		VectorMA(sprorigin, 12, vpn, sprorigin);
 
 //		batchflags |= BEF_FORCENODEPTH;
@@ -2643,6 +2663,7 @@ static void R_Sprite_GenerateTrisoup(entity_t *e, int bemode)
 		genframe.down = genframe.left = -1;
 		genframe.up = genframe.right = 1;
 		genframe.xmirror = false;
+		genframe.lit = false;
 		sprtype = SPR_VP_PARALLEL;
 		frame = &genframe;
 	}
@@ -2658,15 +2679,19 @@ static void R_Sprite_GenerateTrisoup(entity_t *e, int bemode)
 	{
 	case SPR_ORIENTED:
 		// bullet marks on walls
-		if ((e->flags & RF_WEAPONMODEL) && r_refdef.playerview->viewentity > 0)
-			Matrix3_Multiply(e->axis, r_refdef.playerview->vw_axis, spraxis);
+		if (e->flags & RF_WEAPONMODELNOBOB)
+			Matrix3_Multiply(e->axis, r_refdef.weaponmatrix, spraxis);
+		else if (e->flags & RF_WEAPONMODEL)
+			Matrix3_Multiply(e->axis, r_refdef.weaponmatrix_bob, spraxis);
 		else
 			memcpy(spraxis, e->axis, sizeof(spraxis));
 		break;
 	case SPR_ORIENTED_BACKFACE:
 		// bullet marks on walls, invisible to anyone in the direction that its facing...
-		if ((e->flags & RF_WEAPONMODEL) && r_refdef.playerview->viewentity > 0)
-			Matrix3_Multiply(e->axis, r_refdef.playerview->vw_axis, spraxis);
+		if (e->flags & RF_WEAPONMODELNOBOB)
+			Matrix3_Multiply(e->axis, r_refdef.weaponmatrix, spraxis);
+		else  if ((e->flags & RF_WEAPONMODEL) && r_refdef.playerview->viewentity > 0)
+			Matrix3_Multiply(e->axis, r_refdef.weaponmatrix_bob, spraxis);
 		else
 			memcpy(spraxis, e->axis, sizeof(spraxis));
 		VectorNegate(spraxis[1], spraxis[1]);
@@ -2738,6 +2763,12 @@ static void R_Sprite_GenerateTrisoup(entity_t *e, int bemode)
 	}
 
 	VectorScale(e->shaderRGBAf, lightmap, rgba[0]);
+	if (frame && frame->lit && !(r_refdef.flags & RDF_NOWORLDMODEL) && cl.worldmodel && cl.worldmodel->funcs.LightPointValues)
+	{
+		R_CalcModelLighting(e, e->model);
+		VectorMul(rgba[0], e->light_avg, rgba[0]);
+		VectorMA(rgba[0], 0.5, e->light_range, rgba[0]);
+	}
 	rgba[0][3] = e->shaderRGBAf[3];
 	Vector4Copy(rgba[0], rgba[1]);
 	Vector4Copy(rgba[0], rgba[2]);
@@ -2958,6 +2989,8 @@ void BE_GenModelBatches(batch_t **batches, const dlight_t *dl, unsigned int bemo
 			{
 			case mod_brush:
 				if (r_drawentities.ival == 2 && cls.allow_cheats)	//2 is considered a cheat, because it can be used as a wallhack (whereas mdls are not normally considered as occluding).
+					continue;
+				if (emodel->lightmaps.maxstyle >= cl_max_lightstyles)
 					continue;
 				Surf_GenBrushBatches(batches, ent);
 				break;

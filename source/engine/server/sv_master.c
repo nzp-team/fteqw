@@ -1001,13 +1001,16 @@ void SVM_GenChallenge(char *out, size_t outsize, netadr_t *foradr)
 	char digest[256];
 	void *ctx = alloca(hash_sha1.contextsize);
 
-	if (!*randumb)
+	while (!*randumb)
 	{
-		int i;
-		srand(time(NULL));	//lame
-		for (i = 0; i < sizeof(randumb)-1; i++)
-			while (!randumb[i])
-				randumb[i] = rand();
+		if (!Sys_RandomBytes(randumb, sizeof(randumb)))
+		{
+			int i;
+			srand(time(NULL));	//lame
+			for (i = 0; i < sizeof(randumb)-1; i++)
+				while (!randumb[i])
+					randumb[i] = rand();
+		}
 	}
 	NET_AdrToString(adr, sizeof(adr), foradr);
 
@@ -1084,6 +1087,7 @@ static void SVM_DiscoveredServer(netadr_t *a, const char *query)
 static void SVM_ProcessUDPPacket(void)
 {
 	char *s, *line;
+	int firstbit;
 
 	//we shouldn't be taking anything else...
 	if (net_from.prot != NP_DGRAM)
@@ -1117,11 +1121,12 @@ static void SVM_ProcessUDPPacket(void)
 
 	svm.time = Sys_DoubleTime();
 
-	MSG_BeginReading(msg_nullnetprim);
+	MSG_BeginReading(&net_message, msg_nullnetprim);
 	if (MSG_ReadLong() != -1 || msg_badread)
 	{	//go back to start...
-		MSG_BeginReading(msg_nullnetprim);
+		MSG_BeginReading(&net_message, msg_nullnetprim);
 	}
+	firstbit = net_message.currentbit;
 	line = MSG_ReadStringLine();
 	s = COM_Parse(line);
 	if (!strcmp(com_token, "getservers") || !strcmp(com_token, "getserversExt"))
@@ -1346,7 +1351,7 @@ static void SVM_ProcessUDPPacket(void)
 	else if (!strncmp(com_token, "getserversExtResponse", 21) && com_token[21] == '\\')
 	{	//response from a FTE-master request (lots of IPs from a 'slave' master that we're stealing)
 		netadr_t a = {NA_INVALID};
-		msg_readcount = 4+21;	//grr
+		net_message.currentbit = firstbit+(21*8);	//grr
 		msg_badread = false;
 		svm.total.heartbeats++;
 		for (;;)

@@ -326,10 +326,7 @@ void VARGS SV_ClientPrintf (client_t *cl, int level, const char *fmt, ...)
 	}
 #endif
 
-	if (cl->controller)
-		SV_PrintToClient(cl->controller, level, string);
-	else
-		SV_PrintToClient(cl, level, string);
+	SV_PrintToClient(cl, level, string);
 }
 
 void VARGS SV_ClientTPrintf (client_t *cl, int level, translation_t stringnum, ...)
@@ -368,44 +365,41 @@ SV_BroadcastPrintf
 Sends text to all active clients
 =================
 */
-void VARGS SV_BroadcastPrintf (int level, const char *fmt, ...)
+void SV_BroadcastPrint (unsigned int flags, int level, const char *string)
 {
-	va_list		argptr;
-	char		string[1024];
 	client_t	*cl;
 	int			i;
 
-	va_start (argptr,fmt);
-	vsnprintf (string,sizeof(string)-1, fmt,argptr);
-	va_end (argptr);
-
-	if(strlen(string) >= sizeof(string))
-		Sys_Error("SV_BroadcastPrintf: Buffer stomped\n");
-
-	//pretend to print on the server, but not to the client's console
-	Sys_Printf ("%s", string);	// print to the system console
-	Log_String(LOG_CONSOLE, string);	//dump into log
-
-	for (i=0, cl = svs.clients ; i<svs.allocated_client_slots ; i++, cl++)
+	if (!(flags & BPRINT_IGNORECONSOLE))
 	{
-		if (level < cl->messagelevel)
-			continue;
-		if (!cl->state)
-			continue;
-		if (cl->protocol == SCP_BAD)
-			continue;
+		//pretend to print on the server, but not to the client's console
+		Sys_Printf ("%s", string);	// print to the system console
+		Log_String(LOG_CONSOLE, string);	//dump into log
+	}
 
-		if (cl == sv.skipbprintclient)	//silence bprints about the player in ClientConnect. NQ completely wipes the buffer after clientconnect, which is what traditionally hides it.
-			continue;
+	if (!(flags & BPRINT_IGNORECLIENTS))
+	{
+		for (i=0, cl = svs.clients ; i<svs.allocated_client_slots ; i++, cl++)
+		{
+			if (level < cl->messagelevel)
+				continue;
+			if (!cl->state)
+				continue;
+			if (cl->protocol == SCP_BAD)
+				continue;
 
-		if (cl->controller)
-			continue;
+			if (cl == sv.skipbprintclient)	//silence bprints about the player in ClientConnect. NQ completely wipes the buffer after clientconnect, which is what traditionally hides it.
+				continue;
 
-		SV_PrintToClient(cl, level, string);
+			if (cl->controller)
+				continue;
+
+			SV_PrintToClient(cl, level, string);
+		}
 	}
 
 #ifdef MVD_RECORDING
-	if (sv.mvdrecording)
+	if (sv.mvdrecording && !(flags&BPRINT_IGNOREINDEMO))
 	{
 		sizebuf_t *msg = MVDWrite_Begin (dem_all, 0, strlen(string)+3);
 		MSG_WriteByte (msg, svc_print);
@@ -413,6 +407,81 @@ void VARGS SV_BroadcastPrintf (int level, const char *fmt, ...)
 		MSG_WriteString (msg, string);
 	}
 #endif
+}
+
+void SV_BroadcastPrint_QexLoc (unsigned int flags, int level, const char **arg, int args)
+{
+	client_t	*cl;
+	int			i;
+
+	char string[1024];
+
+	if (!(flags & BPRINT_IGNORECONSOLE))
+	{
+		//pretend to print on the server, but not to the client's console
+		TL_Reformat(com_language, string, sizeof(string), args, arg);
+		Sys_Printf ("%s", string);	// print to the system console
+		Log_String(LOG_CONSOLE, string);	//dump into log
+	}
+
+	if (!(flags & BPRINT_IGNORECLIENTS))
+	{
+		for (i=0, cl = svs.clients ; i<svs.allocated_client_slots ; i++, cl++)
+		{
+			if (level < cl->messagelevel)
+				continue;
+			if (!cl->state)
+				continue;
+			if (cl->protocol == SCP_BAD)
+				continue;
+
+			if (cl == sv.skipbprintclient)	//silence bprints about the player in ClientConnect. NQ completely wipes the buffer after clientconnect, which is what traditionally hides it.
+				continue;
+
+			if (cl->controller)
+				continue;
+
+			if (cl->qex)
+			{	//get the damn client to do it.
+				int size = 3;
+				for (i = 0; i < args; i++)
+					size += strlen(arg[i])+1;
+				ClientReliableWrite_Begin (cl, svcqex_locprint, size);
+				ClientReliableWrite_Short (cl, args);
+				for (i = 0; i < args; i++)
+					ClientReliableWrite_String (cl, arg[i]);
+			}
+			else
+			{
+				TL_Reformat(cl->language, string, sizeof(string), args, arg);
+				SV_PrintToClient(cl, level, string);
+			}
+		}
+	}
+
+#ifdef MVD_RECORDING
+	if (sv.mvdrecording && !(flags&BPRINT_IGNOREINDEMO))
+	{
+		sizebuf_t *msg;
+		TL_Reformat(com_language, string, sizeof(string), args, arg);
+		msg = MVDWrite_Begin (dem_all, 0, strlen(string)+3);
+		MSG_WriteByte (msg, svc_print);
+		MSG_WriteByte (msg, level);
+		MSG_WriteString (msg, string);
+	}
+#endif
+}
+
+void VARGS SV_BroadcastPrintf (int level, const char *fmt, ...)
+{
+	va_list		argptr;
+	char		string[1024];
+	va_start (argptr,fmt);
+	vsnprintf (string,sizeof(string)-1, fmt,argptr);
+	va_end (argptr);
+	if(strlen(string) >= sizeof(string))
+		Sys_Error("SV_BroadcastPrintf: Buffer stomped\n");
+	SV_BroadcastPrint(0, level, string);
 }
 
 
@@ -1192,11 +1261,8 @@ void SV_StartSound (int ent, vec3_t origin, float *velocity, int seenmask, int c
 		return;
 	}
 
-	if (attenuation < 0 || attenuation > 4)
-	{
-		Con_Printf ("SV_StartSound: attenuation = %f", attenuation);
-		return;
-	}
+	if (attenuation < 0 || attenuation >= 4)
+		Con_DPrintf ("SV_StartSound: attenuation = %f", attenuation);
 
 	if (channel < 0 || channel > 255)
 	{
@@ -1593,9 +1659,7 @@ void SV_WriteCenterPrint(client_t *cl, char *s)
 		ClientReliableWrite_Byte (cl, svc_centerprint);
 	}
 	else
-	{
 		ClientReliableWrite_Begin (cl, svc_centerprint, 2 + strlen(s));
-	}
 	ClientReliableWrite_String (cl, s);
 
 #ifdef MVD_RECORDING
@@ -1638,6 +1702,9 @@ void SV_WriteClientdataToMessage (client_t *client, sizebuf_t *msg)
 	for (split = client; split; split=split->controlled, pnum++)
 	{
 		SV_WriteEntityDataToMessage(split, msg, pnum);
+
+		if (split->prompt.active)
+			SV_Prompt_Resend(split);
 
 		if (split->centerprintstring && ! client->num_backbuf)
 		{
@@ -1691,6 +1758,11 @@ void SV_WriteClientdataToMessage (client_t *client, sizebuf_t *msg)
 
 		if (client->fteprotocolextensions2 & PEXT2_PREDINFO)
 			MSG_WriteShort(msg, client->last_sequence);
+		else if (client->qex && client->last_sequence)
+		{
+			MSG_WriteByte(msg, svcqex_seq);
+			MSG_WriteULEB128(msg, client->last_sequence);
+		}
 
 //		Con_Printf("%f\n", sv.world.physicstime);
 	}
@@ -1774,6 +1846,14 @@ void SV_WriteClientdataToMessage (client_t *client, sizebuf_t *msg)
 				bits |= FITZSU_WEAPONFRAME2;
 			if (ent->xv->alpha && ent->xv->alpha < 1)
 				bits |= FITZSU_WEAPONALPHA;
+
+			if (client->qex)
+			{
+				if (ent->v->flags)
+					bits |= QEX_SU_ENTFLAGS;
+				if (bits & (SU_VELOCITY1|SU_VELOCITY2|SU_VELOCITY3))
+					bits |= QEX_SU_FLOATCOORDS;
+			}
 		}
 	}
 
@@ -1813,8 +1893,10 @@ void SV_WriteClientdataToMessage (client_t *client, sizebuf_t *msg)
 //			Msg_WriteCoord(msg, ent->xv->punchvector);
 		if (bits & (SU_VELOCITY1<<i))
 		{
-			if (client->protocol == SCP_DARKPLACES6 || client->protocol == SCP_DARKPLACES7)
-				MSG_WriteCoord(msg, ent->v->velocity[i]);
+			if (client->qex && (bits & QEX_SU_ENTFLAGS))
+				MSG_WriteFloat(msg, ent->v->velocity[i]);
+			else if (client->protocol == SCP_DARKPLACES6 || client->protocol == SCP_DARKPLACES7)
+				MSG_WriteFloat(msg, ent->v->velocity[i]);
 			else
 				MSG_WriteChar (msg, bound(-128, ent->v->velocity[i]/16, 127));
 		}
@@ -1893,6 +1975,11 @@ void SV_WriteClientdataToMessage (client_t *client, sizebuf_t *msg)
 		if (bits & FITZSU_CELLS2)		MSG_WriteByte (msg, (int)ent->v->ammo_cells >> 8);
 		if (bits & FITZSU_WEAPONFRAME2)	MSG_WriteByte (msg, (int)ent->v->weaponframe >> 8);
 		if (bits & FITZSU_WEAPONALPHA)	MSG_WriteByte (msg, ent->xv->alpha*255);
+
+		if (client->qex)
+		{
+			if (bits & QEX_SU_ENTFLAGS)	MSG_WriteULEB128 (msg, ent->v->flags);
+		}
 	}
 #endif
 }
@@ -2887,6 +2974,17 @@ void SV_UpdateToReliableMessages (void)
 	float curspeed;
 	int curfrags;
 
+	static double pingtimer, lasttime;
+	double t = Sys_DoubleTime();
+	qboolean sendpings = false;
+	pingtimer -= (t-lasttime);
+	lasttime = t;
+	if (pingtimer < 0)
+	{	//update about once every 5 secs.
+		sendpings = true;
+		pingtimer = 5;
+	}
+
 // check for changes to be sent over the reliable streams to all clients
 	for (i=0, host_client = svs.clients ; i<svs.allocated_client_slots ; i++, host_client++)
 	{
@@ -3032,6 +3130,33 @@ void SV_UpdateToReliableMessages (void)
 				host_client->sendinfo = false;
 				SV_FullClientUpdate (host_client, NULL);
 			}
+
+			if (host_client->qex && sendpings)
+			{
+				sizebuf_t *m;
+				for (j=0, client = svs.clients ; j<svs.allocated_client_slots && j < host_client->max_net_clients; j++, client++)
+				{
+					if (client->state != cs_spawned)
+						continue;
+
+					m = ClientReliable_StartWrite(host_client, 64);
+					MSG_WriteByte(m, svcqex_updateping);
+					MSG_WriteByte(m, j);
+					MSG_WriteSignedQEX(m, SV_CalcPing(client, false));
+					ClientReliable_FinishWrite(host_client);
+
+					if (coop.ival)
+					{
+						m = ClientReliable_StartWrite(host_client, 64);
+						MSG_WriteByte(m, svcqex_updateplinfo);
+						MSG_WriteByte(m, j);
+						MSG_WriteSignedQEX(m, client->edict->v->health);
+						MSG_WriteSignedQEX(m, client->edict->v->armorvalue);
+						ClientReliable_FinishWrite(host_client);
+					}
+				}
+			}
+
 			if (host_client->old_frags != curfrags)
 			{
 				for (j=0, client = svs.clients ; j<sv.allocated_client_slots ; j++, client++)
@@ -3317,7 +3442,11 @@ void SV_SendClientMessages (void)
 				continue;
 			}
 
-			SVQ3_SendMessage(c);
+			if (c->lastoutgoingphysicstime == pt)
+				continue;
+			c->lastoutgoingphysicstime = pt;
+
+			q3->sv.SendMessage(c);
 		}
 		return;
 	}
@@ -3394,7 +3523,7 @@ void SV_SendClientMessages (void)
 #ifdef Q3SERVER
 		if (ISQ3CLIENT(c))
 		{	//q3 protocols bypass backbuffering and pretty much everything else
-			SVQ3_SendMessage(c);
+			q3->sv.SendMessage(c);
 			continue;
 		}
 #endif
@@ -3439,6 +3568,8 @@ void SV_SendClientMessages (void)
 			SZ_Clear (&c->netchan.message);
 			SZ_Clear (&c->datagram);
 			c->num_backbuf = 0;
+			if (c->edict)
+				c->edict->v->fixangle = FIXANGLE_NO;
 			continue;
 		}
 

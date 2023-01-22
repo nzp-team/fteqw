@@ -1025,7 +1025,7 @@ const char *presetexec[] =
 	"r_part_classic_expgrav 10;"	//gives a slightly more dynamic feel to them
 	"r_part_classic_opaque 0;"
 	"gl_load24bit 1;"
-	"r_replacemodels \"md3 md2\";"
+	"r_replacemodels \"md3 md2 md5mesh\";"
 	"r_coronas 1;"
 	"r_dynamic 1;"
 	"r_softwarebanding 0;"
@@ -1510,7 +1510,7 @@ qboolean M_PresetApply (union menuoption_s *op, struct emenu_s *menu, int key)
 {
 	fpsmenuinfo_t *info = (fpsmenuinfo_t*)menu->data;
 
-	if (key != K_ENTER && key != K_KP_ENTER && key != K_GP_START && key != K_MOUSE1)
+	if (key != K_ENTER && key != K_KP_ENTER && key != K_GP_DIAMOND_CONFIRM && key != K_MOUSE1 && key != K_TOUCHTAP)
 		return false;
 
 	Cbuf_AddText("fps_preset ", RESTRICT_LOCAL);
@@ -1663,14 +1663,18 @@ void M_Menu_Textures_f (void)
 {
 	static const char *texturefilternames[] =
 	{
-		"Nearest",
+		"Nearest (noise)",
+		"Nearest (harsh)",
+		"Nearest (soft)",
 		"Bilinear",
 		"Trilinear",
 		NULL
 	};
 	static const char *texturefiltervalues[] =
 	{
+		"GL_NEAREST",
 		"GL_NEAREST_MIPMAP_NEAREST",
+		"nll",
 		"GL_LINEAR_MIPMAP_NEAREST",
 		"GL_LINEAR_MIPMAP_LINEAR",
 		NULL
@@ -1767,7 +1771,7 @@ qboolean M_VideoApplyShadowLighting (union menuoption_s *op,struct emenu_s *menu
 {
 	lightingmenuinfo_t *info = (lightingmenuinfo_t*)menu->data;
 
-	if (key != K_ENTER && key != K_KP_ENTER && key != K_GP_START && key != K_MOUSE1)
+	if (key != K_ENTER && key != K_KP_ENTER && key != K_GP_DIAMOND_CONFIRM && key != K_MOUSE1 && key != K_TOUCHTAP)
 		return false;
 
 #ifdef RTLIGHTS
@@ -1948,6 +1952,9 @@ void M_Menu_Lighting_f (void)
 	static const char *lightmapformatopts[] =
 	{
 		"Automatic",
+		"4bit",
+		"5bit (5551)",
+		"5bit (565)",
 		"8bit (Greyscale)",
 		"8bit (Misaligned)",
 		"8bit (Aligned)",
@@ -1960,6 +1967,9 @@ void M_Menu_Lighting_f (void)
 	static const char *lightmapformatvalues[] =
 	{
 		"",
+		"rgba4",
+		"rgb5a1",
+		"rgb565",
 		"l8",
 		"rgb8",
 		"bgrx8",
@@ -1967,9 +1977,6 @@ void M_Menu_Lighting_f (void)
 		"rgb9e5",
 		"rgba16f",
 		"rgba32f",
-//		"rgb4",
-//		"rgb565",
-//		"rgba5551",
 		NULL
 	};
 
@@ -2223,7 +2230,7 @@ qboolean M_Apply_SP_Cheats (union menuoption_s *op,struct emenu_s *menu,int key)
 {
 	singleplayerinfo_t *info = menu->data;
 
-	if (key != K_ENTER && key != K_KP_ENTER && key != K_GP_START && key != K_MOUSE1)
+	if (key != K_ENTER && key != K_KP_ENTER && key != K_GP_DIAMOND_CONFIRM && key != K_MOUSE1 && key != K_TOUCHTAP)
 		return false;
 
 	switch(info->skillcombo->selectedoption)
@@ -2341,7 +2348,7 @@ qboolean M_Apply_SP_Cheats_Q2 (union menuoption_s *op,struct emenu_s *menu,int k
 {
 	singleplayerq2info_t *info = menu->data;
 
-	if (key != K_ENTER && key != K_KP_ENTER && key != K_GP_START && key != K_MOUSE1)
+	if (key != K_ENTER && key != K_KP_ENTER && key != K_GP_DIAMOND_CONFIRM && key != K_MOUSE1 && key != K_TOUCHTAP)
 		return false;
 
 	switch(info->skillcombo->selectedoption)
@@ -2547,7 +2554,7 @@ qboolean M_Apply_SP_Cheats_H2 (union menuoption_s *op,struct emenu_s *menu,int k
 {
 	singleplayerh2info_t *info = menu->data;
 
-	if (key != K_ENTER && key != K_KP_ENTER && key != K_GP_START && key != K_MOUSE1)
+	if (key != K_ENTER && key != K_KP_ENTER && key != K_GP_DIAMOND_CONFIRM && key != K_MOUSE1 && key != K_TOUCHTAP)
 		return false;
 
 #ifdef HAVE_SERVER
@@ -2803,7 +2810,7 @@ qboolean M_VideoApply (union menuoption_s *op, struct emenu_s *menu, int key)
 	extern cvar_t vid_desktopsettings;
 	videomenuinfo_t *info = (videomenuinfo_t*)menu->data;
 
-	if (key != K_ENTER && key != K_KP_ENTER && key != K_GP_START && key != K_MOUSE1)
+	if (key != K_ENTER && key != K_KP_ENTER && key != K_GP_DIAMOND_CONFIRM && key != K_MOUSE1 && key != K_TOUCHTAP)
 		return false;
 
 	// force update display options
@@ -3305,6 +3312,7 @@ typedef struct
 	int skingroup;
 	int framegroup;
 	int boneidx;
+	int bonebias;	//shift the bones menu down to ensure the boneidx stays visible
 	int textype;
 	double framechangetime;
 	double skinchangetime;
@@ -3317,7 +3325,7 @@ typedef struct
 	float dist;
 
 	char modelname[MAX_QPATH];
-	char forceshader[MAX_QPATH];
+	char skinname[MAX_QPATH];
 
 	char shaderfile[MAX_QPATH];
 	char *shadertext;
@@ -3365,7 +3373,7 @@ static unsigned int genhsv(float h_, float s, float v)
 
 #include "com_mesh.h"
 #ifdef SKELETALMODELS
-static void M_BoneDisplayLame(entity_t *e, int *y, int depth, int parent, int first, int last, int sel)
+static int M_BoneDisplayLame(modelview_t *mods, entity_t *e, int topy, int y, int depth, int parent, int first, int last)
 {
 	int i;
 	for (i = first; i < last;  i++)
@@ -3378,20 +3386,34 @@ static void M_BoneDisplayLame(entity_t *e, int *y, int depth, int parent, int fi
 			if (!bname)
 				bname = "NULL";
 			memset(result, 0, sizeof(result));
-			if (Mod_GetTag(e->model, i+1, &e->framestate, result))
+			if (i == mods->boneidx)
 			{
-#if 0//def _DEBUG
-				Draw_FunString(depth*16, *y, va("%s%i: %s (%g %g %g)", (i==sel)?"^1":"", i+1, bname, result[3], result[7], result[11]));
-#else
-				Draw_FunString(depth*16, *y, va("%s%i: %s", (i==sel)?"^1":"", i+1, bname));
-#endif
+				if (y < 0)
+					mods->bonebias+=8;
+				else if (topy+y+8 >= vid.height)
+					mods->bonebias-=8;
 			}
-			else
-				Draw_FunString(depth*16, *y, va("%s%i: %s (err)", (i==sel)?"^1":"", i, bname));
-			*y += 8;
-			M_BoneDisplayLame(e, y, depth+1, i+1, i+1, last, sel);
+			if (y >= 0 && y+8 < vid.height)
+			{
+				if (Mod_GetTag(e->model, i+1, &e->framestate, result))
+				{
+					if (developer.ival)
+					{
+						float scale = sqrt(result[0]*result[0] + result[1]*result[1] + result[2]*result[2]);
+						float scale2 = sqrt(result[0]*result[0] + result[4]*result[4] + result[8]*result[8]);
+						Draw_FunString(depth*16, topy+y, va("%s%i: %s (%g %g %g, %g %g)", (i==mods->boneidx)?"^1":"", i+1, bname, result[3], result[7], result[11], scale, scale2));
+					}
+					else
+						Draw_FunString(depth*16, topy+y, va("%s%i: %s", (i==mods->boneidx)?"^1":"", i+1, bname));
+				}
+				else
+					Draw_FunString(depth*16, topy+y, va("%s%i: %s (err)", (i==mods->boneidx)?"^1":"", i, bname));
+			}
+			y += 8;
+			y += M_BoneDisplayLame(mods, e, topy, y, depth+1, i+1, i+1, last)-y;
 		}
 	}
+	return y;
 }
 #endif
 
@@ -3528,7 +3550,18 @@ static void M_ModelViewerDraw(int x, int y, struct menucustom_s *c, struct emenu
 	ent.framestate.g[FS_REG].frame[0] = mods->framegroup;
 	ent.framestate.g[FS_REG].frametime[0] = ent.framestate.g[FS_REG].frametime[1] = realtime - mods->framechangetime;
 	ent.framestate.g[FS_REG].endbone = 0x7fffffff;
-	ent.customskin = Mod_RegisterSkinFile(va("%s_%i.skin", mods->modelname, ent.skinnum));
+	if (*mods->skinname)
+		ent.customskin = Mod_RegisterSkinFile(mods->skinname);	//explicit .skin file to use
+	else
+	{
+		ent.customskin = Mod_RegisterSkinFile(va("%s_%i.skin", mods->modelname, ent.skinnum));
+		if (ent.customskin == 0)
+		{
+			char haxxor[MAX_QPATH];
+			COM_StripExtension(mods->modelname, haxxor, sizeof(haxxor));
+			ent.customskin = Mod_RegisterSkinFile(va("%s_default.skin", haxxor));	//fall back to some default
+		}
+	}
 	skin = Mod_LookupSkin(ent.customskin);
 
 	ent.light_avg[0] = ent.light_avg[1] = ent.light_avg[2] = 0.66;
@@ -3799,9 +3832,13 @@ static void M_ModelViewerDraw(int x, int y, struct menucustom_s *c, struct emenu
 		int numframes = 0;
 		float duration = 0;
 		qboolean loop = false;
-		if (!Mod_FrameInfoForNum(ent.model, mods->surfaceidx, mods->framegroup, &fname, &numframes, &duration, &loop))
+		int act = -1;
+		if (!Mod_FrameInfoForNum(ent.model, mods->surfaceidx, mods->framegroup, &fname, &numframes, &duration, &loop, &act))
 			fname = "Unknown Sequence";
-		Draw_FunString(0, y, va("Frame%i: %s (%i poses, %f of %f secs, %s)", mods->framegroup, fname, numframes, ent.framestate.g[FS_REG].frametime[0], duration, loop?"looped":"unlooped"));
+		if (act != -1)
+			Draw_FunString(0, y, va("Frame%i[%i]: %s (%i poses, %f of %f secs, %s)", mods->framegroup, act, fname, numframes, ent.framestate.g[FS_REG].frametime[0], duration, loop?"looped":"unlooped"));
+		else
+			Draw_FunString(0, y, va("Frame%i: %s (%i poses, %f of %f secs, %s)", mods->framegroup, fname, numframes, ent.framestate.g[FS_REG].frametime[0], duration, loop?"looped":"unlooped"));
 		y+=8;
 	}
 
@@ -3909,9 +3946,13 @@ static void M_ModelViewerDraw(int x, int y, struct menucustom_s *c, struct emenu
 			int bonecount = Mod_GetNumBones(ent.model, true);
 			if (bonecount)
 			{
+				if (mods->boneidx >= bonecount)
+					mods->boneidx = bonecount-1;
+				if (mods->boneidx < 0)
+					mods->boneidx = 0;
 				Draw_FunString(0, y, va("Bones: "));
 				y+=8;
-				M_BoneDisplayLame(&ent, &y, 0, 0, 0, bonecount, mods->boneidx);
+				M_BoneDisplayLame(mods, &ent, y, mods->bonebias, 0, 0, 0, bonecount);
 			}
 			else
 				R_DrawTextField(r_refdef.grect.x, r_refdef.grect.y+y, r_refdef.grect.width, r_refdef.grect.height-y, "No bones in model", CON_WHITEMASK, CPRINT_TALIGN|CPRINT_LALIGN, font_default, fs);
@@ -4238,7 +4279,7 @@ void M_Menu_ModelViewer_f(void)
 	mv->yaw = 180;// + crandom()*45;
 	mv->dist = 150;
 	Q_strncpyz(mv->modelname, Cmd_Argv(1), sizeof(mv->modelname));
-	Q_strncpyz(mv->forceshader, Cmd_Argv(2), sizeof(mv->forceshader));
+	Q_strncpyz(mv->skinname, Cmd_Argv(2), sizeof(mv->skinname));
 
 	mv->framechangetime = realtime;
 	mv->skinchangetime = realtime;
@@ -4340,7 +4381,7 @@ static void Mods_Draw(int x, int y, struct menucustom_s *c, struct emenu_s *m)
 static qboolean Mods_Key(struct menucustom_s *c, struct emenu_s *m, int key, unsigned int unicode)
 {
 	int gameidx = c->dint;
-	if (key == K_MOUSE1 || key == K_ENTER || key == K_GP_A)
+	if (key == K_ENTER || key == K_KP_ENTER || key == K_GP_DIAMOND_CONFIRM || key == K_MOUSE1 || key == K_TOUCHTAP)
 	{
 		qboolean wasgameless = !*FS_GetGamedir(false);
 		if (!Mods_GetMod(c->dint))
@@ -4406,7 +4447,7 @@ static qboolean Installer_Go(menuoption_t *opt, menu_t *menu, int key)
 {
 	struct installermenudata *md = menu->data;
 	
-	if (key == K_MOUSE1 || key == K_ENTER || key == K_GP_START)
+	if (key == K_ENTER || key == K_KP_ENTER || key == K_GP_DIAMOND_CONFIRM || key == K_MOUSE1 || key == K_TOUCHTAP)
 	{
 		extern int startuppending;
 		vfsfile_t *f;

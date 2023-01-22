@@ -63,7 +63,7 @@
 #undef sha2_init
 #if SHA2==256
 	#define U64_C(n) (n##ull>>32)
-	#define U64_C_LOW(n) (u64)U64_C(n)
+	#define U64_C_LOW(n) (u64)(n##ull)
 	#define u64 quint32_t
 	#define ROUNDS 64
 	#define SHA2_CONTEXT SHA256_CONTEXT
@@ -132,6 +132,9 @@ static void sha2trunc_init (void *context)
   hd->count = 0;
 }
 
+#if defined(__GNUC__) && (__GNUC__==10)
+	__attribute__((optimize("no-tree-bit-ccp")))	//gcc (Debian 10.2.1-6) 10.2.1 20210110 miscompiles without this (eg: test webrtc compat with a browser)
+#endif
 fte_inlinestatic u64
 ROTR (u64 x, u64 n)
 {

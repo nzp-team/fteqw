@@ -23,6 +23,10 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #ifdef SQL
 #include "sv_sql.h"
 #endif
+#ifdef __GLIBC__
+#include <malloc.h>	//for malloc_trim
+#endif
+
 #ifndef CLIENTONLY
 extern int			total_loading_size, current_loading_size, loading_stage;
 char *T_GetString(int num);
@@ -607,6 +611,8 @@ void SV_UnspawnServer (void)	//terminate the running server.
 		Con_TPrintf("Server ended\n");
 		SV_FinalMessage("Server unspawned\n");
 
+		PR_PreShutdown();
+
 #ifdef SUBSERVERS
 		if (sv.state == ss_clustermode && svs.allocated_client_slots == 1)
 			MSV_Shutdown();
@@ -624,7 +630,8 @@ void SV_UnspawnServer (void)	//terminate the running server.
 		}
 		PR_Deinit();
 #ifdef Q3SERVER
-		SVQ3_ShutdownGame(false);
+		if (q3)
+			q3->sv.ShutdownGame(false);
 #endif
 #ifdef Q2SERVER
 		SVQ2_ShutdownGameProgs();
@@ -863,9 +870,6 @@ void SV_SpawnServer (const char *server, const char *startspot, qboolean noents,
 
 	Con_DPrintf ("SpawnServer: %s\n",server);
 
-	svs.spawncount++;		// any partially connected client will be restarted
-	sv.world.spawncount = svs.spawncount;
-
 #ifndef SERVERONLY
 	total_loading_size = 100;
 	current_loading_size = 0;
@@ -873,6 +877,11 @@ void SV_SpawnServer (const char *server, const char *startspot, qboolean noents,
 //	SCR_BeginLoadingPlaque();
 	SCR_ImageName(server);
 #endif
+
+	PR_PreShutdown();
+
+	svs.spawncount++;		// any partially connected client will be restarted
+	sv.world.spawncount = svs.spawncount;
 
 	sv.state = ss_dead;
 
@@ -923,14 +932,11 @@ void SV_SpawnServer (const char *server, const char *startspot, qboolean noents,
 //	if (0)
 //	cls.state = ca_connected;
 	Surf_PreNewMap();
-#ifdef VM_CG
-	CG_Stop();
-#endif
 #endif
 
 #ifdef Q3SERVER
 	if (svs.gametype == GT_QUAKE3)
-		SVQ3_ShutdownGame(false);	//botlib kinda mandates this. :(
+		q3->sv.ShutdownGame(false);	//botlib kinda mandates this. :(
 #endif
 
 	Mod_ClearAll ();
@@ -990,7 +996,6 @@ void SV_SpawnServer (const char *server, const char *startspot, qboolean noents,
 		CL_CheckServerInfo();
 #endif
 
-	sv.restarting = false;
 	sv.state = ss_loading;
 #if defined(Q2BSPS)
 	if (usecinematic)
@@ -1011,22 +1016,38 @@ void SV_SpawnServer (const char *server, const char *startspot, qboolean noents,
 	{
 		//.map is commented out because quite frankly, they're a bit annoying when the engine loads the gpled start.map when really you wanted to just play the damn game intead of take it apart.
 		//if you want to load a .map, just use 'map foo.map' instead.
-		char *exts[] = {"maps/%s", "maps/%s.bsp", "maps/%s.cm", "maps/%s.hmp", /*"maps/%s.map",*/ "maps/%s.bsp.gz", "maps/%s.bsp.xz", NULL};
+		char *exts[] = {"maps/%s", "maps/%s.bsp", "maps/%s.cm", "maps/%s.hmp", /*"maps/%s.map",*/ "maps/%s.bsp.gz", "maps/%s.bsp.xz", NULL}, *e;
 		int depth, bestdepth;
 		flocation_t loc;
 		time_t filetime;
-		Q_strncpyz (svs.name, server, sizeof(svs.name));
-		Q_snprintfz (sv.modelname, sizeof(sv.modelname), exts[0], server);
+		Q_snprintfz (sv.modelname, sizeof(sv.modelname), "%s", server);
 		bestdepth = COM_FDepthFile(sv.modelname, false);
-		for (i = 1; exts[i]; i++)
-		{
-			depth = COM_FDepthFile(va(exts[i], server), false);
-			if (depth < bestdepth)
+		if (bestdepth == FDEPTH_MISSING)
+		{	//not an exact name, scan the maps subdir.
+			for (i = 0; exts[i]; i++)
 			{
-				bestdepth = depth;
-				Q_snprintfz (sv.modelname, sizeof(sv.modelname), exts[i], server);
+				depth = COM_FDepthFile(va(exts[i], server), false);
+				if (depth < bestdepth)
+				{
+					bestdepth = depth;
+					Q_snprintfz (sv.modelname, sizeof(sv.modelname), exts[i], server);
+				}
 			}
 		}
+
+		if (!strncmp(sv.modelname, "maps/", 5))
+			Q_strncpyz (svs.name, sv.modelname+5, sizeof(svs.name));
+		else
+			Q_strncpyz (svs.name, sv.modelname, sizeof(svs.name));
+		e = (char*)COM_GetFileExtension(svs.name, NULL);
+		if (!strcmp(e, ".gz") || !strcmp(e, ".xz"))
+		{
+			*e = 0;
+			e = (char*)COM_GetFileExtension(svs.name, NULL);
+		}
+		if (!strcmp(e, ".bsp"))
+			*e = 0;
+
 		sv.world.worldmodel = Mod_ForName (sv.modelname, MLV_ERROR);
 
 		if (FS_FLocateFile(sv.modelname,FSLF_IFFOUND, &loc) && FS_GetLocMTime(&loc, &filetime))
@@ -1158,7 +1179,7 @@ MSV_OpenUserDatabase();
 		newgametype = GT_HALFLIFE;
 #endif
 #ifdef Q3SERVER
-	else if (SVQ3_InitGame(false))
+	else if (q3 && q3->sv.InitGame(&svs, &sv, false))
 		newgametype = GT_QUAKE3;
 #endif
 #ifdef Q2SERVER
@@ -1188,8 +1209,8 @@ MSV_OpenUserDatabase();
 			SVHL_ShutdownGame();
 #endif
 #ifdef Q3SERVER
-		if (newgametype != GT_QUAKE3)
-			SVQ3_ShutdownGame(false);
+		if (newgametype != GT_QUAKE3 && q3)
+			q3->sv.ShutdownGame(false);
 #endif
 #ifdef Q2SERVER
 		if (newgametype != GT_QUAKE2)	//we don't want the q2 stuff anymore.
@@ -1399,6 +1420,7 @@ MSV_OpenUserDatabase();
 #endif
 #ifdef Q3SERVER
 	case GT_QUAKE3:
+		Cvar_LockFromServer(&maxclients, maxclients.string);
 		SV_UpdateMaxPlayers(playerslots?playerslots:max(8,maxclients.ival));
 		break;
 #endif
@@ -1724,6 +1746,11 @@ MSV_OpenUserDatabase();
 			host_client = &svs.clients[i];
 			if (host_client->state == cs_connected && host_client->protocol == SCP_BAD)
 			{
+				if (svs.gametype == GT_Q1QVM)
+				{	//ktx expects its bots to drop for each map change.
+					SV_DropClient(host_client);
+					continue;
+				}
 				sv_player = host_client->edict;
 				SV_ExtractFromUserinfo(host_client, true);
 				SV_SpawnParmsToQC(host_client);
@@ -1760,7 +1787,7 @@ MSV_OpenUserDatabase();
 #ifdef Q3SERVER
 	if (svs.gametype == GT_QUAKE3)
 	{
-		SVQ3_NewMapConnects();
+		q3->sv.NewMapConnects();
 	}
 #endif
 
@@ -1778,6 +1805,16 @@ MSV_OpenUserDatabase();
 	sv.starttime = Sys_DoubleTime() - sv.time;
 #ifdef SAVEDGAMES
 	sv.autosave_time = sv.time + sv_autosave.value*60;
+#endif
+
+#ifdef HAVE_CLIENT
+	//there's a whole load of ugly debug crap there. make sure it stays hidden.
+	Con_ClearNotify();
+#endif
+
+#ifdef __GLIBC__
+	if (isDedicated)
+		malloc_trim(0);
 #endif
 }
 

@@ -135,6 +135,7 @@ extern int pr_teamfield;
 qboolean PR_QCChat(char *text, int say_type);
 
 void PR_ClientUserInfoChanged(char *name, char *oldivalue, char *newvalue);
+void PR_PreShutdown(void);
 void PR_LocalInfoChanged(char *name, char *oldivalue, char *newvalue);
 void PF_InitTempStrings(pubprogfuncs_t *inst);
 
@@ -149,7 +150,7 @@ qboolean PR_LoadQ1QVM(void);
 void Q1QVM_ClientConnect(struct client_s *cl);
 qboolean Q1QVM_GameConsoleCommand(void);
 qboolean Q1QVM_ClientSay(edict_t *player, qboolean team);
-qboolean Q1QVM_UserInfoChanged(edict_t *player);
+qboolean Q1QVM_UserInfoChanged(edict_t *player, qboolean after);
 void Q1QVM_PlayerPreThink(void);
 void Q1QVM_RunPlayerThink(void);
 void Q1QVM_PostThink(void);

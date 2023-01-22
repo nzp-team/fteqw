@@ -2877,12 +2877,18 @@ static void Mod_CompileTriangleNeighbours(model_t *loadmodel, galiasinfo_t *gali
 }
 #endif
 
+#define MAX_FRAMEINFO_POSES 256
+
 typedef struct
 {
+	unsigned int poses[MAX_FRAMEINFO_POSES];
+	qboolean posesarray;
 	unsigned int firstpose;
 	unsigned int posecount;
 	float fps;
 	qboolean loop;
+	int action;
+	int actionweight;
 	char name[MAX_QPATH];
 } frameinfo_t;
 static frameinfo_t *ParseFrameInfo(char *modelname, int *numgroups)
@@ -2893,7 +2899,7 @@ static frameinfo_t *ParseFrameInfo(char *modelname, int *numgroups)
 	char *file;
 	frameinfo_t *frames = NULL;
 	char fname[MAX_QPATH];
-	char tok[64];
+	char tok[MAX_FRAMEINFO_POSES * 4];
 	size_t fsize;
 	com_tokentype_t ttype;
 	Q_snprintfz(fname, sizeof(fname), "%s.framegroups", modelname);
@@ -2902,6 +2908,8 @@ static frameinfo_t *ParseFrameInfo(char *modelname, int *numgroups)
 		return NULL;
 	while(line && *line)
 	{
+		unsigned int posecount = 0;
+
 		eol = strchr(line, '\n');
 		if (eol)
 			*eol = 0;
@@ -2913,9 +2921,23 @@ static frameinfo_t *ParseFrameInfo(char *modelname, int *numgroups)
 		}
 
 		line = COM_ParseOut(line, tok, sizeof(tok));
-		frames[count].firstpose = atoi(tok);
+		// Check if firstpose is actually a sequence of comma separated poses, e.g.: 42,43,44,43,42
+		if (strchr(tok, ','))
+		{
+			char pose[64], *ptok = tok;
+
+			for (; posecount < MAX_FRAMEINFO_POSES; posecount++)
+			{
+				ptok = COM_ParseStringSetSep(ptok, ',', pose, sizeof(pose));
+				if (!pose[0])
+					break;
+				frames[count].poses[posecount] = atoi(pose);
+			}
+		}
+		frames[count].posesarray = !!posecount;
+		frames[count].firstpose = posecount ? 0 : atoi(tok);
 		line = COM_ParseOut(line, tok, sizeof(tok));
-		frames[count].posecount = atoi(tok);
+		frames[count].posecount = posecount ? posecount : atoi(tok);
 		line = COM_ParseOut(line, tok, sizeof(tok));
 		frames[count].fps = atof(tok);
 		line = COM_ParseOut(line, tok, sizeof(tok));
@@ -2923,11 +2945,25 @@ static frameinfo_t *ParseFrameInfo(char *modelname, int *numgroups)
 			frames[count].loop = true;
 		else
 			frames[count].loop = !!atoi(tok);
+
+		frames[count].action = -1;
+		frames[count].actionweight = 0;
+		Q_snprintfz(frames[count].name, sizeof(frames[count].name), "groupified_%d_anim", count);	//to match DP. frameforname cares.
+
 		line = COM_ParseType(line, tok, sizeof(tok), &ttype);
 		if (ttype != TTP_EOF)
+		{
 			Q_strncpyz(frames[count].name, tok, sizeof(frames[count].name));
-		else
-			Q_snprintfz(frames[count].name, sizeof(frames[count].name), "groupified_%d_anim", count);	//to match DP. frameforname cares.
+			line = COM_ParseType(line, tok, sizeof(tok), &ttype);
+		}
+		if (ttype != TTP_EOF)
+		{
+			frames[count].action = atoi(tok);
+			line = COM_ParseType(line, tok, sizeof(tok), &ttype);
+		}
+		if (ttype != TTP_EOF)
+			frames[count].actionweight = atoi(tok);
+
 		if (frames[count].posecount>0 && frames[count].fps)
 			count++;
 
@@ -3509,6 +3545,8 @@ static void *Q1MDL_LoadFrameGroup (galiasinfo_t *galias, dmdl_t *pq1inmodel, mod
 
 	for (i = 0; i < pq1inmodel->numframes; i++)
 	{
+		frame->action = -1;
+		frame->actionweight = 0;
 		switch(LittleLong(pframetype->type))
 		{
 		case ALIAS_SINGLE:
@@ -3965,7 +4003,10 @@ static void Mesh_HandleFramegroupsFile(model_t *mod, galiasinfo_t *galias)
 			o->poseofs = ZG_Malloc(&mod->memgroup, sizeof(*o->poseofs) * framegroups[a].posecount);
 			for (p = 0; p < framegroups[a].posecount; p++)
 			{
-				targpose = framegroups[a].firstpose + p;
+				if (framegroups[a].posesarray)
+					targpose = framegroups[a].poses[p];
+				else
+					targpose = framegroups[a].firstpose + p;
 				for (g = 0, frame = oldanims; g < oldnumanims; g++, frame++)
 				{
 					if (targpose < frame->numposes)
@@ -3979,6 +4020,8 @@ static void Mesh_HandleFramegroupsFile(model_t *mod, galiasinfo_t *galias)
 			o->numposes = p;
 			o->rate = framegroups[a].fps;
 			o->loop = framegroups[a].loop;
+			o->action = -1;
+			o->actionweight = 0;
 			Q_strncpyz(o->name, framegroups[a].name, sizeof(o->name));
 		}
 		galias->numanimations = numanims;
@@ -4981,6 +5024,8 @@ static qboolean QDECL Mod_LoadKingpinModel (model_t *mod, void *buffer, size_t f
 		{
 			poutframe->poseofs = pose;
 			poutframe->numposes = 1;
+			poutframe->action = -1;
+			poutframe->actionweight = 0;
 			galias->numanimations++;
 
 #ifndef SERVERONLY
@@ -5404,7 +5449,7 @@ qboolean Mod_GetTag(model_t *model, int tagnum, framestate_t *fstate, float *res
 	return false;
 }
 
-int Mod_TagNumForName(model_t *model, const char *name)
+int Mod_TagNumForName(model_t *model, const char *name, int firsttag)
 {
 #ifdef SKELORTAGS
 	int i;
@@ -5435,7 +5480,7 @@ int Mod_TagNumForName(model_t *model, const char *name)
 		{
 			galiasbone_t *b;
 			b = inf->ofsbones;
-			for (i = 0; i < inf->numbones; i++)
+			for (i = firsttag; i < inf->numbones; i++)
 			{
 				if (!strcmp(b[i].name, name))
 					return i+1;
@@ -5446,7 +5491,7 @@ int Mod_TagNumForName(model_t *model, const char *name)
 		if (inf->numtags)
 		{
 			md3tag_t *t = inf->ofstags;
-			for (i = 0; i < inf->numtags; i++)
+			for (i = firsttag; i < inf->numtags; i++)
 			{
 				if (!strcmp(t[i].name, name))
 					return i+1;
@@ -5485,6 +5530,47 @@ int Mod_FrameNumForName(model_t *model, int surfaceidx, const char *name)
 		{
 			if (!strcmp(group->name, name))
 				return i;
+		}
+	}
+	return -1;
+}
+
+int Mod_FrameNumForAction(model_t *model, int surfaceidx, int actionid)
+{
+	galiasanimation_t *group;
+	galiasinfo_t *inf;
+	int i;
+	float weight;
+
+	if (!model)
+		return -1;
+#ifdef HALFLIFEMODELS
+	if (model->type == mod_halflife)
+		return HLMDL_FrameForAction(model, actionid);
+#endif
+	if (model->type != mod_alias)
+		return -1;
+
+	inf = Mod_Extradata(model);
+
+	while(surfaceidx-->0 && inf)
+		inf = inf->nextsurf;
+	if (inf)
+	{
+		for (i = 0, weight = 0, group = inf->ofsanimations; i < inf->numanimations; i++, group++)
+		{
+			if (group->action == actionid)
+				weight += group->actionweight;
+		}
+		weight *= frandom();
+		for (i = 0, group = inf->ofsanimations; i < inf->numanimations; i++, group++)
+		{
+			if (group->action == actionid)
+			{
+				if (weight <= group->actionweight)
+					return i;
+				weight -= group->actionweight;
+			}
 		}
 	}
 	return -1;
@@ -5586,7 +5672,7 @@ const char *Mod_FrameNameForNum(model_t *model, int surfaceidx, int num)
 	return NULL;
 }
 
-qboolean Mod_FrameInfoForNum(model_t *model, int surfaceidx, int num, char **name, int *numframes, float *duration, qboolean *loop)
+qboolean Mod_FrameInfoForNum(model_t *model, int surfaceidx, int num, char **name, int *numframes, float *duration, qboolean *loop, int *act)
 {
 	galiasanimation_t *group;
 	galiasinfo_t *inf;
@@ -5610,16 +5696,18 @@ qboolean Mod_FrameInfoForNum(model_t *model, int surfaceidx, int num, char **nam
 		if (!inf || num >= inf->numanimations)
 			return false;
 		group = inf->ofsanimations;
+		group += num;
 
-		*name = group[num].name;
-		*numframes = group[num].numposes;
-		*loop = group[num].loop;
+		*name = group->name;
+		*numframes = group->numposes;
+		*loop = group->loop;
 		*duration = group->numposes/group->rate;
+		*act = group->action;
 		return true;
 	}
 #ifdef HALFLIFEMODELS
 	if (model->type == mod_halflife)
-		return HLMDL_FrameInfoForNum(model, surfaceidx, num, name, numframes, duration, loop);
+		return HLMDL_FrameInfoForNum(model, surfaceidx, num, name, numframes, duration, loop, act);
 #endif
 	return false;
 }
@@ -5766,7 +5854,8 @@ float Mod_GetFrameDuration(model_t *model, int surfaceidx, int frameno)
 		float duration;
 		char *name;
 		qboolean loop;
-		HLMDL_FrameInfoForNum(model, surfaceidx, frameno, &name, &unused, &duration, &loop);
+		int act;
+		HLMDL_FrameInfoForNum(model, surfaceidx, frameno, &name, &unused, &duration, &loop, &act);
 		return duration;
 	}
 #endif
@@ -6020,6 +6109,8 @@ static galiasinfo_t *Mod_LoadQ3ModelLod(model_t *mod, int *surfcount, void *buff
 				group->poseofs = pose + first;
 				group->loop = framegroups[i].loop;
 				group->events = NULL;
+				group->action = -1;
+				group->actionweight = 0;
 				group++;
 			}
 		}
@@ -6033,6 +6124,8 @@ static galiasinfo_t *Mod_LoadQ3ModelLod(model_t *mod, int *surfcount, void *buff
 				group->poseofs = pose + i;
 				group->loop = false;
 				group->events = NULL;
+				group->action = -1;
+				group->actionweight = 0;
 				group++;
 			}
 		}
@@ -6103,7 +6196,10 @@ static galiasinfo_t *Mod_LoadQ3ModelLod(model_t *mod, int *surfcount, void *buff
 				if (i >= LittleLong(surf->numShaders))
 					Q_strncpyz(frames->shadername, "", sizeof(frames->shadername));	//this shouldn't be possible
 				else
+				{
 					Q_strncpyz(frames->shadername, inshader->name, sizeof(frames->shadername));
+					Q_strncpyz(skin->name, inshader->name, sizeof(frames->shadername));
+				}
 
 				inshader++;
 				skin++;
@@ -6126,6 +6222,7 @@ static galiasinfo_t *Mod_LoadQ3ModelLod(model_t *mod, int *surfcount, void *buff
 
 	AddPointToBounds(min, mod->mins, mod->maxs);
 	AddPointToBounds(max, mod->mins, mod->maxs);
+	free(framegroups);
 	return first;
 }
 static qboolean QDECL Mod_LoadQ3Model(model_t *mod, void *buffer, size_t fsize)
@@ -6252,6 +6349,13 @@ static qboolean QDECL Mod_LoadQ3Model(model_t *mod, void *buffer, size_t fsize)
 	return true;
 }
 #endif
+
+
+
+
+
+
+
 
 
 
@@ -6523,6 +6627,8 @@ static qboolean QDECL Mod_LoadZymoticModel(model_t *mod, void *buffer, size_t fs
 		grp->loop = !(BigLong(inscene->flags) & ZYMSCENEFLAG_NOLOOP);
 		grp->numposes = BigLong(inscene->length);
 		grp->boneofs = matrix + BigLong(inscene->start)*12*root->numbones;
+		grp->action = -1;
+		grp->actionweight = 0;
 	}
 
 	if (inscene != (zymscene_t*)((char*)header + header->lump_scenes.start+header->lump_scenes.length))
@@ -7083,6 +7189,8 @@ static qboolean QDECL Mod_LoadPSKModel(model_t *mod, void *buffer, size_t fsize)
 				group[j].loop = frameinfo[j].loop;
 				group[j].rate = frameinfo[j].fps;
 				group[j].skeltype = SKEL_RELATIVE;
+				group[j].action = -1;
+				group[j].actionweight = 0;
 			}
 			num_animinfo = numgroups;
 		}
@@ -7107,6 +7215,8 @@ static qboolean QDECL Mod_LoadPSKModel(model_t *mod, void *buffer, size_t fsize)
 					group[iframe].loop = true;
 					group[iframe].rate = animinfo[j].fps;
 					group[iframe].skeltype = SKEL_RELATIVE;
+					group[iframe].action = -1;
+					group[iframe].actionweight = 0;
 					iframe++;
 				}
 			}
@@ -7126,6 +7236,8 @@ static qboolean QDECL Mod_LoadPSKModel(model_t *mod, void *buffer, size_t fsize)
 				group[i].loop = true;
 				group[i].rate = animinfo[i].fps;
 				group[i].skeltype = SKEL_RELATIVE;
+				group[i].action = -1;
+				group[i].actionweight = 0;
 			}
 		}
 		for (j = 0; j < num_animkeys; j += num_boneinfo)
@@ -7140,6 +7252,7 @@ static qboolean QDECL Mod_LoadPSKModel(model_t *mod, void *buffer, size_t fsize)
 					animmatrix + (j+i)*12);
 			}
 		}
+		free(frameinfo);
 	}
 	else
 	{
@@ -7153,6 +7266,8 @@ static qboolean QDECL Mod_LoadPSKModel(model_t *mod, void *buffer, size_t fsize)
 		group->loop = true;
 		group->rate = 10;
 		group->skeltype = SKEL_ABSOLUTE;
+		group->action = -1;
+		group->actionweight = 0;
 	}
 
 
@@ -7451,6 +7566,8 @@ static qboolean QDECL Mod_LoadDarkPlacesModel(model_t *mod, void *buffer, size_t
 			outgroups[i].numposes = 1;
 			outgroups[i].skeltype = SKEL_RELATIVE;
 			outgroups[i].boneofs = outposedata;
+			outgroups[i].action = -1;
+			outgroups[i].actionweight = 0;
 
 			inposedata = (float*)((char*)buffer + inframes[i].ofs_bonepositions);
 			for (j = 0; j < header->num_bones*12; j++)
@@ -7488,6 +7605,8 @@ static qboolean QDECL Mod_LoadDarkPlacesModel(model_t *mod, void *buffer, size_t
 			outgroups[i].loop = framegroups[i].loop;
 			outgroups[i].rate = framegroups[i].fps;
 			outgroups[i].events = NULL;
+			outgroups[i].action = -1;
+			outgroups[i].actionweight = 0;
 			Q_strncpyz(outgroups[i].name, framegroups[i].name, sizeof(outgroups[i].name));
 		}
 	}
@@ -7627,6 +7746,8 @@ static qboolean QDECL Mod_LoadDarkPlacesModel(model_t *mod, void *buffer, size_t
 	mod->numframes = root->numanimations;
 	mod->type = mod_alias;
 	mod->funcs.NativeTrace = Mod_Trace;
+
+	free(framegroups);
 
 	return true;
 }
@@ -8125,6 +8246,17 @@ static void Mod_CleanWeights(const char *modelname, size_t numverts, vec4_t *owe
 		Con_DPrintf(CON_ERROR"%s has invalid vertex weights. Verticies will probably be attached to the wrong bones\n", modelname);
 }
 
+struct iqmstrings_s
+{
+	const char *base;
+	size_t size;
+};
+static const char *Mod_IQMString(struct iqmstrings_s *strings, int offset)
+{
+	if (offset < 0 || offset >= strings->size)
+		return "<BADSTRING>";
+	return strings->base + offset;
+}
 static galiasinfo_t *Mod_ParseIQMMeshModel(model_t *mod, const char *buffer, size_t fsize)
 {
 	const struct iqmheader *h = (const struct iqmheader *)buffer;
@@ -8134,7 +8266,7 @@ static galiasinfo_t *Mod_ParseIQMMeshModel(model_t *mod, const char *buffer, siz
 	const struct iqmanim *anim;
 	const struct iqmext_fte_mesh *ftemesh;
 	const struct iqmext_fte_event *fteevents;
-	const char *strings;
+	struct iqmstrings_s strings;
 
 	const unsigned int *fteskincount;
 	const struct iqmext_fte_skin_meshskin *fteskins;
@@ -8270,7 +8402,8 @@ static galiasinfo_t *Mod_ParseIQMMeshModel(model_t *mod, const char *buffer, siz
 		return NULL;
 	}
 
-	strings = buffer + h->ofs_text;
+	strings.base = buffer + h->ofs_text;
+	strings.size = h->num_text;
 
 	/*try to completely disregard all the info the creator carefully added to their model...*/
 	numgroups = 0;
@@ -8286,11 +8419,14 @@ static galiasinfo_t *Mod_ParseIQMMeshModel(model_t *mod, const char *buffer, siz
 		anim = (const struct iqmanim*)(buffer + h->ofs_anims);
 		for (i = 0; i < numgroups; i++)
 		{
+			framegroups[i].posesarray = false;
 			framegroups[i].firstpose = LittleLong(anim[i].first_frame);
 			framegroups[i].posecount = LittleLong(anim[i].num_frames);
 			framegroups[i].fps = LittleFloat(anim[i].framerate);
 			framegroups[i].loop = !!(LittleLong(anim[i].flags) & IQM_LOOP);
-			Q_strncpyz(framegroups[i].name, strings+anim[i].name, sizeof(fgroup[i].name));
+			framegroups[i].action = -1;
+			framegroups[i].actionweight = 0;
+			Q_strncpyz(framegroups[i].name, Mod_IQMString(&strings, anim[i].name), sizeof(fgroup[i].name));
 		}
 	}
 	else
@@ -8299,10 +8435,13 @@ static galiasinfo_t *Mod_ParseIQMMeshModel(model_t *mod, const char *buffer, siz
 	{	/*base frame only*/
 		numgroups = 1;
 		framegroups = malloc(sizeof(*framegroups));
+		framegroups->posesarray = false;
 		framegroups->firstpose = -1;
 		framegroups->posecount = 1;
 		framegroups->fps = 10;
 		framegroups->loop = 1;
+		framegroups->action = -1;
+		framegroups->actionweight = 0;
 		strcpy(framegroups->name, "base");
 	}
 
@@ -8370,7 +8509,7 @@ static galiasinfo_t *Mod_ParseIQMMeshModel(model_t *mod, const char *buffer, siz
 		//joint info (mesh)
 		for (i = 0; i < h->num_joints; i++)
 		{
-			Q_strncpyz(bones[i].name, strings+ijoint[i].name, sizeof(bones[i].name));
+			Q_strncpyz(bones[i].name, Mod_IQMString(&strings, ijoint[i].name), sizeof(bones[i].name));
 			bones[i].parent = ijoint[i].parent;
 
 			GenMatrixPosQuat3Scale(ijoint[i].translate, ijoint[i].rotate, ijoint[i].scale, mat);
@@ -8402,6 +8541,9 @@ static galiasinfo_t *Mod_ParseIQMMeshModel(model_t *mod, const char *buffer, siz
 				GenMatrixPosQuat3Scale(pos, quat, scale, &opose[(i*h->num_poses+j)*12]);
 			}
 		}
+
+		if (framedata != (const unsigned short*)(buffer + h->ofs_frames) + h->num_framechannels*h->num_frames)
+			Con_Printf("%s: Incorrect number of framechannels found\n", mod->name);
 	}
 	else
 	{
@@ -8411,21 +8553,37 @@ static galiasinfo_t *Mod_ParseIQMMeshModel(model_t *mod, const char *buffer, siz
 		vec4_t quat;
 		vec3_t scale;
 		float mat[12];
+		int fc;
 
 		//joint info (mesh)
 		for (i = 0; i < h->num_joints; i++)
 		{
-			Q_strncpyz(bones[i].name, strings+ijoint[i].name, sizeof(bones[i].name));
-			bones[i].parent = ijoint[i].parent;
+			Q_strncpyz(bones[i].name, Mod_IQMString(&strings, ijoint[i].name), sizeof(bones[i].name));
 
 			GenMatrixPosQuat4Scale(ijoint[i].translate, ijoint[i].rotate, ijoint[i].scale, mat);
 
-			if (ijoint[i].parent >= 0)
+			if (ijoint[i].parent >= 0 && ijoint[i].parent < i)
+			{
+				bones[i].parent = ijoint[i].parent;
 				Matrix3x4_Multiply(mat, &oposebase[ijoint[i].parent*12], &oposebase[i*12]);
+			}
 			else
+			{
 				memcpy(&oposebase[i*12], mat, sizeof(mat));
+				bones[i].parent = -1;
+			}
 			Matrix3x4_Invert_Simple(&oposebase[i*12], bones[i].inverse);
 		}
+
+		for (fc = 0, j = 0, p = ipose; j < h->num_poses; j++, p++)
+		{
+			for (i = 0; i < 10; i++)
+				if (p->mask & (1<<i))
+					fc++;
+		}
+		if (fc != h->num_framechannels)
+			Con_Printf("%s: Incorrect number of framechannels found (%i, expected %i)\n", mod->name, h->num_framechannels, fc);
+		else
 
 		//pose info (anim)
 		for (i = 0; i < h->num_frames; i++)
@@ -8473,6 +8631,9 @@ static galiasinfo_t *Mod_ParseIQMMeshModel(model_t *mod, const char *buffer, siz
 	
 		if (fgroup[i].rate <= 0)
 			fgroup[i].rate = 10;
+
+		fgroup[i].action = framegroups[i].action;
+		fgroup[i].actionweight = framegroups[i].actionweight;
 	}
 	free(framegroups);
 
@@ -8492,8 +8653,8 @@ static galiasinfo_t *Mod_ParseIQMMeshModel(model_t *mod, const char *buffer, siz
 		{
 			oevent->timestamp = fteevents->timestamp;
 			oevent->code = fteevents->evcode;
-			oevent->data = ZG_Malloc(&mod->memgroup, strlen(strings+fteevents->evdata_str)+1);
-			strcpy(oevent->data, strings+fteevents->evdata_str);
+			oevent->data = ZG_Malloc(&mod->memgroup, strlen(Mod_IQMString(&strings, fteevents->evdata_str))+1);
+			strcpy(oevent->data, Mod_IQMString(&strings, fteevents->evdata_str));
 			link = &fgroup[fteevents->anim].events;
 			while (*link && (*link)->timestamp <= oevent->timestamp)
 				link = &(*link)->next;
@@ -8541,7 +8702,7 @@ static galiasinfo_t *Mod_ParseIQMMeshModel(model_t *mod, const char *buffer, siz
 	{
 		if (h->num_meshes)
 		{
-			Mod_DefaultMesh(&gai[i], strings+mesh[i].name, i);
+			Mod_DefaultMesh(&gai[i], Mod_IQMString(&strings, mesh[i].name), i);
 			firstvert = LittleLong(mesh[i].first_vertex);
 			numverts = LittleLong(mesh[i].num_vertexes);
 			numtris = LittleLong(mesh[i].num_triangles);
@@ -8604,10 +8765,10 @@ static galiasinfo_t *Mod_ParseIQMMeshModel(model_t *mod, const char *buffer, siz
 					skin->frame = ZG_Malloc(&mod->memgroup, sizeof(*skin->frame)*skin->numframes);
 					for (t = 0; t < skin->numframes; t++, sf++)
 					{
-						Q_strncpyz(skin->frame[t].shadername, strings+sf->material_idx, sizeof(skin->frame[t].shadername));
+						Q_strncpyz(skin->frame[t].shadername, Mod_IQMString(&strings, sf->material_idx), sizeof(skin->frame[t].shadername));
 						if (sf->shadertext_idx && sf->shadertext_idx<h->num_text)
 						{
-							const char *stxt = strings+sf->shadertext_idx;
+							const char *stxt = Mod_IQMString(&strings, sf->shadertext_idx);
 							skin->frame[t].defaultshader = strcpy(ZG_Malloc(&mod->memgroup, strlen(stxt)+1), stxt);
 						}
 					}
@@ -8618,7 +8779,7 @@ static galiasinfo_t *Mod_ParseIQMMeshModel(model_t *mod, const char *buffer, siz
 					skin->numframes = 1;	//non-sequenced skins.
 
 					skin->frame = skinframe = ZG_Malloc(&mod->memgroup, sizeof(*skin->frame)*skin->numframes);
-					Q_strncpyz(skinframe->shadername, strings+mesh[i].material, sizeof(skinframe->shadername));
+					Q_strncpyz(skinframe->shadername, Mod_IQMString(&strings, mesh[i].material), sizeof(skinframe->shadername));
 				}
 			}
 			gai[i].numskins = skin-gai[i].ofsskins;
@@ -8643,7 +8804,7 @@ static galiasinfo_t *Mod_ParseIQMMeshModel(model_t *mod, const char *buffer, siz
 		}
 		gai[i].numindexes = idx - gai[i].ofs_indexes;
 		if (gai[i].numindexes != numtris*3)
-			Con_Printf("%s(%s|%s): Dropped %u of %u triangles due to index size limit\n", mod->name, gai[i].surfacename,strings+mesh[i].material, numtris-gai[i].numindexes/3, numtris);
+			Con_Printf("%s(%s|%s): Dropped %u of %u triangles due to index size limit\n", mod->name, gai[i].surfacename,Mod_IQMString(&strings, mesh[i].material), numtris-gai[i].numindexes/3, numtris);
 
 		/*verts*/
 		gai[i].shares_verts = i;
@@ -9203,7 +9364,27 @@ static galiasinfo_t *Mod_ParseMD5MeshModel(model_t *mod, char *buffer, char *mod
 								frames = ZG_Malloc(&mod->memgroup, sizeof(*frames)*skin->numframes);
 								skin->frame = frames;
 								for (vnum = 0; vnum < skin->numframes; vnum++)
+								{
+									size_t fsize=0, w, h;
+									qbyte *img;
 									Q_snprintfz(frames[vnum].shadername, sizeof(frames[vnum].shadername), "%s_%02d_%02d.lmp", texbase, num, vnum);
+
+									//extra stuff to make sure we can colourmap the 8bit data without needing _upper etc images.
+									img = FS_LoadMallocGroupFile(&mod->memgroup, frames[vnum].shadername, &fsize, false);
+									if (img && fsize >= 8)
+									{
+										w = (img[0]<<0)|(img[1]<<8)|(img[2]<<16)|(img[3]<<24);
+										h = (img[4]<<0)|(img[5]<<8)|(img[6]<<16)|(img[7]<<24);
+										if (fsize == 8+w*h && (vnum == 0 || (w==skin->skinwidth&&h==skin->skinheight)))
+										{
+											skin->skinwidth = w;
+											skin->skinheight = h;
+											frames[vnum].texels = img+8;
+										}
+										else
+											ZG_Free(&mod->memgroup, img);	//something's screwy, don't leave the wasted memory lying around.
+									}
+								}
 							}
 						}
 					}
@@ -10021,6 +10202,8 @@ void Alias_Register(void)
 	Mod_RegisterModelFormatText(NULL, "MD5 Mesh/Anim (md5mesh)",			"MD5Version",							Mod_LoadMD5MeshModel);
 	Mod_RegisterModelFormatText(NULL, "External Anim",						"EXTERNALANIM",							Mod_LoadCompositeAnim);
 #endif
+
+
 #ifdef MODELFMT_OBJ
 	Mod_RegisterModelFormatText(NULL, "Wavefront Object (obj)",				".obj",									Mod_LoadObjModel);
 	Cvar_Register(&mod_obj_orientation, NULL);

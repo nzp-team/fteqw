@@ -74,7 +74,7 @@ void FS_AddHashedPackage(searchpath_t **oldpaths, const char *parent_pure, const
 void PM_LoadPackages(searchpath_t **oldpaths, const char *parent_pure, const char *parent_logical, searchpath_t *search, unsigned int loadstuff, int minpri, int maxpri);
 void *PM_GeneratePackageFromMeta(vfsfile_t *file, char *fname, size_t fnamesize, enum fs_relative *fsroot);
 void PM_FileInstalled(const char *filename, enum fs_relative fsroot, void *metainfo, qboolean enable); //we finished installing a file via some other mechanism (drag+drop or from server. insert it into the updates menu.
-void PM_EnumeratePlugins(void (*callback)(const char *name));
+void PM_EnumeratePlugins(void (*callback)(const char *name, qboolean blocked));
 struct xcommandargcompletioncb_s;
 void PM_EnumerateMaps(const char *partial, struct xcommandargcompletioncb_s *ctx);
 void PM_LoadMap(const char *package, const char *map);
@@ -105,15 +105,17 @@ struct modlist_s
 };
 struct modlist_s *Mods_GetMod(size_t diridx);
 
-#define SPF_REFERENCED		1	//something has been loaded from this path. should filter out client references...
-#define SPF_COPYPROTECTED	2	//downloads are not allowed fom here.
-#define SPF_TEMPORARY		4	//a map-specific path, purged at map change.
-#define SPF_EXPLICIT		8	//a root gamedir (bumps depth on gamedir depth checks). 
-#define SPF_UNTRUSTED		16	//has been downloaded from somewhere. configs inside it should never be execed with local access rights.
-#define SPF_PRIVATE			32	//private to the client. ie: the fte dir. name is not networked.
-#define SPF_WRITABLE		64	//safe to write here. lots of weird rules etc.
-#define SPF_BASEPATH		128	//part of the basegames, and not the mod gamedir(s).
-#define SPF_QSHACK			256	//part of the basegames, and not the mod gamedir(s).
+#define SPF_REFERENCED		1		//something has been loaded from this path. should filter out client references...
+#define SPF_COPYPROTECTED	2		//downloads are not allowed fom here.
+#define SPF_TEMPORARY		4		//a map-specific path, purged at map change.
+#define SPF_EXPLICIT		8		//a root gamedir (bumps depth on gamedir depth checks).
+#define SPF_UNTRUSTED		16		//has been downloaded from somewhere. configs inside it should never be execed with local access rights.
+#define SPF_PRIVATE			32		//private to the client. ie: the fte dir. name is not networked.
+#define SPF_WRITABLE		64		//safe to write here. lots of weird rules etc.
+#define SPF_BASEPATH		128		//part of the basegames, and not the mod gamedir(s).
+#define SPF_QSHACK			256		//a bit of a hack, allows scanning for $rootdir/quakespasm.pak
+#define SPF_SERVER			512		//a package that was loaded to match the server's packages
+#define SPF_ISDIR			1024	//is an actual directory (not itself a package).
 qboolean FS_LoadPackageFromFile(vfsfile_t *vfs, char *pname, char *localname, int *crc, unsigned int flags);
 
 #ifdef AVAIL_XZDEC

@@ -207,6 +207,10 @@ extern "C" {
 #endif
 #endif
 
+#if defined(Q3CLIENT) || defined(Q3SERVER)
+#include "q3api.h"
+#endif
+
 #ifdef __cplusplus
 	#define q_max(a,b) ((a) > (b) ? (a) : (b))
 	#define q_min(a,b) ((a) < (b) ? (a) : (b))
@@ -323,7 +327,7 @@ extern	cvar_t		pkg_autoupdate;
 #endif
 extern	cvar_t		com_protocolname;
 extern	cvar_t		com_protocolversion;
-extern	cvar_t		com_nogamedirnativecode;
+extern	cvar_t		com_gamedirnativecode;
 extern	cvar_t		com_parseutf8;
 #ifdef HAVE_LEGACY
 extern	cvar_t		scr_usekfont;

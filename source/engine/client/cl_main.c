@@ -35,6 +35,7 @@ void QDECL Name_Callback(struct cvar_s *var, char *oldvalue);
 #else
 #define Name_Callback NULL
 #endif
+void GnuTLS_Shutdown(void);
 
 static void CL_ForceStopDownload (qboolean finish);
 
@@ -56,21 +57,23 @@ cvar_t	cl_timeout = CVAR("cl_timeout", "60");
 
 cvar_t	cl_shownet = CVARD("cl_shownet","0", "Debugging var. 0 shows nothing. 1 shows incoming packet sizes. 2 shows individual messages. 3 shows entities too.");	// can be 0, 1, or 2
 
-cvar_t	cl_disconnectreason = CVARAFD("_cl_disconnectreason", "", "com_errorMessage", CVAR_NOSAVE, "This cvar contains the reason for the last disconnection, so that mod menus can know why things failed.");
+cvar_t	cl_disconnectreason = CVARAFD("_cl_disconnectreason", "", /*q3*/"com_errorMessage", CVAR_NOSAVE, "This cvar contains the reason for the last disconnection, so that mod menus can know why things failed.");
 
 cvar_t	cl_pure		= CVARD("cl_pure", "0", "0=standard quake rules.\n1=clients should prefer files within packages present on the server.\n2=clients should use *only* files within packages present on the server.\nDue to quake 1.01/1.06 differences, a setting of 2 is only reliable with total conversions.\nIf sv_pure is set, the client will prefer the highest value set.");
 cvar_t	cl_sbar		= CVARFC("cl_sbar", "0", CVAR_ARCHIVE, CL_Sbar_Callback);
 cvar_t	cl_hudswap	= CVARF("cl_hudswap", "0", CVAR_ARCHIVE);
 cvar_t	cl_maxfps	= CVARFD("cl_maxfps", "250", CVAR_ARCHIVE, "Sets the maximum allowed framerate. If you're using vsync or want to uncap framerates entirely then you should probably set this to 0. Set cl_yieldcpu 0 if you're trying to benchmark.");
-cvar_t	cl_idlefps	= CVARAFD("cl_idlefps", "60", "cl_maxidlefps"/*dp*/, CVAR_ARCHIVE, "This is the maximum framerate to attain while idle/paused/unfocused.");
+static cvar_t	cl_maxfps_slop	= CVARFD("cl_maxfps_slop", "3", CVAR_ARCHIVE, "If a frame is delayed (eg because of poor system timer precision), this is how much sooner to pretend the frame happened (in milliseconds). If it is set too low then the average framerate will drop below the target, while too high may result in excessively fast frames.");
+static cvar_t	cl_idlefps	= CVARAFD("cl_idlefps", "60", "cl_maxidlefps"/*dp*/, CVAR_ARCHIVE, "This is the maximum framerate to attain while idle/paused/unfocused.");
 cvar_t	cl_yieldcpu = CVARFD("cl_yieldcpu", "1", CVAR_ARCHIVE, "Attempt to yield between frames. This can resolve issues with certain drivers and background software, but can mean less consistant frame times. Will reduce power consumption/heat generation so should be set on laptops or similar (over-hot/battery powered) devices.");
 cvar_t	cl_nopext	= CVARF("cl_nopext", "0", CVAR_ARCHIVE);
-cvar_t	cl_pext_mask = CVAR("cl_pext_mask", "0xffffffff");
+static cvar_t	cl_pext_mask = CVAR("cl_pext_mask", "0xffffffff");
 cvar_t	cl_nolerp	= CVARD("cl_nolerp", "0", "Disables interpolation. If set, missiles/monsters will be show exactly what was last received, which will be jerky. Does not affect players. A value of 2 means 'interpolate only in single-player/coop'.");
 #ifdef NQPROT
 cvar_t	cl_nolerp_netquake = CVARD("cl_nolerp_netquake", "0", "Disables interpolation when connected to an NQ server. Does affect players, even the local player. You probably don't want to set this.");
-cvar_t	cl_fullpitch_nq = CVARAFD("cl_fullpitch", "0", "pq_fullpitch", CVAR_SEMICHEAT, "When set, attempts to unlimit the default view pitch. Note that some servers will screw over your angles if you use this, resulting in terrible gameplay, while some may merely clamp your angle serverside. This is also considered a cheat in quakeworld, ^1so this will not function there^7. For the equivelent in quakeworld, use serverinfo minpitch+maxpitch instead, which applies to all players fairly.");
+static cvar_t	cl_fullpitch_nq = CVARAFD("cl_fullpitch", "0", "pq_fullpitch", CVAR_SEMICHEAT, "When set, attempts to unlimit the default view pitch. Note that some servers will screw over your angles if you use this, resulting in terrible gameplay, while some may merely clamp your angle serverside. This is also considered a cheat in quakeworld, ^1so this will not function there^7. For the equivelent in quakeworld, use serverinfo minpitch+maxpitch instead, which applies to all players fairly.");
 #endif
+static cvar_t	cl_forcevrui = CVARD("cl_forcevrui", "0", "Force the use of VR UIs, even with no VR headset active.");
 cvar_t	*hud_tracking_show;
 cvar_t	*hud_miniscores_show;
 extern cvar_t net_compress;
@@ -93,8 +96,8 @@ cvar_t	cfg_save_name = CVARFD("cfg_save_name", "fte", CVAR_ARCHIVE|CVAR_NOTFROMS
 
 cvar_t	cl_splitscreen = CVARD("cl_splitscreen", "0", "Enables splitscreen support. See also: allow_splitscreen, in_rawinput*, the \"p\" command.");
 
-cvar_t	lookspring = CVARF("lookspring","0", CVAR_ARCHIVE);
-cvar_t	lookstrafe = CVARF("lookstrafe","0", CVAR_ARCHIVE);
+cvar_t	lookspring = CVARFD("lookspring","0", CVAR_ARCHIVE, "Recentre the camera when the mouse-look is released.");
+cvar_t	lookstrafe = CVARFD("lookstrafe","0", CVAR_ARCHIVE, "Mouselook enables mouse strafing.");
 cvar_t	sensitivity = CVARF("sensitivity","10", CVAR_ARCHIVE);
 
 cvar_t cl_staticsounds = CVARF("cl_staticsounds", "1", CVAR_ARCHIVE);
@@ -113,7 +116,7 @@ cvar_t	cl_predict_players_latency	= CVARD("cl_predict_players_latency", "1.0", "
 cvar_t	cl_predict_players_nudge	= CVARD("cl_predict_players_nudge", "0.02", "An extra nudge of time, to cover video latency.");
 cvar_t	cl_solid_players = CVARD("cl_solid_players", "1", "Consider other players as solid for player prediction.");
 cvar_t	cl_noblink = CVARD("cl_noblink", "0", "Disable the ^^b text blinking feature.");
-cvar_t	cl_servername = CVARD("cl_servername", "none", "The hostname of the last server you connected to");
+cvar_t	cl_servername = CVARFD("cl_servername", "", CVAR_NOSET, "The hostname of the last server you connected to");
 cvar_t	cl_serveraddress = CVARD("cl_serveraddress", "none", "The address of the last server you connected to");
 cvar_t	qtvcl_forceversion1 = CVAR("qtvcl_forceversion1", "0");
 cvar_t	qtvcl_eztvextensions = CVAR("qtvcl_eztvextensions", "0");
@@ -148,8 +151,8 @@ cvar_t	name		= CVARFC("name",		"Player",	CVAR_ARCHIVE | CVAR_USERINFO, Name_Call
 cvar_t	team		= CVARF("team",			"",			CVAR_ARCHIVE | CVAR_USERINFO);
 cvar_t	skin		= CVARAF("skin",		"",			"_cl_playerskin"/*dp*/, CVAR_ARCHIVE | CVAR_USERINFO);
 cvar_t	model		= CVARAF("model",		"",			"_cl_playermodel"/*dp*/, CVAR_ARCHIVE | CVAR_USERINFO);
-cvar_t	topcolor	= CVARF("topcolor",		"",			CVAR_ARCHIVE | CVAR_USERINFO);
-cvar_t	bottomcolor	= CVARF("bottomcolor",	"",			CVAR_ARCHIVE | CVAR_USERINFO);
+cvar_t	topcolor	= CVARF("topcolor",		"13",			CVAR_ARCHIVE | CVAR_USERINFO);
+cvar_t	bottomcolor	= CVARF("bottomcolor",	"12",			CVAR_ARCHIVE | CVAR_USERINFO);
 cvar_t	rate		= CVARAFD("rate",		"30000"/*"6480"*/,		"_cl_rate"/*dp*/, CVAR_ARCHIVE | CVAR_USERINFO, "A rough measure of the bandwidth to try to use while playing. Too high a value may result in 'buffer bloat'.");
 static cvar_t	drate		= CVARFD("drate",		"3000000",	CVAR_ARCHIVE | CVAR_USERINFO, "A rough measure of the bandwidth to try to use while downloading (in bytes per second).");		// :)
 static cvar_t	noaim		= CVARF("noaim",		"",			CVAR_ARCHIVE | CVAR_USERINFO);
@@ -184,6 +187,9 @@ cvar_t  cl_gunanglex			= CVAR("cl_gunanglex", "0");
 cvar_t  cl_gunangley			= CVAR("cl_gunangley", "0");
 cvar_t  cl_gunanglez			= CVAR("cl_gunanglez", "0");
 
+#ifdef HAVE_DTLS
+extern cvar_t net_enable_dtls;
+#endif
 cvar_t	cl_proxyaddr			= CVAR("cl_proxyaddr", "");
 cvar_t	cl_sendguid				= CVARD("cl_sendguid", "", "Send a randomly generated 'globally unique' id to servers, which can be used by servers for score rankings and stuff. Different servers will see different guids. Delete the 'qkey' file in order to appear as a different user.\nIf set to 2, all servers will see the same guid. Be warned that this can show other people the guid that you're using.");
 cvar_t	cl_downloads			= CVARAFD("cl_downloads", "1", /*q3*/"cl_allowDownload", CVAR_NOTFROMSERVER, "Allows you to block all automatic downloads.");
@@ -285,27 +291,41 @@ static struct
 	netadr_t			adr[8];			//addresses that we're trying to transfer to, one entry per dns result, eg both ::1 AND 127.0.0.1
 #ifdef HAVE_DTLS
 	enum
-	{
+	{	//not relevant when given a direct dtls address.
 		DTLS_DISABLE,
 		DTLS_TRY,
 		DTLS_REQUIRE,
-		DTLS_ACTIVE
+		DTLS_ACTIVE,
 	} dtlsupgrade;
 #endif
-	int					mtu;
-	unsigned int		compresscrc;
 	int					protocol;		//nq/qw/q2/q3. guessed based upon server replies
 	int					subprotocol;	//the monkeys are trying to eat me.
-	unsigned int		fteext1;
-	unsigned int		fteext2;
-	unsigned int		ezext1;
+	struct
+	{
+		//flags
+		unsigned int		fte1;
+		unsigned int		fte2;
+		unsigned int		ez1;
+
+		int					mtu;		//0 for unsupported, otherwise a size.
+		unsigned int		compresscrc;//0 for unsupported, otherwise the peer's hash
+
+		unsigned char		guidsalt[64];//server->client (for servers that want to share guids between themselves, with noticably lower security)
+	} ext;
 	int					qport;
 	int					challenge;		//tracked as part of guesswork based upon what replies we get.
+	int					clchallenge;
 	double				time;			//for connection retransmits
 	qboolean			clogged;		//ignore time...
+	enum coninfomode_e
+	{
+		CIM_DEFAULT,	//sends both a qw getchallenge and nq connect (also with postfixed getchallenge so modified servers can force getchallenge)
+		CIM_NQONLY,		//disables getchallenge (so fte servers treat us as an nq server). should not be used for dpp7 servers.
+		CIM_QEONLY,		//forces dtls and uses a different nq netchan version
+	}					mode;
 	int					defaultport;
 	int					tries;			//increased each try, every fourth trys nq connect packets.
-	unsigned char		guid[64];
+	unsigned char		guid[64];		//client->server guid (so doesn't change with transfers)
 //	qbyte				fingerprint[5*4];	//sha1 hash of accepted dtls certs
 } connectinfo;
 
@@ -339,6 +359,15 @@ char modellist_name[] =
 char soundlist_name[] =
 	{ 's'^0xff, 'o'^0xff, 'u'^0xff, 'n'^0xff, 'd'^0xff, 'l'^0xff, 'i'^0xff, 's'^0xff, 't'^0xff,
 		' '^0xff, '%'^0xff, 'i'^0xff, ' '^0xff, '%'^0xff, 'i'^0xff, 0 };
+
+vrui_t vrui;
+void VRUI_SnapAngle(void)
+{
+//	VectorCopy(cl.playerview[0].viewangles, vrui.angles);
+	vrui.angles[0] = 0;
+	vrui.angles[1] = cl.playerview[0].aimangles[1];
+	vrui.angles[2] = 0;
+}
 
 void CL_UpdateWindowTitle(void)
 {
@@ -473,7 +502,7 @@ void CL_ConnectToDarkPlaces(char *challenge, netadr_t *adr)
 
 	connectinfo.time = realtime;	// for retransmit requests
 
-	Q_snprintfz(data, sizeof(data), "%c%c%c%cconnect\\protocol\\darkplaces 3\\protocols\\DP7 DP6 DP5 RMQ FITZ NEHAHRABJP2 NEHAHRABJP NEHAHRABJP3 QUAKE\\challenge\\%s\\name\\%s", 255, 255, 255, 255, challenge, name.string);
+	Q_snprintfz(data, sizeof(data), "%c%c%c%cconnect\\protocol\\darkplaces "STRINGIFY(NQ_NETCHAN_VERSION)"\\protocols\\DP7 DP6 DP5 RMQ FITZ NEHAHRABJP2 NEHAHRABJP NEHAHRABJP3 QUAKE\\challenge\\%s\\name\\%s", 255, 255, 255, 255, challenge, name.string);
 
 	NET_SendPacket (cls.sockets, strlen(data), data, adr);
 
@@ -503,7 +532,7 @@ void CL_SupportedFTEExtensions(unsigned int *pext1, unsigned int *pext2, unsigne
 	*ezpext1 = ezprotextsupported1;
 }
 
-char *CL_GUIDString(netadr_t *adr, const char *guidstring)
+char *CL_GUIDString(netadr_t *adr)
 {
 	static qbyte buf[2048];
 	static int buflen;
@@ -512,10 +541,10 @@ char *CL_GUIDString(netadr_t *adr, const char *guidstring)
 	void *blocks[2];
 	int lens[2];
 
-	if (!*cl_sendguid.string && guidstring && *guidstring)
+	if (!*cl_sendguid.string && *connectinfo.ext.guidsalt)
 	{
-		serveraddr[0] = '#';	//leading hash is to stop servers from being able to scrape from other servers.
-		Q_strncpyz(serveraddr+1, guidstring, sizeof(serveraddr)-1);
+		serveraddr[0] = '#';	//leading hash is to stop servers from being able to scrape from other servers (ones that don't use a custom/reproducible salt).
+		Q_strncpyz(serveraddr+1, connectinfo.ext.guidsalt, sizeof(serveraddr)-1);
 	}
 	else if (cl_sendguid.ival == 2)
 		*serveraddr = 0;
@@ -573,20 +602,13 @@ CL_SendConnectPacket
 called by CL_Connect_f and CL_CheckResend
 ======================
 */
-void CL_SendConnectPacket (netadr_t *to, int mtu, 
-						   unsigned int ftepext1, unsigned int ftepext2, unsigned int ezpext1,
-						   int compressioncrc,
-						   const char *guidhash
-						  /*, ...*/)
+static void CL_SendConnectPacket (netadr_t *to)
 {
 	extern cvar_t qport;
 	netadr_t	addr;
 	char	data[2048];
 	char *info;
 	double t1, t2;
-	int fteprotextsupported1=0;
-	int fteprotextsupported2=0;
-	int ezprotextsupported1=0;
 	char *a;
 
 // JACK: Fixed bug where DNS lookups would cause two connects real fast
@@ -598,11 +620,22 @@ void CL_SendConnectPacket (netadr_t *to, int mtu,
 
 	if (cl_nopext.ival)	//imagine it's an unenhanced server
 	{
-		compressioncrc = 0;
+		connectinfo.ext.compresscrc = 0;
 	}
 
+	if (connectinfo.protocol == CP_QUAKEWORLD)
+	{
+		int fteprotextsupported1=0;
+		int fteprotextsupported2=0;
+		int ezprotextsupported1=0;
+		CL_SupportedFTEExtensions(&fteprotextsupported1, &fteprotextsupported2, &ezprotextsupported1);
+
+		connectinfo.ext.fte1 &= fteprotextsupported1;
+		connectinfo.ext.fte2 &= fteprotextsupported2;
+		connectinfo.ext.ez1 &= ezprotextsupported1;
+	}
 #ifdef Q2CLIENT
-	if (connectinfo.protocol == CP_QUAKE2)
+	else if (connectinfo.protocol == CP_QUAKE2)
 	{
 		if (!(scr_fov.flags & CVAR_USERINFO))
 		{	//q2 does server-controlled fov, so make sure the cvar is flagged properly.
@@ -611,30 +644,17 @@ void CL_SendConnectPacket (netadr_t *to, int mtu,
 			Cvar_Set(&scr_fov, scr_fov.string);	//make sure the userinfo is set properly.
 		}
 
-		fteprotextsupported1 = ftepext1 & (PEXT_MODELDBL|PEXT_SOUNDDBL|PEXT_SPLITSCREEN);
-		fteprotextsupported2 = 0;
-		ezprotextsupported1 = 0;
+		connectinfo.ext.fte1 &= (PEXT_MODELDBL|PEXT_SOUNDDBL|PEXT_SPLITSCREEN);
+		connectinfo.ext.fte2 = 0;
+		connectinfo.ext.ez1 = 0;
 	}
-	else
 #endif
+	else
 	{
-		CL_SupportedFTEExtensions(&fteprotextsupported1, &fteprotextsupported2, &ezprotextsupported1);
-
-		fteprotextsupported1 &= ftepext1;
-		fteprotextsupported2 &= ftepext2;
-		ezprotextsupported1 &= ezpext1;
-
-		if (connectinfo.protocol != CP_QUAKEWORLD)
-		{
-			fteprotextsupported1 = 0;
-			fteprotextsupported2 = 0;
-			ezprotextsupported1 = 0;
-		}
+		connectinfo.ext.fte1 = 0;
+		connectinfo.ext.fte2 = 0;
+		connectinfo.ext.ez1 = 0;
 	}
-
-	connectinfo.fteext1 = fteprotextsupported1;
-	connectinfo.fteext2 = fteprotextsupported2;
-	connectinfo.ezext1 = ezprotextsupported1;
 
 	t1 = Sys_DoubleTime ();
 
@@ -675,7 +695,9 @@ void CL_SendConnectPacket (netadr_t *to, int mtu,
 #ifdef Q3CLIENT
 	if (connectinfo.protocol == CP_QUAKE3)
 	{	//q3 requires some very strange things.
-		CLQ3_SendConnectPacket(to, connectinfo.challenge, connectinfo.qport);
+		//cl.splitclients = 1;
+		if (q3)
+			q3->cl.SendConnectPacket(cls.sockets, to, connectinfo.challenge, connectinfo.qport, cls.userinfo);
 		return;
 	}
 #endif
@@ -696,7 +718,8 @@ void CL_SendConnectPacket (netadr_t *to, int mtu,
 	//the info itself
 	{
 		static const char *prioritykeys[] = {"name", "password", "spectator", "lang", "rate", "team", "topcolor", "bottomcolor", "skin", "_", "*", NULL};
-		InfoBuf_ToString(&cls.userinfo[0], data+strlen(data), sizeof(data)-strlen(data), prioritykeys, NULL, NULL, &cls.userinfosync, &cls.userinfo[0]);
+		static const char *ignorekeys[] = {"prx", "*z_ext", NULL};
+		InfoBuf_ToString(&cls.userinfo[0], data+strlen(data), sizeof(data)-strlen(data), prioritykeys, ignorekeys, NULL, &cls.userinfosync, &cls.userinfo[0]);
 	}
 	if (connectinfo.protocol == CP_QUAKEWORLD)	//zquake extension info.
 		Q_strncatz(data, va("\\*z_ext\\%i", CLIENT_SUPPORTED_Z_EXTENSIONS), sizeof(data));
@@ -704,19 +727,19 @@ void CL_SendConnectPacket (netadr_t *to, int mtu,
 	Q_strncatz(data, "\"", sizeof(data));
 
 	if (connectinfo.protocol == CP_QUAKE2 && connectinfo.subprotocol == PROTOCOL_VERSION_R1Q2)
-		Q_strncatz(data, va(" %d %d", mtu, 1905), sizeof(data));	//mti, sub-sub-version
+		Q_strncatz(data, va(" %d %d", connectinfo.ext.mtu, 1905), sizeof(data));	//mti, sub-sub-version
 	else if (connectinfo.protocol == CP_QUAKE2 && connectinfo.subprotocol == PROTOCOL_VERSION_Q2PRO)
-		Q_strncatz(data, va(" %d 0 0 %d", mtu, 1021), sizeof(data));	//mtu, netchan-fragmentation, zlib, sub-sub-version
+		Q_strncatz(data, va(" %d 0 0 %d", connectinfo.ext.mtu, 1021), sizeof(data));	//mtu, netchan-fragmentation, zlib, sub-sub-version
 
 	Q_strncatz(data, "\n", sizeof(data));
 
-	if (ftepext1)
-		Q_strncatz(data, va("0x%x 0x%x\n", PROTOCOL_VERSION_FTE1, fteprotextsupported1), sizeof(data));
-	if (ftepext2)
-		Q_strncatz(data, va("0x%x 0x%x\n", PROTOCOL_VERSION_FTE2, fteprotextsupported2), sizeof(data));
+	if (connectinfo.ext.fte1)
+		Q_strncatz(data, va("0x%x 0x%x\n", PROTOCOL_VERSION_FTE1, connectinfo.ext.fte1), sizeof(data));
+	if (connectinfo.ext.fte2)
+		Q_strncatz(data, va("0x%x 0x%x\n", PROTOCOL_VERSION_FTE2, connectinfo.ext.fte2), sizeof(data));
 
-	if (ezpext1)
-		Q_strncatz(data, va("0x%x 0x%x\n", PROTOCOL_VERSION_EZQUAKE1, ezprotextsupported1), sizeof(data));
+	if (connectinfo.ext.ez1)
+		Q_strncatz(data, va("0x%x 0x%x\n", PROTOCOL_VERSION_EZQUAKE1, connectinfo.ext.ez1), sizeof(data));
 
 	{
 		int ourmtu;
@@ -728,25 +751,22 @@ void CL_SendConnectPacket (netadr_t *to, int mtu,
 			ourmtu = 1440;	//a safe bet. servers have an unsafe bet by default
 		if (ourmtu < 0)
 			ourmtu = 0;
-		if (mtu > ourmtu)
-			mtu = ourmtu;
-		connectinfo.mtu = mtu & ~7;
+		if (connectinfo.ext.mtu > ourmtu)
+			connectinfo.ext.mtu = ourmtu;
+		connectinfo.ext.mtu &= ~7;
 
-		if (connectinfo.mtu > 0)
-			Q_strncatz(data, va("0x%x %i\n", PROTOCOL_VERSION_FRAGMENT, connectinfo.mtu), sizeof(data));
+		if (connectinfo.ext.mtu > 0)
+			Q_strncatz(data, va("0x%x %i\n", PROTOCOL_VERSION_FRAGMENT, connectinfo.ext.mtu), sizeof(data));
 	}
 
 #ifdef HUFFNETWORK
-	if (compressioncrc && net_compress.ival && Huff_CompressionCRC(compressioncrc))
-	{
-		Q_strncatz(data, va("0x%x 0x%x\n", PROTOCOL_VERSION_HUFFMAN, LittleLong(compressioncrc)), sizeof(data));
-		connectinfo.compresscrc = compressioncrc;
-	}
+	if (connectinfo.ext.compresscrc && net_compress.ival && Huff_CompressionCRC(connectinfo.ext.compresscrc))
+		Q_strncatz(data, va("0x%x 0x%x\n", PROTOCOL_VERSION_HUFFMAN, LittleLong(connectinfo.ext.compresscrc)), sizeof(data));
 	else
 #endif
-		connectinfo.compresscrc = 0;
+		connectinfo.ext.compresscrc = 0;
 
-	info = CL_GUIDString(to, guidhash);
+	info = CL_GUIDString(to);
 	if (info)
 		Q_strncatz(data, va("0x%x \"%s\"\n", PROTOCOL_INFO_GUID, info), sizeof(data));
 
@@ -798,13 +818,14 @@ static void CL_ResolvedServer(void *vctx, void *data, size_t a, size_t b)
 #ifdef HAVE_DTLS
 	for (i = 0; i < ctx->found; i++)
 	{
-		if (connectinfo.dtlsupgrade == DTLS_ACTIVE)
+		if (connectinfo.dtlsupgrade == DTLS_ACTIVE || connectinfo.mode==CIM_QEONLY)
 		{	//if we've already established a dtls connection, stick with it
 			if (ctx->adr[i].prot == NP_DGRAM)
 				ctx->adr[i].prot = NP_DTLS;
 		}
 		else if (connectinfo.adr[i].prot == NP_DTLS)
 		{	//dtls connections start out with regular udp, and upgrade to dtls once its established that the server supports it.
+			//FIXME: remove this block once our new netcode is better established.
 			connectinfo.dtlsupgrade = DTLS_REQUIRE;
 			ctx->adr[i].prot = NP_DGRAM;
 		}
@@ -900,6 +921,11 @@ void CL_CheckForResend (void)
 
 		NET_InitClient(sv.state != ss_clustermode);
 
+		//netchan extensions... we skip the getchallenge part so we need to set these up still.
+		connectinfo.ext.mtu = 8192-16;
+		connectinfo.ext.compresscrc = 0;
+		Q_strncpyz(connectinfo.ext.guidsalt, sv_guidhash.string, sizeof(connectinfo.ext.guidsalt));
+
 		cls.state = ca_disconnected;
 		switch (svs.gametype)
 		{
@@ -912,9 +938,9 @@ void CL_CheckForResend (void)
 		case GT_QUAKE2:
 			connectinfo.protocol = CP_QUAKE2;
 			connectinfo.subprotocol = PROTOCOL_VERSION_Q2;
-			connectinfo.fteext1 = PEXT_MODELDBL|PEXT_SOUNDDBL|PEXT_SPLITSCREEN;
-			connectinfo.fteext2 = 0;
-			connectinfo.ezext1 = 0;
+			connectinfo.ext.fte1 = PEXT_MODELDBL|PEXT_SOUNDDBL|PEXT_SPLITSCREEN;
+			connectinfo.ext.fte2 = 0;
+			connectinfo.ext.ez1 = 0;
 			break;
 #endif
 		default:
@@ -925,17 +951,17 @@ void CL_CheckForResend (void)
 				//for hexen2 we always force fte's native qw protocol. other protocols won't cut it.
 				connectinfo.protocol = CP_QUAKEWORLD;
 				connectinfo.subprotocol = PROTOCOL_VERSION_QW;
-				connectinfo.fteext1 = Net_PextMask(PROTOCOL_VERSION_FTE1, false);
-				connectinfo.fteext2 = Net_PextMask(PROTOCOL_VERSION_FTE2, false);
-				connectinfo.ezext1 = Net_PextMask(PROTOCOL_VERSION_EZQUAKE1, false) & EZPEXT1_CLIENTADVERTISE;
+				connectinfo.ext.fte1 = Net_PextMask(PROTOCOL_VERSION_FTE1, false);
+				connectinfo.ext.fte2 = Net_PextMask(PROTOCOL_VERSION_FTE2, false);
+				connectinfo.ext.ez1 = Net_PextMask(PROTOCOL_VERSION_EZQUAKE1, false) & EZPEXT1_CLIENTADVERTISE;
 			}
 			else if (!strcmp(lbp, "qwid") || !strcmp(lbp, "idqw"))
 			{	//for recording .qwd files in any client
 				connectinfo.protocol = CP_QUAKEWORLD;
 				connectinfo.subprotocol = PROTOCOL_VERSION_QW;
-				connectinfo.fteext1 = 0;
-				connectinfo.fteext2 = 0;
-				connectinfo.ezext1 = 0;
+				connectinfo.ext.fte1 = 0;
+				connectinfo.ext.fte2 = 0;
+				connectinfo.ext.ez1 = 0;
 			}
 #ifdef Q3CLIENT
 			else if (!strcmp(lbp, "q3"))
@@ -953,9 +979,9 @@ void CL_CheckForResend (void)
 				{
 					connectinfo.protocol = CP_QUAKEWORLD;
 					connectinfo.subprotocol = PROTOCOL_VERSION_QW;
-					connectinfo.fteext1 = Net_PextMask(PROTOCOL_VERSION_FTE1, false);
-					connectinfo.fteext2 = Net_PextMask(PROTOCOL_VERSION_FTE2, false);
-					connectinfo.ezext1 = Net_PextMask(PROTOCOL_VERSION_EZQUAKE1, false) & EZPEXT1_CLIENTADVERTISE;
+					connectinfo.ext.fte1 = Net_PextMask(PROTOCOL_VERSION_FTE1, false);
+					connectinfo.ext.fte2 = Net_PextMask(PROTOCOL_VERSION_FTE2, false);
+					connectinfo.ext.ez1 = Net_PextMask(PROTOCOL_VERSION_EZQUAKE1, false) & EZPEXT1_CLIENTADVERTISE;
 				}
 			}
 			else if (!strcmp(lbp, "fitz") || !strcmp(lbp, "rmqe") ||
@@ -964,6 +990,12 @@ void CL_CheckForResend (void)
 			{	//we don't really distinguish between fitz and rmq protocols. we just use 999 with bigcoords and 666 othewise.
 				connectinfo.protocol = CP_NETQUAKE;
 				connectinfo.subprotocol = CPNQ_FITZ666;
+			}
+			else if (!strcmp(lbp, "qe")||!strcmp(lbp, "qex")||!strcmp(lbp, "kex"))
+			{	//quake-ex has special quirks that cannot be defined by protocol numbers alone.
+				connectinfo.protocol = CP_NETQUAKE;
+				connectinfo.subprotocol = CPNQ_FITZ666;
+				connectinfo.mode = CIM_QEONLY;
 			}
 			else if (!strcmp(lbp, "bjp1") || !strcmp(lbp, "bjp2") || //placeholders only
 					 !strcmp(lbp, "bjp3") || !strcmp(lbp, "bjp"))
@@ -1003,18 +1035,18 @@ void CL_CheckForResend (void)
 			{
 				connectinfo.protocol = CP_NETQUAKE;
 				connectinfo.subprotocol = CPNQ_FITZ666;
-				connectinfo.fteext1 = Net_PextMask(PROTOCOL_VERSION_FTE1, true);
-				connectinfo.fteext2 = Net_PextMask(PROTOCOL_VERSION_FTE2, true);
-				connectinfo.ezext1 = Net_PextMask(PROTOCOL_VERSION_EZQUAKE1, true) & EZPEXT1_CLIENTADVERTISE;
+				connectinfo.ext.fte1 = Net_PextMask(PROTOCOL_VERSION_FTE1, true);
+				connectinfo.ext.fte2 = Net_PextMask(PROTOCOL_VERSION_FTE2, true);
+				connectinfo.ext.ez1 = Net_PextMask(PROTOCOL_VERSION_EZQUAKE1, true) & EZPEXT1_CLIENTADVERTISE;
 			}
 #endif
 			else
 			{	//protocol wasn't recognised, and we didn't take the nq fallback, so that must mean we're going for qw.
 				connectinfo.protocol = CP_QUAKEWORLD;
 				connectinfo.subprotocol = PROTOCOL_VERSION_QW;
-				connectinfo.fteext1 = Net_PextMask(PROTOCOL_VERSION_FTE1, false);
-				connectinfo.fteext2 = Net_PextMask(PROTOCOL_VERSION_FTE2, false);
-				connectinfo.ezext1 = Net_PextMask(PROTOCOL_VERSION_EZQUAKE1, false) & EZPEXT1_CLIENTADVERTISE;
+				connectinfo.ext.fte1 = Net_PextMask(PROTOCOL_VERSION_FTE1, false);
+				connectinfo.ext.fte2 = Net_PextMask(PROTOCOL_VERSION_FTE2, false);
+				connectinfo.ext.ez1 = Net_PextMask(PROTOCOL_VERSION_EZQUAKE1, false) & EZPEXT1_CLIENTADVERTISE;
 			}
 
 #ifdef NETPREPARSE
@@ -1028,9 +1060,9 @@ void CL_CheckForResend (void)
 				{
 					connectinfo.protocol = CP_QUAKEWORLD;
 					connectinfo.subprotocol = PROTOCOL_VERSION_QW;
-					connectinfo.fteext1 = Net_PextMask(PROTOCOL_VERSION_FTE1, false);
-					connectinfo.fteext2 = Net_PextMask(PROTOCOL_VERSION_FTE2, false);
-					connectinfo.ezext1 = Net_PextMask(PROTOCOL_VERSION_EZQUAKE1, false) & EZPEXT1_CLIENTADVERTISE;
+					connectinfo.ext.fte1 = Net_PextMask(PROTOCOL_VERSION_FTE1, false);
+					connectinfo.ext.fte2 = Net_PextMask(PROTOCOL_VERSION_FTE2, false);
+					connectinfo.ext.ez1 = Net_PextMask(PROTOCOL_VERSION_EZQUAKE1, false) & EZPEXT1_CLIENTADVERTISE;
 				}
 				else if (progstype != PROG_QW && cls.protocol == CP_QUAKEWORLD)
 				{
@@ -1044,9 +1076,9 @@ void CL_CheckForResend (void)
 			{
 				connectinfo.protocol = CP_QUAKEWORLD;
 				connectinfo.subprotocol = PROTOCOL_VERSION_QW;
-				connectinfo.fteext1 = Net_PextMask(PROTOCOL_VERSION_FTE1, false);
-				connectinfo.fteext2 = Net_PextMask(PROTOCOL_VERSION_FTE2, false);
-				connectinfo.ezext1 = Net_PextMask(PROTOCOL_VERSION_EZQUAKE1, false) & EZPEXT1_CLIENTADVERTISE;
+				connectinfo.ext.fte1 = Net_PextMask(PROTOCOL_VERSION_FTE1, false);
+				connectinfo.ext.fte2 = Net_PextMask(PROTOCOL_VERSION_FTE2, false);
+				connectinfo.ext.ez1 = Net_PextMask(PROTOCOL_VERSION_EZQUAKE1, false) & EZPEXT1_CLIENTADVERTISE;
 			}
 #ifdef NQPROT
 			else if (cls.demorecording == DPB_NETQUAKE && cls.protocol != CP_NETQUAKE)
@@ -1061,7 +1093,7 @@ void CL_CheckForResend (void)
 			{
 				connectinfo.protocol = CP_QUAKE2;
 				connectinfo.subprotocol = PROTOCOL_VERSION_Q2;
-				connectinfo.fteext1 = PEXT_MODELDBL|PEXT_SOUNDDBL|PEXT_SPLITSCREEN;
+				connectinfo.ext.fte1 = PEXT_MODELDBL|PEXT_SOUNDDBL|PEXT_SPLITSCREEN;
 				//FIXME: use pext.
 			}
 #endif
@@ -1091,9 +1123,16 @@ void CL_CheckForResend (void)
 
 			net_message.packing = SZ_RAWBYTES;
 			net_message.cursize = 0;
-			MSG_BeginReading(net_message.prim);
+			MSG_BeginReading(&net_message, net_message.prim);
 
-			if (connectinfo.subprotocol == CPNQ_ID && !proquakeangles)
+			if (connectinfo.mode == CIM_QEONLY)
+			{
+				net_from = connectinfo.adr[connectinfo.nextadr];
+				Cmd_TokenizeString (va("connect %i %i %i \"\\name\\unconnected\"", NQ_NETCHAN_VERSION_QEX, 0, SV_NewChallenge()), false, false);
+
+				SVC_DirectConnect(0);
+			}
+			else if (connectinfo.subprotocol == CPNQ_ID && !proquakeangles)
 			{
 				net_from = connectinfo.adr[connectinfo.nextadr];
 				Cmd_TokenizeString (va("connect %i %i %i \"\\name\\unconnected\"", NQ_NETCHAN_VERSION, 0, SV_NewChallenge()), false, false);
@@ -1124,7 +1163,7 @@ void CL_CheckForResend (void)
 			else if (1)
 			{
 				net_from = connectinfo.adr[connectinfo.nextadr];
-				Q_snprintfz(net_message.data, net_message.maxsize, "xxxxconnect\\protocol\\darkplaces 3\\protocols\\DP7 DP6 DP5 RMQ FITZ NEHAHRABJP2 NEHAHRABJP NEHAHRABJP3 QUAKE\\challenge\\0x%x\\name\\%s", SV_NewChallenge(), name.string);
+				Q_snprintfz(net_message.data, net_message.maxsize, "xxxxconnect\\protocol\\darkplaces "STRINGIFY(NQ_NETCHAN_VERSION)"\\protocols\\DP7 DP6 DP5 RMQ FITZ NEHAHRABJP2 NEHAHRABJP NEHAHRABJP3 QUAKE\\challenge\\0x%x\\name\\%s", SV_NewChallenge(), name.string);
 				Cmd_TokenizeString (net_message.data+4, false, false);
 				SVC_DirectConnect(0);
 			}
@@ -1137,7 +1176,7 @@ void CL_CheckForResend (void)
 		{
 			if (!connectinfo.challenge)
 				connectinfo.challenge = rand();
-			CL_SendConnectPacket (NULL, 8192-16, connectinfo.fteext1, connectinfo.fteext2, connectinfo.ezext1, 0, sv_guidhash.string);
+			CL_SendConnectPacket (NULL);
 		}
 
 		return;
@@ -1145,7 +1184,11 @@ void CL_CheckForResend (void)
 #endif
 
 	if (!connectinfo.trying)
+	{
+		if (*cl_servername.string)
+			Cvar_ForceSet(&cl_servername, "");
 		return;
+	}
 	if (startuppending || r_blockvidrestart)
 		return;	//don't send connect requests until we've actually initialised fully. this isn't a huge issue, but makes the startup prints a little more sane.
 
@@ -1155,7 +1198,7 @@ void CL_CheckForResend (void)
 			return;
 	}
 	else
-		connectinfo.clogged = false;
+		connectinfo.clogged = false; //do the prints and everything.
 
 #ifdef HAVE_DTLS
 	if (connectinfo.numadr>0 && connectinfo.adr[0].prot == NP_DTLS)
@@ -1163,6 +1206,7 @@ void CL_CheckForResend (void)
 		switch(NET_SendPacket (cls.sockets, 0, NULL, &connectinfo.adr[0]))
 		{
 		case NETERR_CLOGGED:	//temporary failure
+			connectinfo.clogged = true;
 			return;
 		default:
 			break;
@@ -1194,12 +1238,12 @@ void CL_CheckForResend (void)
 
 	Cvar_ForceSet(&cl_servername, cls.servername);
 
-	if (!connectinfo.numadr)
+	if (!connectinfo.numadr || !cls.sockets)
 		return;	//nothing to do yet...
 	if (!connectinfo.clogged)
 		connectinfo.time = realtime+t2-t1;	// for retransmit requests
 
-	to = &connectinfo.adr[connectinfo.nextadr++%connectinfo.numadr];
+	to = &connectinfo.adr[connectinfo.nextadr%connectinfo.numadr];
 	if (!NET_IsClientLegal(to))
 	{
 		Cvar_Set(&cl_disconnectreason, va("Illegal server address"));
@@ -1212,19 +1256,24 @@ void CL_CheckForResend (void)
 	if (!connectinfo.clogged)
 	{
 #ifdef Q3CLIENT
-		//Q3 clients send their cdkey to the q3 authorize server.
-		//they send this packet with the challenge.
-		//and the server will refuse the client if it hasn't sent it.
-		CLQ3_SendAuthPacket(to);
+		if (q3)
+			q3->cl.SendAuthPacket(cls.sockets, to);
 #endif
 
-		if (connectinfo.istransfer || connectinfo.numadr>1)
-			Con_TPrintf ("Connecting to %s(%s)...\n", cls.servername, NET_AdrToString(data, sizeof(data), to));
+		if ((connectinfo.istransfer || connectinfo.numadr>1) && to->prot != NP_RTC_TCP && to->prot != NP_RTC_TLS
+#ifdef SUPPORT_ICE
+		&& to->type != NA_ICE
+#endif
+		)
+			Con_TPrintf ("Connecting to %s" S_COLOR_GRAY "(%s)" S_COLOR_WHITE "...\n", cls.servername, NET_AdrToString(data, sizeof(data), to));
 		else
 			Con_TPrintf ("Connecting to %s...\n", cls.servername);
 	}
 
-	if (connectinfo.tries == 0 && to == &connectinfo.adr[0])
+	if (connectinfo.clogged)
+		connectinfo.clogged = false;
+
+	if (connectinfo.tries == 0 && connectinfo.nextadr < connectinfo.numadr)
 		if (!NET_EnsureRoute(cls.sockets, "conn", cls.servername, to))
 		{
 			Cvar_Set(&cl_disconnectreason, va("Unable to establish connection to %s\n", cls.servername));
@@ -1234,22 +1283,32 @@ void CL_CheckForResend (void)
 			return;
 		}
 
-	contype |= 1; /*always try qw type connections*/
-//	if ((connect_tries&3)==3) || (connect_defaultport==26000))
+	if (to->prot == NP_DGRAM)
+		connectinfo.nextadr++;	//cycle hosts with each ping (if we got multiple).
+
+	if (connectinfo.mode==CIM_QEONLY || connectinfo.mode==CIM_NQONLY)
+		contype |= 2;
+	else
+	{
+		contype |= 1; /*always try qw type connections*/
 #ifdef VM_UI
-	if (!UI_IsRunning())	//don't try to connect to nq servers when running a q3ui. I was getting annoying error messages from q3 servers due to this.
+		if (!(q3&&q3->ui.IsRunning()))	//don't try to connect to nq servers when running a q3ui. I was getting annoying error messages from q3 servers due to this.
 #endif
-		contype |= 2; /*try nq connections periodically (or if its the default nq port)*/
+			contype |= 2; /*try nq connections periodically (or if its the default nq port)*/
+	}
 
 	/*DP, QW, Q2, Q3*/
 	/*NOTE: ioq3 has <challenge> <gamename> args. yes, a challenge to get a challenge.*/
 	if (contype & 1)
 	{
-		Q_snprintfz (data, sizeof(data), "%c%c%c%cgetchallenge\n", 255, 255, 255, 255);
+		char tmp[256];
+		//vanilla: Q_snprintfz (data, sizeof(data), "%c%c%c%cgetchallenge\n", 255, 255, 255, 255);
+		Q_snprintfz (data, sizeof(data), "%c%c%c%cgetchallenge %i %s\n", 255, 255, 255, 255, connectinfo.clchallenge, COM_QuotedString(com_protocolname.string, tmp, sizeof(tmp), false));
 		switch(NET_SendPacket (cls.sockets, strlen(data), data, to))
 		{
 		case NETERR_CLOGGED:	//temporary failure
-			connectinfo.clogged = true;
+			connectinfo.clogged = true;	//inhibits the wait between sends
+			break;
 		case NETERR_SENT:		//yay, works!
 			break;
 		default:
@@ -1269,22 +1328,30 @@ void CL_CheckForResend (void)
 		MSG_WriteLong(&sb, LongSwap(NETFLAG_CTL | (strlen(NQ_NETCHAN_GAMENAME)+7)));
 		MSG_WriteByte(&sb, CCREQ_CONNECT);
 		MSG_WriteString(&sb, NQ_NETCHAN_GAMENAME);
-		MSG_WriteByte(&sb, NQ_NETCHAN_VERSION);
+		if (connectinfo.mode==CIM_QEONLY)
+			MSG_WriteByte(&sb, NQ_NETCHAN_VERSION_QEX);
+		else
+		{
+			MSG_WriteByte(&sb, NQ_NETCHAN_VERSION);
 
-		/*NQ engines have a few extra bits on the end*/
-		/*proquake servers wait for us to send them a packet before anything happens,
-		  which means it corrects for our public port if our nat uses different public ports for different remote ports
-		  thus all nq engines claim to be proquake
-		*/
+			/*NQ engines have a few extra bits on the end*/
+			/*proquake servers wait for us to send them a packet before anything happens,
+			  which means it corrects for our public port if our nat uses different public ports for different remote ports
+			  thus all nq engines claim to be proquake
+			*/
 
-		MSG_WriteByte(&sb, 1); /*'mod'*/
-		MSG_WriteByte(&sb, 34); /*'mod' version*/
-		MSG_WriteByte(&sb, 0); /*flags*/
-		MSG_WriteLong(&sb, strtoul(password.string, NULL, 0)); /*password*/
+			MSG_WriteByte(&sb, 1); /*'mod'*/
+			MSG_WriteByte(&sb, 34); /*'mod' version*/
+			MSG_WriteByte(&sb, 0); /*flags*/
+			MSG_WriteLong(&sb, strtoul(password.string, NULL, 0)); /*password*/
 
-		/*FTE servers will detect this string and treat it as a qw challenge instead (if it allows qw clients), so protocol choice is deterministic*/
-		if (contype & 1)
-			MSG_WriteString(&sb, "getchallenge");
+			/*FTE servers will detect this string and treat it as a qw challenge instead (if it allows qw clients), so protocol choice is deterministic*/
+			if (contype & 1)
+			{
+				char tmp[256];
+				MSG_WriteString(&sb, va("getchallenge %i %s\n", connectinfo.clchallenge, COM_QuotedString(com_protocolname.string, tmp, sizeof(tmp), false)));
+			}
+		}
 
 		*(int*)sb.data = LongSwap(NETFLAG_CTL | sb.cursize);
 		switch(NET_SendPacket (cls.sockets, sb.cursize, sb.data, to))
@@ -1303,14 +1370,24 @@ void CL_CheckForResend (void)
 
 	if (!keeptrying)
 	{
-		Cvar_Set(&cl_disconnectreason, va("No route to \"%s\", giving up\n", cls.servername));
-		Con_TPrintf ("No route to host, giving up\n");
-		connectinfo.trying = false;
-		SCR_EndLoadingPlaque();
+		if (to->prot != NP_DGRAM && connectinfo.nextadr+1 < connectinfo.numadr)
+		{
+			connectinfo.nextadr++;	//cycle hosts with each connection failure (if we got multiple addresses).
+			connectinfo.tries = 0;
+		}
+		else
+		{
+			Cvar_Set(&cl_disconnectreason, va("No route to \"%s\", giving up\n", cls.servername));
+			Con_TPrintf ("No route to host, giving up\n");
+			connectinfo.trying = false;
+			SCR_EndLoadingPlaque();
+
+			NET_CloseClient();
+		}
 	}
 }
 
-void CL_BeginServerConnect(const char *host, int port, qboolean noproxy)
+static void CL_BeginServerConnect(const char *host, int port, qboolean noproxy, enum coninfomode_e mode)
 {
 	if (!strncmp(host, "localhost", 9))
 		noproxy = true;	//FIXME: resolve the address here or something so that we don't end up using a proxy for lan addresses.
@@ -1323,8 +1400,8 @@ void CL_BeginServerConnect(const char *host, int port, qboolean noproxy)
 	if (!port)
 		port = cl_defaultport.value;
 #ifdef HAVE_DTLS
-	if (connectinfo.numadr)
-		NET_DTLS_Disconnect(cls.sockets, &connectinfo.adr[0]);
+	while (connectinfo.numadr)
+		NET_DTLS_Disconnect(cls.sockets, &connectinfo.adr[--connectinfo.numadr]);
 #endif
 	memset(&connectinfo, 0, sizeof(connectinfo));
 	if (*cl_disconnectreason.string)
@@ -1332,6 +1409,16 @@ void CL_BeginServerConnect(const char *host, int port, qboolean noproxy)
 	connectinfo.trying = true;
 	connectinfo.defaultport = port;
 	connectinfo.protocol = CP_UNKNOWN;
+	connectinfo.mode = mode;
+
+#ifdef HAVE_DTLS
+	if (net_enable_dtls.ival >= 3)
+		connectinfo.dtlsupgrade = DTLS_REQUIRE;
+	else if (net_enable_dtls.ival >= 2)
+		connectinfo.dtlsupgrade = DTLS_TRY;
+	else
+		connectinfo.dtlsupgrade = DTLS_DISABLE;
+#endif
 
 	SCR_SetLoadingStage(LS_CONNECTION);
 	CL_CheckForResend();
@@ -1351,16 +1438,32 @@ void CL_BeginServerReconnect(void)
 		NET_DTLS_Disconnect(cls.sockets, &connectinfo.adr[0]);
 	connectinfo.dtlsupgrade = 0;
 #endif
+#ifdef SUPPORT_ICE
+	while (connectinfo.numadr)	//remove any ICE addresses. probably we'll end up with no addresses left leaving us free to re-resolve giving us the original(ish) rtc connection.
+	{
+		if (connectinfo.adr[connectinfo.numadr-1].type != NA_ICE)
+			break;
+		connectinfo.numadr--;
+	}
+#endif
 	if (*cl_disconnectreason.string)
 		Cvar_Set(&cl_disconnectreason, "");
 	connectinfo.trying = true;
 	connectinfo.istransfer = false;
 	connectinfo.time = 0;
 	connectinfo.tries = 0;	//re-ensure routes.
+	connectinfo.nextadr = 0; //should at least be consistent, other than packetloss. yay.
 
 	NET_InitClient(false);
 }
 
+void CL_Transfer(netadr_t *adr)
+{
+	connectinfo.adr[0] = *adr;
+	connectinfo.numadr = 1;
+	connectinfo.istransfer = true;
+	CL_CheckForResend();
+}
 void CL_Transfer_f(void)
 {
 	char oldguid[64];
@@ -1426,7 +1529,7 @@ void CL_Connect_f (void)
 #endif
 		CL_Disconnect_f ();
 
-	CL_BeginServerConnect(server, 0, false);
+	CL_BeginServerConnect(server, 0, false, CIM_DEFAULT);
 }
 #if defined(CL_MASTER) && defined(HAVE_PACKET)
 static void CL_ConnectBestRoute_f (void)
@@ -1461,7 +1564,7 @@ static void CL_ConnectBestRoute_f (void)
 	else
 #endif
 		CL_Disconnect_f ();
-	CL_BeginServerConnect(server, 0, true);
+	CL_BeginServerConnect(server, 0, true, CIM_DEFAULT);
 }
 #endif
 
@@ -1490,7 +1593,7 @@ static void CL_Join_f (void)
 
 	Cvar_Set(&spectator, "0");
 
-	CL_BeginServerConnect(server, 0, false);
+	CL_BeginServerConnect(server, 0, false, CIM_DEFAULT);
 }
 
 void CL_Observe_f (void)
@@ -1518,13 +1621,14 @@ void CL_Observe_f (void)
 
 	Cvar_Set(&spectator, "1");
 
-	CL_BeginServerConnect(server, 0, false);
+	CL_BeginServerConnect(server, 0, false, CIM_DEFAULT);
 }
 
 #ifdef NQPROT
 void CLNQ_Connect_f (void)
 {
 	char	*server;
+	enum coninfomode_e mode;
 
 	if (Cmd_Argc() != 2)
 	{
@@ -1532,12 +1636,17 @@ void CLNQ_Connect_f (void)
 		return;
 	}
 
+	if (!strcmp(Cmd_Argv(0), "connectqe"))
+		mode = CIM_QEONLY;
+	else
+		mode = CIM_NQONLY;
+
 	server = Cmd_Argv (1);
 	server = strcpy(alloca(strlen(server)+1), server);
 
 	CL_Disconnect_f ();
 
-	CL_BeginServerConnect(server, 26000, true);
+	CL_BeginServerConnect(server, 26000, true, mode);
 }
 #endif
  
@@ -1733,6 +1842,7 @@ static void CL_ReconfigureCommands(int newgame)
 #endif
 	extern void CL_Say_f (void);
 	extern void CL_SayTeam_f (void);
+	extern void CL_Color_f (void);
 	static const struct
 	{
 		const char *name;
@@ -1744,8 +1854,9 @@ static void CL_ReconfigureCommands(int newgame)
 #define Q2 (1u<<CP_QUAKE2)
 #define Q3 (1u<<CP_QUAKE3)
 	{
-		{"sizeup",		SCR_SizeUp_f,	"Increase viewsize",	Q3},
-		{"sizedown",	SCR_SizeDown_f,	"Decrease viewsize",	Q3},
+		{"sizeup",		SCR_SizeUp_f,	"Increase viewsize",		Q3},
+		{"sizedown",	SCR_SizeDown_f,	"Decrease viewsize",		Q3},
+		{"color",		CL_Color_f,		"Change Player Colours",	Q3},
 #ifdef QUAKESTATS
 		{"weapon",		IN_Weapon,		"Configures weapon priorities for the next +attack as an alternative for the impulse command", ~Q1},
 		{"+fire",		IN_FireDown,	"'+fire 8 7' will fire lg if you have it and fall back on rl if you don't, and just fire your current weapon if neither are held. Releasing fire will then switch away to exploit a bug in most mods to deny your weapon upgrades to your killer.", ~Q1},
@@ -1920,6 +2031,7 @@ void CL_ClearState (qboolean gamestart)
 	CL_ResetFog(FOGTYPE_WATER);
 	CL_ResetFog(FOGTYPE_SKYROOM);
 
+	cl.mapstarttime = realtime;
 	cl.gamespeed = 1;
 	cl.protocol_qw = PROTOCOL_VERSION_QW;	//until we get an svc_serverdata
 	cl.allocated_client_slots = QWMAX_CLIENTS;
@@ -1971,6 +2083,8 @@ void CL_ClearState (qboolean gamestart)
 #ifdef CL_MASTER
 	MasterInfo_WriteServers();
 #endif
+
+	R_GAliasFlushSkinCache(false);
 }
 
 /*
@@ -1998,7 +2112,8 @@ void CL_Disconnect (const char *reason)
 // stop sounds (especially looping!)
 	S_StopAllSounds (true);
 #ifdef VM_CG
-	CG_Stop();
+	if (q3)
+		q3->cl.Disconnect(cls.sockets);
 #endif
 #ifdef CSQC_DAT
 	CSQC_Shutdown();
@@ -2104,11 +2219,11 @@ void CL_Disconnect (const char *reason)
 	FTENET_AddToCollection(cls.sockets, "conn", NULL, NA_INVALID, NP_DGRAM);
 #endif
 
-	Cvar_ForceSet(&cl_servername, "none");
+	Cvar_ForceSet(&cl_servername, "");
 
 	CL_ClearState(false);
 
-	FS_PureMode(0, NULL, NULL, NULL, NULL, 0);
+	FS_PureMode(NULL, 0, NULL, NULL, NULL, NULL, 0);
 
 	Alias_WipeStuffedAliases();
 
@@ -2349,7 +2464,7 @@ void CL_CheckServerPacks(void)
 	if (pure != oldpure || cl.serverpakschanged)
 	{
 		CL_PakDownloads((pure && !cl_download_packages.ival)?1:cl_download_packages.ival);
-		FS_PureMode(pure, cl.serverpacknames, cl.serverpackhashes, NULL, NULL, cls.challenge);
+		FS_PureMode(NULL, pure, cl.serverpacknames, cl.serverpackhashes, NULL, NULL, cls.challenge);
 
 		if (pure)
 		{
@@ -2454,6 +2569,7 @@ void CL_CheckServerInfo(void)
 		// movement vars for prediction
 		cl.bunnyspeedcap = Q_atof(InfoBuf_ValueForKey(&cl.serverinfo, "pm_bunnyspeedcap"));
 		movevars.slidefix = (Q_atof(InfoBuf_ValueForKey(&cl.serverinfo, "pm_slidefix")) != 0);
+		movevars.slidyslopes = (Q_atof(InfoBuf_ValueForKey(&cl.serverinfo, "pm_slidyslopes")) != 0);
 		movevars.airstep = (Q_atof(InfoBuf_ValueForKey(&cl.serverinfo, "pm_airstep")) != 0);
 		movevars.pground = (Q_atof(InfoBuf_ValueForKey(&cl.serverinfo, "pm_pground")) != 0);
 		movevars.stepdown = (Q_atof(InfoBuf_ValueForKey(&cl.serverinfo, "pm_stepdown")) != 0);
@@ -2503,6 +2619,7 @@ void CL_CheckServerInfo(void)
 	//FIXME: we should probably tweak our movement code instead.
 	cl.maxpitch = bound(-89.9, cl.maxpitch, 89.9);
 	cl.minpitch = bound(-89.9, cl.minpitch, 89.9);
+	cl.disablemouse = atoi(InfoBuf_ValueForKey(&cl.serverinfo, "nomouse"));
 
 	cl.hexen2pickups = atoi(InfoBuf_ValueForKey(&cl.serverinfo, "sv_pupglow"));
 
@@ -2579,7 +2696,6 @@ void CL_CheckServerInfo(void)
 	CL_CheckServerPacks();
 
 	Cvar_ForceCheatVars(cls.allow_semicheats, cls.allow_cheats);
-	Validation_Apply_Ruleset();
 
 	if (oldteamplay != cl.teamplay)
 		Skin_FlushPlayers();
@@ -3135,7 +3251,7 @@ void CL_ConnectionlessPacket (void)
 	int		c;
 	char	adr[MAX_ADR_SIZE];
 
-	MSG_BeginReading (msg_nullnetprim);
+	MSG_BeginReading (&net_message, msg_nullnetprim);
 	MSG_ReadLong ();        // skip the -1
 
 	Cmd_TokenizeString(net_message.data+4, false, false);
@@ -3184,7 +3300,7 @@ void CL_ConnectionlessPacket (void)
 
 	if (c == A2C_PRINT)
 	{
-		if (!strncmp(net_message.data+msg_readcount, "\\chunk", 6))
+		if (!strncmp(net_message.data+MSG_GetReadCount(), "\\chunk", 6))
 		{
 			if (NET_CompareBaseAdr(&cls.netchan.remote_address, &net_from) == false)
 				if (cls.realserverip.type == NA_INVALID || NET_CompareBaseAdr(&cls.realserverip, &net_from) == false)
@@ -3196,7 +3312,7 @@ void CL_ConnectionlessPacket (void)
 
 			if (CL_ParseOOBDownload())
 			{
-				if (msg_readcount != net_message.cursize)
+				if (MSG_GetReadCount() != net_message.cursize)
 				{
 					Con_Printf ("junk on the end of the packet\n");
 					CL_Disconnect_f();
@@ -3208,7 +3324,7 @@ void CL_ConnectionlessPacket (void)
 	}
 
 	if (cls.demoplayback == DPB_NONE && net_from.type != NA_LOOPBACK)
-		Con_Printf ("%s: ", NET_AdrToString (adr, sizeof(adr), &net_from));
+		Con_Printf (S_COLOR_GRAY"%s: ", NET_AdrToString (adr, sizeof(adr), &net_from));
 //	Con_DPrintf ("%s", net_message.data + 4);
 
 	if (c == 'f')	//using 'f' as a prefix so that I don't need lots of hacks
@@ -3218,13 +3334,13 @@ void CL_ConnectionlessPacket (void)
 		{
 			netadr_t adr;
 			char *data = MSG_ReadStringLine();
-			Con_TPrintf ("redirect to %s\n", data);
+			Con_TPrintf (S_COLOR_GRAY"redirect to %s\n", data);
 			if (NET_StringToAdr(data, PORT_DEFAULTSERVER, &adr))
 			{
 				if (CL_IsPendingServerAddress(&net_from))
 				{
-					if (!NET_EnsureRoute(cls.sockets, "redir", cls.servername, &net_from))
-						Con_Printf ("Unable to redirect to %s\n", data);
+					if (!NET_EnsureRoute(cls.sockets, "redir", cls.servername, &adr))
+						Con_Printf (CON_ERROR"Unable to redirect to %s\n", data);
 					else
 					{
 						connectinfo.istransfer = true;
@@ -3275,12 +3391,9 @@ void CL_ConnectionlessPacket (void)
 		static unsigned int lasttime = 0xdeadbeef;
 		static netadr_t lastadr;
 		unsigned int curtime = Sys_Milliseconds();
-		unsigned long ftepext1= 0, ftepext2 = 0, ezpext1 = 0, huffcrc=0, mtu=0;
 #ifdef HAVE_DTLS
 		int candtls = 0;	//0=no,1=optional,2=mandatory
 #endif
-		char guidhash[256];
-		*guidhash = 0;
 
 		s = MSG_ReadString ();
 		COM_Parse(s);
@@ -3300,12 +3413,12 @@ void CL_ConnectionlessPacket (void)
 		}
 #endif
 
-		Con_TPrintf ("challenge\n");
+		Con_TPrintf (S_COLOR_GRAY"challenge\n");
 
 		if (!CL_IsPendingServerAddress(&net_from))
 		{
 			if (net_from.prot != NP_RTC_TCP && net_from.prot != NP_RTC_TLS)
-				Con_Printf("Challenge from wrong server, ignoring\n");
+				Con_Printf(CON_WARNING"Challenge from wrong server, ignoring\n");
 			return;
 		}
 		connectinfo.numadr = 1;
@@ -3322,9 +3435,11 @@ void CL_ConnectionlessPacket (void)
 					return;
 				lasttime = curtime;
 
+				memset(&connectinfo.ext, 0, sizeof(connectinfo.ext));
+
 				connectinfo.protocol = CP_QUAKE3;
 				connectinfo.challenge = atoi(s+17);
-				CL_SendConnectPacket (&net_from, 0, 0, 0, 0, 0/*, ...*/, NULL);
+				CL_SendConnectPacket (&net_from);
 			}
 			else
 			{
@@ -3412,6 +3527,7 @@ void CL_ConnectionlessPacket (void)
 
 		s = COM_Parse(s);
 		connectinfo.challenge = atoi(com_token);
+		memset(&connectinfo.ext, 0, sizeof(connectinfo.ext));
 
 		while((s = COM_Parse(s)))
 		{
@@ -3451,15 +3567,15 @@ void CL_ConnectionlessPacket (void)
 				switch(c)
 				{
 				case PROTOCOL_INFO_GUID:
-					if (len > sizeof(guidhash)-1)
+					if (len > sizeof(connectinfo.ext.guidsalt)-1)
 					{
-						MSG_ReadData(guidhash, sizeof(guidhash));
-						MSG_ReadSkip(len-sizeof(guidhash));
-						len = sizeof(guidhash)-1;
+						MSG_ReadData(connectinfo.ext.guidsalt, sizeof(connectinfo.ext.guidsalt));
+						MSG_ReadSkip(len-sizeof(connectinfo.ext.guidsalt));
+						len = sizeof(connectinfo.ext.guidsalt)-1;
 					}
 					else
-						MSG_ReadData(guidhash, len);
-					guidhash[len] = 0;
+						MSG_ReadData(connectinfo.ext.guidsalt, len);
+					connectinfo.ext.guidsalt[len] = 0;
 					break;
 				default:
 					MSG_ReadSkip(len); /*payload*/
@@ -3471,17 +3587,17 @@ void CL_ConnectionlessPacket (void)
 				unsigned int l = MSG_ReadLong();
 				switch(cmd)
 				{
-				case PROTOCOL_VERSION_FTE1:			ftepext1 = l;		break;
-				case PROTOCOL_VERSION_FTE2:			ftepext2 = l;		break;
-				case PROTOCOL_VERSION_EZQUAKE1:		ezpext1 = l;		break;
-				case PROTOCOL_VERSION_FRAGMENT:		mtu = l;		break;
+				case PROTOCOL_VERSION_FTE1:			connectinfo.ext.fte1 = l;		break;
+				case PROTOCOL_VERSION_FTE2:			connectinfo.ext.fte2 = l;		break;
+				case PROTOCOL_VERSION_EZQUAKE1:		connectinfo.ext.ez1 = l;		break;
+				case PROTOCOL_VERSION_FRAGMENT:		connectinfo.ext.mtu = l;		break;
 #ifdef HAVE_DTLS
 				case PROTOCOL_VERSION_DTLSUPGRADE:	candtls = l;	break;	//0:not enabled. 1:explicit use allowed. 2:favour it. 3: require it
 #endif
 #ifdef HUFFNETWORK
-				case PROTOCOL_VERSION_HUFFMAN:		huffcrc = l;	break;
+				case PROTOCOL_VERSION_HUFFMAN:		connectinfo.ext.compresscrc = l;	break;
 #endif
-				case PROTOCOL_INFO_GUID:			Q_snprintfz(guidhash, sizeof(guidhash), "0x%x", l);	break;
+				case PROTOCOL_INFO_GUID:			Q_snprintfz(connectinfo.ext.guidsalt, sizeof(connectinfo.ext.guidsalt), "0x%x", l);	break;
 				default:
 					break;
 				}
@@ -3489,20 +3605,24 @@ void CL_ConnectionlessPacket (void)
 		}
 
 #ifdef HAVE_DTLS
-		if (candtls && net_from.prot == NP_DGRAM && (connectinfo.dtlsupgrade || candtls > 1))
+		if (candtls && net_from.prot == NP_DGRAM && (connectinfo.dtlsupgrade || candtls > 1) && !NET_IsEncrypted(&net_from))
 		{
 			//c2s getchallenge
 			//s2c c%u\0DTLS=$candtls
-			//c2s dtlsconnect %u  <<YOU ARE HERE>>
+			//<<YOU ARE HERE>>
+			//c2s dtlsconnect %u
 			//s2c dtlsopened
 			//c2s DTLS(getchallenge)
 			//DTLS(etc)
+
+			//NOTE: the dtlsconnect/dtlsopened parts are redundant and the non-dtls parts are entirely optional (and should be skipped the client requries/knows the server supports dtls)
+			//the challenge response includes server capabilities, so we still need the getchallenge/response part of the handshake despite dtls making the actual challenge part redundant.
 
 			//getchallenge has to be done twice, with the outer one only reporting whether dtls can/should be used.
 			//this means the actual connect packet is already over dtls, which protects the user's userinfo.
 			//FIXME: do rcon via dtls too, but requires tracking pending rcon packets until the handshake completes.
 
-			//server says it can do tls.
+			//server says it can do dtls, but will still need to ask it to allocate extra resources for us.
 
 			char *pkt;
 			//qwfwd proxy routing
@@ -3518,7 +3638,7 @@ void CL_ConnectionlessPacket (void)
 			NET_SendPacket (cls.sockets, strlen(pkt), pkt, &net_from);
 			return;
 		}
-		if (connectinfo.dtlsupgrade == DTLS_REQUIRE)
+		if (connectinfo.dtlsupgrade == DTLS_REQUIRE && !NET_IsEncrypted(&net_from))
 		{
 			Cvar_Set(&cl_disconnectreason, va("Server does not support/allow dtls. not connecting\n"));
 			connectinfo.trying = false;
@@ -3527,27 +3647,27 @@ void CL_ConnectionlessPacket (void)
 		}
 #endif
 
-		CL_SendConnectPacket (&net_from, mtu, ftepext1, ftepext2, ezpext1, huffcrc/*, ...*/, guidhash);
+		CL_SendConnectPacket (&net_from);
 		return;
 	}
 #ifdef Q2CLIENT
 	if (connectinfo.protocol == CP_QUAKE2)
 	{
 		char *nl;
-		msg_readcount--;
-		c = msg_readcount;
+		MSG_ReadSkip(-1);
+		c = MSG_GetReadCount();
 		s = MSG_ReadString ();
 		nl = strchr(s, '\n');
 		if (nl)
 		{
-			msg_readcount = c + nl-s + 1;
+			MSG_ReadSkip(c + nl-s + 1 - MSG_GetReadCount());
 			msg_badread = false;
 			*nl = '\0';
 		}
 
 		if (!strcmp(s, "print"))
 		{
-			Con_TPrintf ("print\n");
+			Con_TPrintf (S_COLOR_GRAY"print\n");
 
 			s = MSG_ReadString ();
 			if (connectinfo.trying && CL_IsPendingServerBaseAddress(&net_from) == false)
@@ -3578,7 +3698,7 @@ void CL_ConnectionlessPacket (void)
 		else
 		{
 			Con_TPrintf ("unknown connectionless packet for q2:  %s\n", s);
-			msg_readcount = c;
+			MSG_ReadSkip(c - MSG_GetReadCount());
 			c = MSG_ReadByte();
 		}
 	}
@@ -3592,7 +3712,7 @@ void CL_ConnectionlessPacket (void)
 		if (!strcmp(com_token, "ccept"))
 		{
 			/*this is a DP server... but we don't know which version nor nq protocol*/
-			Con_Printf ("accept\n");
+			Con_Printf (S_COLOR_GRAY"accept\n");
 			if (cls.state == ca_connected)
 				return;	//we're already connected. don't do it again!
 
@@ -3606,7 +3726,6 @@ void CL_ConnectionlessPacket (void)
 			Validation_Apply_Ruleset();
 			Netchan_Setup(NS_CLIENT, &cls.netchan, &net_from, connectinfo.qport);
 			CL_ParseEstablished();
-			Con_DPrintf ("CL_EstablishConnection: connected to %s\n", cls.servername);
 
 			cls.netchan.isnqprotocol = true;
 			cls.protocol = CP_NETQUAKE;
@@ -3628,7 +3747,7 @@ void CL_ConnectionlessPacket (void)
 	{
 		if (!strncmp(net_message.data+4, "infoResponse\n", 13))
 		{
-			Con_TPrintf ("infoResponse\n");
+			Con_TPrintf (S_COLOR_GRAY"infoResponse\n");
 			Info_Print(net_message.data+17, "");
 			return;
 		}
@@ -3638,7 +3757,7 @@ void CL_ConnectionlessPacket (void)
 		if (!strncmp(net_message.data+4, "getserversResponse", 18))
 		{
 			qbyte *b = net_message.data+4+18;
-			Con_TPrintf ("getserversResponse\n");
+			Con_TPrintf (S_COLOR_GRAY"getserversResponse\n");
 			while (b+7 <= net_message.data+net_message.cursize)
 			{
 				if (*b == '\\')
@@ -3676,11 +3795,14 @@ void CL_ConnectionlessPacket (void)
 		else if (!strcmp(com_token, "tlsopened"))
 		{	//server is letting us know that its now listening for a dtls handshake.
 #ifdef HAVE_DTLS
-			Con_Printf ("dtlsopened\n");
+			dtlscred_t cred;
+			Con_Printf (S_COLOR_GRAY"dtlsopened\n");
 			if (!CL_IsPendingServerAddress(&net_from))
 				return;
 
-			if (NET_DTLS_Create(cls.sockets, &net_from))
+			memset(&cred, 0, sizeof(cred));
+			cred.peer.name = cls.servername;
+			if (NET_DTLS_Create(cls.sockets, &net_from, &cred))
 			{
 				connectinfo.dtlsupgrade = DTLS_ACTIVE;
 				connectinfo.numadr = 1;	//fixate on this resolved address.
@@ -3705,7 +3827,7 @@ void CL_ConnectionlessPacket (void)
 		}
 		else
 		{
-			Con_Printf ("d\n");
+			Con_Printf ("disconnect\n");
 			if (cls.demoplayback != DPB_NONE)
 			{
 				Con_Printf("Disconnect\n");
@@ -3733,7 +3855,7 @@ client_connect:	//fixme: make function
 		}
 		if (net_from.type != NA_LOOPBACK)
 		{
-			Con_TPrintf ("connection\n");
+			Con_TPrintf (S_COLOR_GRAY"connection\n");
 
 #ifdef HAVE_SERVER
 			if (sv.state && sv.state != ss_clustermode)
@@ -3761,9 +3883,9 @@ client_connect:	//fixme: make function
 		cl.splitclients = 0;
 		cls.protocol = connectinfo.protocol;
 		cls.proquake_angles_hack = false;
-		cls.fteprotocolextensions = connectinfo.fteext1;
-		cls.fteprotocolextensions2 = connectinfo.fteext2;
-		cls.ezprotocolextensions1 = connectinfo.ezext1;
+		cls.fteprotocolextensions = connectinfo.ext.fte1;
+		cls.fteprotocolextensions2 = connectinfo.ext.fte2;
+		cls.ezprotocolextensions1 = connectinfo.ext.ez1;
 		cls.challenge = connectinfo.challenge;
 		Netchan_Setup (NS_CLIENT, &cls.netchan, &net_from, connectinfo.qport);
 		if (cls.protocol == CP_QUAKE2)
@@ -3772,41 +3894,28 @@ client_connect:	//fixme: make function
 			if (cls.protocol_q2 == PROTOCOL_VERSION_R1Q2 || cls.protocol_q2 == PROTOCOL_VERSION_Q2PRO)
 				cls.netchan.qportsize = 1;
 		}
-		cls.netchan.pext_fragmentation = connectinfo.mtu?true:false;
-		cls.netchan.pext_stunaware = !!(connectinfo.fteext2&PEXT2_STUNAWARE);
-		if (connectinfo.mtu >= 64)
+		cls.netchan.pext_fragmentation = connectinfo.ext.mtu?true:false;
+		cls.netchan.pext_stunaware = !!(connectinfo.ext.fte2&PEXT2_STUNAWARE);
+		if (connectinfo.ext.mtu >= 64)
 		{
-			cls.netchan.mtu = connectinfo.mtu;
+			cls.netchan.mtu = connectinfo.ext.mtu;
 			cls.netchan.message.maxsize = sizeof(cls.netchan.message_buf);
 		}
 		else
 			cls.netchan.mtu = MAX_QWMSGLEN;
 #ifdef HUFFNETWORK
-		cls.netchan.compresstable = Huff_CompressionCRC(connectinfo.compresscrc);
+		cls.netchan.compresstable = Huff_CompressionCRC(connectinfo.ext.compresscrc);
 #else
 		cls.netchan.compresstable = NULL;
 #endif
 		CL_ParseEstablished();
 #ifdef Q3CLIENT
-		if (cls.protocol != CP_QUAKE3)
+		if (cls.protocol == CP_QUAKE3)
+			q3->cl.Established();
+		else
 #endif
 			CL_SendClientCommand(true, "new");
 		cls.state = ca_connected;
-		if (cls.netchan.remote_address.type != NA_LOOPBACK)
-		{
-			switch(cls.protocol)
-			{
-			case CP_QUAKEWORLD:	Con_DPrintf("QW ");	break;
-			case CP_NETQUAKE:	Con_Printf ("NQ ");	break;
-			case CP_QUAKE2:		Con_Printf ("Q2 ");	break;
-			case CP_QUAKE3:		Con_Printf ("Q3 ");	break;
-			default: break;
-			}
-			if (cls.netchan.remote_address.prot == NP_DTLS || cls.netchan.remote_address.prot == NP_TLS || cls.netchan.remote_address.prot == NP_WSS)
-				Con_TPrintf ("Connected (^[^2encrypted\\tip\\Any passwords will be sent securely, but may still be logged^]).\n");
-			else
-				Con_TPrintf ("Connected (^[^1plain-text\\tip\\"CON_WARNING"Do not type passwords as they can potentially be seen by network sniffers^]).\n");
-		}
 #ifdef QUAKESPYAPI
 		allowremotecmd = false; // localid required now for remote cmds
 #endif
@@ -3873,7 +3982,7 @@ client_connect:	//fixme: make function
 	{
 		if (!strncmp(net_message.data+4, "print\n", 6))
 		{	//quake2+quake3 send rejects this way
-			Con_TPrintf ("print\n");
+			Con_TPrintf (S_COLOR_GRAY"print\n");
 			Con_Printf ("%s", net_message.data+10);
 
 			if (connectinfo.trying && CL_IsPendingServerBaseAddress(&net_from) == false)
@@ -3883,7 +3992,7 @@ client_connect:	//fixme: make function
 	}
 	if (c == A2C_PRINT)
 	{	//closest quakeworld has to a reject message
-		Con_TPrintf ("print\n");
+		Con_TPrintf (S_COLOR_GRAY"print\n");
 
 		s = MSG_ReadString ();
 		Con_Printf ("%s", s);
@@ -3919,7 +4028,10 @@ void CLNQ_ConnectionlessPacket(void)
 	int length;
 	unsigned short port;
 
-	MSG_BeginReading (msg_nullnetprim);
+	if (net_message.cursize < 5)
+		return;	//not enough size to be meaningful (qe does not include a port number)
+
+	MSG_BeginReading (&net_message, msg_nullnetprim);
 	length = LongSwap(MSG_ReadLong ());
 	if (!(length & NETFLAG_CTL))
 		return;	//not an nq control packet.
@@ -3937,45 +4049,54 @@ void CLNQ_ConnectionlessPacket(void)
 				Con_TPrintf ("Dup connect received.  Ignored.\n");
 			return;
 		}
-		port = htons((unsigned short)MSG_ReadLong());
-		//this is the port that we're meant to respond to.
 
-		if (port)
-		{
-			char buf[256];
-			net_from.port = port;
-			Con_DPrintf("redirecting to port %s\n", NET_AdrToString(buf, sizeof(buf), &net_from));
+		if (length == 5)
+		{	//QE strips the port entirely.
+			cls.proquake_angles_hack = false;
+			cls.protocol_nq = CPNQ_ID;
+			Con_DPrintf("QuakeEx server...\n");
 		}
-
-		cls.proquake_angles_hack = false;
-		cls.protocol_nq = CPNQ_ID;
-		if (MSG_ReadByte() == 1)	//a proquake server adds a little extra info
+		else
 		{
-			int ver = MSG_ReadByte();
-			Con_DPrintf("ProQuake server %i.%i\n", ver/10, ver%10);
+			port = htons((unsigned short)MSG_ReadLong());
+			//this is the port that we're meant to respond to.
 
-//			if (ver >= 34)
-			cls.proquake_angles_hack = true;
-			if (MSG_ReadByte() == 1)
+			if (port && !msg_badread)
 			{
-				//its a 'pure' server.
-				Con_Printf("pure ProQuake server\n");
-				return;
+				char buf[256];
+				net_from.port = port;
+				Con_DPrintf("redirecting to port %s\n", NET_AdrToString(buf, sizeof(buf), &net_from));
+			}
+
+			cls.proquake_angles_hack = false;
+			cls.protocol_nq = CPNQ_ID;
+			if (MSG_ReadByte() == 1)	//a proquake server adds a little extra info
+			{
+				int ver = MSG_ReadByte();
+				Con_DPrintf("ProQuake server %i.%i\n", ver/10, ver%10);
+
+//				if (ver >= 34)
+				cls.proquake_angles_hack = true;
+				if (MSG_ReadByte() == 1)
+				{
+					//its a 'pure' server.
+					Con_Printf("pure ProQuake server\n");
+					return;
+				}
 			}
 		}
 
 		Validation_Apply_Ruleset();
 
-		cls.fteprotocolextensions = connectinfo.fteext1;
-		cls.fteprotocolextensions2 = connectinfo.fteext2;
-		cls.ezprotocolextensions1 = connectinfo.ezext1;
+		cls.fteprotocolextensions = connectinfo.ext.fte1;
+		cls.fteprotocolextensions2 = connectinfo.ext.fte2;
+		cls.ezprotocolextensions1 = connectinfo.ext.ez1;
 		Netchan_Setup (NS_CLIENT, &cls.netchan, &net_from, connectinfo.qport);
 		CL_ParseEstablished();
 		cls.netchan.isnqprotocol = true;
 		cls.netchan.compresstable = NULL;
 		cls.protocol = CP_NETQUAKE;
 		cls.state = ca_connected;
-		Con_TPrintf ("Connected.\n");
 
 		total_loading_size = 100;
 		current_loading_size = 0;
@@ -3985,9 +4106,14 @@ void CLNQ_ConnectionlessPacket(void)
 		allowremotecmd = false; // localid required now for remote cmds
 #endif
 
-		//send a dummy packet.
-		//this makes our local nat think we initialised the conversation, so that we can receive the.
-		Netchan_Transmit(&cls.netchan, 1, "\x01", 2500);
+		if (length == 5)
+			cls.qex = (connectinfo.mode==CIM_QEONLY);
+		else
+		{
+			//send a dummy packet.
+			//this makes our local nat think we initialised the conversation, so that we can receive the.
+			Netchan_Transmit(&cls.netchan, 1, "\x01", 2500);
+		}
 		return;
 
 	case CCREP_REJECT:
@@ -4016,10 +4142,15 @@ void CL_ReadPacket(void)
 				return;
 #endif
 
+#if defined(SUPPORT_ICE)
+	if (ICE_WasStun(cls.sockets))
+		return;
+#endif
+
 #ifdef NQPROT
 	if (cls.demoplayback == DPB_NETQUAKE)
 	{
-		MSG_BeginReading (cls.netchan.netprim);
+		MSG_BeginReading (&net_message, cls.netchan.netprim);
 		cls.netchan.last_received = realtime;
 		CLNQ_ParseServerMessage ();
 
@@ -4031,7 +4162,7 @@ void CL_ReadPacket(void)
 #ifdef Q2CLIENT
 	if (cls.demoplayback == DPB_QUAKE2)
 	{
-		MSG_BeginReading (cls.netchan.netprim);
+		MSG_BeginReading (&net_message, cls.netchan.netprim);
 		cls.netchan.last_received = realtime;
 		CLQ2_ParseServerMessage ();
 		return;
@@ -4046,16 +4177,6 @@ void CL_ReadPacket(void)
 		return;
 	}
 
-	if (net_message.cursize < 6 && (cls.demoplayback != DPB_MVD && cls.demoplayback != DPB_EZTV)) //MVDs don't have the whole sequence header thing going on
-	{
-		char adr[MAX_ADR_SIZE];
-		if (net_message.cursize == 1 && net_message.data[0] == A2A_ACK)
-			Con_TPrintf ("%s: Ack (Pong)\n", NET_AdrToString(adr, sizeof(adr), &net_from));
-		else
-			Con_TPrintf ("%s: Runt packet\n", NET_AdrToString(adr, sizeof(adr), &net_from));
-		return;
-	}
-
 	if (cls.state == ca_disconnected)
 	{	//connect to nq servers, but don't get confused with sequenced packets.
 		if (NET_WasSpecialPacket(cls.sockets))
@@ -4064,6 +4185,16 @@ void CL_ReadPacket(void)
 		CLNQ_ConnectionlessPacket ();
 #endif
 		return;	//ignore it. We arn't connected.
+	}
+
+	if (net_message.cursize < 6 && (cls.demoplayback != DPB_MVD && cls.demoplayback != DPB_EZTV)) //MVDs don't have the whole sequence header thing going on
+	{
+		char adr[MAX_ADR_SIZE];
+		if (net_message.cursize == 1 && net_message.data[0] == A2A_ACK)
+			Con_TPrintf ("%s: Ack (Pong)\n", NET_AdrToString(adr, sizeof(adr), &net_from));
+		else
+			Con_TPrintf ("%s: Runt packet (%i bytes)\n", NET_AdrToString(adr, sizeof(adr), &net_from), net_message.cursize);
+		return;
 	}
 
 	//
@@ -4088,11 +4219,17 @@ void CL_ReadPacket(void)
 	{
 	case CP_NETQUAKE:
 #ifdef NQPROT
-		if(NQNetChan_Process(&cls.netchan))
+		switch(NQNetChan_Process(&cls.netchan))
 		{
+		case NQNC_IGNORED:
+			break;
+		case NQNC_ACK:
+		case NQNC_RELIABLE:
+		case NQNC_UNRELIABLE:
 			MSG_ChangePrimitives(cls.netchan.netprim);
-			CL_WriteDemoMessage (&net_message, msg_readcount);
+			CL_WriteDemoMessage (&net_message, MSG_GetReadCount());
 			CLNQ_ParseServerMessage ();
+			break;
 		}
 #endif
 		break;
@@ -4107,20 +4244,28 @@ void CL_ReadPacket(void)
 #endif
 	case CP_QUAKE3:
 #ifdef Q3CLIENT
-		CLQ3_ParseServerMessage();
+		{
+			cactive_t newstate = q3->cl.ParseServerMessage(&net_message);
+			if (newstate != cls.state)
+			{
+				cls.state = newstate;
+				if (cls.state == ca_active)
+					CL_MakeActive("Quake3Arena");	//became active, can flush old stuff now.
+			}
+		}
 #endif
 		break;
 	case CP_QUAKEWORLD:
 		if (cls.demoplayback == DPB_MVD || cls.demoplayback == DPB_EZTV)
 		{
-			MSG_BeginReading(cls.netchan.netprim);
+			MSG_BeginReading(&net_message, cls.netchan.netprim);
 			cls.netchan.last_received = realtime;
 			cls.netchan.outgoing_sequence = cls.netchan.incoming_sequence;
 		}
 		else if (!Netchan_Process(&cls.netchan))
 			return;		// wasn't accepted for some reason
 
-		CL_WriteDemoMessage (&net_message, msg_readcount);
+		CL_WriteDemoMessage (&net_message, MSG_GetReadCount());
 
 		if (cls.netchan.incoming_sequence > cls.netchan.outgoing_sequence)
 		{	//server should not be responding to packets we have not sent yet
@@ -4433,7 +4578,29 @@ void CL_DownloadSize_f(void)
 
 		dl = CL_DownloadFailed(rname, NULL, DLFAIL_REDIRECTED);
 		Con_DPrintf("Download of \"%s\" redirected to \"%s\".\n", rname, redirection);
-		CL_CheckOrEnqueDownloadFile(redirection, NULL, dl->flags);
+
+		if (!strncmp(redirection, "package/", 8))
+		{	//redirected to a package, make sure we cache it in the proper place.
+			char pkn[MAX_QPATH], pkh[32];
+			char localname[MAX_QPATH];
+			char *spn = cl.serverpacknames, *sph = cl.serverpackhashes;
+			*pkh = 0;
+			while(spn && sph)
+			{
+				spn=COM_ParseOut(spn, pkn, sizeof(pkn));
+				sph=COM_ParseOut(sph, pkh, sizeof(pkh));
+				if (!spn || !sph)
+					break;
+				if (!strcmp(pkn, redirection+8))
+					break;
+				*pkh = 0;
+			}
+			if (*pkh)
+				if (FS_GenCachedPakName(redirection+8, pkh, localname, sizeof(localname)))
+					CL_CheckOrEnqueDownloadFile(redirection+8, localname, DLLF_NONGAME);
+		}
+		else
+			CL_CheckOrEnqueDownloadFile(redirection, NULL, dl->flags);
 	}
 	else
 	{
@@ -4691,80 +4858,80 @@ void CL_Status_f(void)
 
 	if (cls.state)
 	{
-		Con_Printf("Server address: %s\n", NET_AdrToString(adr, sizeof(adr), &cls.netchan.remote_address));	//not relevent as a limit.
-
+		Con_Printf("Server address   : %s\n", NET_AdrToString(adr, sizeof(adr), &cls.netchan.remote_address));	//not relevent as a limit.
 		switch(cls.protocol)
 		{
 		default:
 		case CP_UNKNOWN:
-			Con_Printf("Unknown protocol\n");
+			Con_Printf("Network Protocol : Unknown\n");
 			break;
 		case CP_QUAKEWORLD:
-			Con_Printf("QuakeWorld-based protocol\n");
+			Con_Printf("Network Protocol : QuakeWorld\n");
 			break;
 	#ifdef NQPROT
 		case CP_NETQUAKE:
 			switch(cls.protocol_nq)
 			{
 			case CPNQ_ID:
-				Con_Printf("NetQuake-based protocol\n");
 				if (cls.proquake_angles_hack)
-					Con_Printf("With ProQuake's extended angles\n");
+					Con_Printf("Network Protocol : ProQuake\n");
+				else
+					Con_Printf("Network Protocol : NetQuake\n");
 				break;
 			case CPNQ_NEHAHRA:
-				Con_Printf("Nehahra protocol\n");
+				Con_Printf("Network Protocol : Nehahra\n");
 				break;
 			case CPNQ_BJP1:
-				Con_Printf("BJP1 protocol\n");
+				Con_Printf("Network Protocol : BJP1\n");
 				break;
 			case CPNQ_BJP2:
-				Con_Printf("BJP2 protocol\n");
+				Con_Printf("Network Protocol : BJP2\n");
 				break;
 			case CPNQ_BJP3:
-				Con_Printf("BJP3 protocol\n");
+				Con_Printf("Network Protocol : BJP3\n");
 				break;
 			case CPNQ_FITZ666:
-				Con_Printf("FitzQuake-based protocol\n");
+				Con_Printf("Network Protocol : FitzQuake\n");
 				break;
 			case CPNQ_DP5:
-				Con_Printf("DPP5 protocol\n");
+				Con_Printf("Network Protocol : DPP5\n");
 				break;
 			case CPNQ_DP6:
-				Con_Printf("DPP6 protocol\n");
+				Con_Printf("Network Protocol : DPP6\n");
 				break;
 			case CPNQ_DP7:
-				Con_Printf("DPP7 protocol\n");
+				Con_Printf("Network Protocol : DPP7\n");
 				break;
 			}
 			break;
 	#endif
 	#ifdef Q2CLIENT
 		case CP_QUAKE2:
-			Con_Printf("Quake2-based protocol\n");
-			if (cls.protocol_q2 && cls.protocol_q2 < PROTOCOL_VERSION_Q2)
-				Con_Printf("\toutdated protocol version\n");
-			else switch (cls.protocol_q2)
+			switch (cls.protocol_q2)
 			{
 			case PROTOCOL_VERSION_Q2:
-				Con_Printf("\tStandard Quake2\n");
+				Con_Printf("Network Protocol : Quake2\n");
 				break;
 			case PROTOCOL_VERSION_R1Q2:
-				Con_Printf("\tR1Q2\n");
+				Con_Printf("Network Protocol : R1Q2\n");
 				break;
 			case PROTOCOL_VERSION_Q2PRO:
-				Con_Printf("\tQ2Pro\n");
+				Con_Printf("Network Protocol : Q2Pro\n");
+				break;
+			default:
+				Con_Printf("Network Protocol : Quake2 (OLD)\n");
 				break;
 			}
 			break;
 	#endif
 	#ifdef Q3CLIENT
 		case CP_QUAKE3:
-			Con_Printf("Quake3-based protocol\n");
+			Con_Printf("Network Protocol : Quake3\n");
 			break;
 	#endif
 	#ifdef PLUGINS
 		case CP_PLUGIN:
-			Con_Printf("external protocol\n");
+			Con_Printf("Network Protocol : (unknown, provided by plugin)\n");
 			break;
 	#endif
 		}
@@ -4780,6 +4947,10 @@ void CL_Status_f(void)
 			Con_Printf("\tvoice chat\n");
 		if (cls.fteprotocolextensions2 & PEXT2_REPLACEMENTDELTAS)
 			Con_Printf("\treplacement deltas\n");
+		if (cls.fteprotocolextensions2 & PEXT2_VRINPUTS)
+			Con_Printf("\tvrinputs\n");
+		if (cls.fteprotocolextensions2 & PEXT2_INFOBLOBS)
+			Con_Printf("\tinfoblobs\n");
 	}
 
 	if (cl.worldmodel)
@@ -4795,6 +4966,7 @@ void CL_Status_f(void)
 		extern int num_sfx;
 		int count = 0, i;
 		edict_t *e;
+		Con_Printf ("csqc             : loaded\n");
 		for (i = 0; i < csqc_world.num_edicts; i++)
 		{
 			e = EDICT_NUM_PB(csqc_world.progs, i);
@@ -4802,21 +4974,23 @@ void CL_Status_f(void)
 				continue;	//free, and older than the zombie time
 			count++;
 		}
-		Con_Printf("entities         : %i/%i/%i (mem: %.1f%%)\n", count, csqc_world.num_edicts, csqc_world.max_edicts, 100*(float)(csqc_world.progs->stringtablesize/(double)csqc_world.progs->stringtablemaxsize));
+		Con_Printf("csqc entities    : %i/%i/%i (mem: %.1f%%)\n", count, csqc_world.num_edicts, csqc_world.max_edicts, 100*(float)(csqc_world.progs->stringtablesize/(double)csqc_world.progs->stringtablemaxsize));
 		for (count = 1; count < MAX_PRECACHE_MODELS; count++)
 			if (!*cl.model_csqcname[count])
 				break;
-		Con_Printf("models           : %i/%i\n", count, MAX_PRECACHE_MODELS);
-		Con_Printf("sounds           : %i/\n", num_sfx);	//there is a limit, its just private. :(
+		Con_Printf("csqc models      : %i/%i\n", count, MAX_PRECACHE_MODELS);
+		Con_Printf("client sounds    : %i\n", num_sfx);	//there is a limit, its just private. :(
 
 		for (count = 1; count < MAX_SSPARTICLESPRE; count++)
 			if (!cl.particle_csname[count])
 				break;
 		if (count!=1)
-			Con_Printf("particles        : %i/%i\n", count, MAX_SSPARTICLESPRE);
+			Con_Printf("csqc particles   : %i/%i\n", count, MAX_CSPARTICLESPRE);
 		if (cl.csqcdebug)
 			Con_Printf("csqc debug       : true\n");
 	}
+	else
+		Con_Printf ("csqc             : not loaded\n");
 #endif
 	Con_Printf("gamedir          : %s\n", FS_GetGamedir(true));
 }
@@ -4918,9 +5092,11 @@ void CL_Init (void)
 	Cvar_Register (&cl_pure,	cl_screengroup);
 	Cvar_Register (&cl_hudswap,	cl_screengroup);
 	Cvar_Register (&cl_maxfps,	cl_screengroup);
+	Cvar_Register (&cl_maxfps_slop,	cl_screengroup);
 	Cvar_Register (&cl_idlefps, cl_screengroup);
 	Cvar_Register (&cl_yieldcpu, cl_screengroup);
 	Cvar_Register (&cl_timeout, cl_controlgroup);
+	Cvar_Register (&cl_forcevrui, cl_controlgroup);
 	Cvar_Register (&lookspring, cl_inputgroup);
 	Cvar_Register (&lookstrafe, cl_inputgroup);
 	Cvar_Register (&sensitivity, cl_inputgroup);
@@ -5137,13 +5313,14 @@ void CL_Init (void)
 		);
 	Cmd_AddCommandD ("cl_transfer", CL_Transfer_f, "Connect to a different server, disconnecting from the current server only when the new server replies.");
 #ifdef TCPCONNECT
-	Cmd_AddCommandAD ("tcpconnect", CL_TCPConnect_f, CL_Connect_c, "Connect to a server using the tcp:// prefix");
+	Cmd_AddCommandAD ("connecttcp", CL_TCPConnect_f, CL_Connect_c, "Connect to a server using the tcp:// prefix");
 #endif
 #ifdef IRCCONNECT
-	Cmd_AddCommand ("ircconnect", CL_IRCConnect_f);
+	Cmd_AddCommand ("connectirc", CL_IRCConnect_f);
 #endif
 #ifdef NQPROT
-	Cmd_AddCommandD ("nqconnect", CLNQ_Connect_f, "Connects to the specified server, defaulting to port "STRINGIFY(PORT_NQSERVER)". Otherwise identical to the connect command.");
+	Cmd_AddCommandD ("connectnq", CLNQ_Connect_f, "Connects to the specified server, defaulting to port "STRINGIFY(PORT_NQSERVER)". Also disables QW/Q2/Q3/DP handshakes preventing them from being favoured, so should only be used when you actually want NQ protocols specifically.");
+	Cmd_AddCommandD ("connectqe", CLNQ_Connect_f, "Connects to the specified server, defaulting to port "STRINGIFY(PORT_NQSERVER)". Also forces the use of DTLS and QE-specific handshakes. You will also need to ensure the dtls_psk_* cvars are set properly or the server will refuse the connection.");
 #endif
 	Cmd_AddCommand ("reconnect", CL_Reconnect_f);
 	Cmd_AddCommandAD ("join", CL_Join_f, CL_Connect_c, "Switches away from spectator mode, optionally connecting to a different server.");
@@ -5214,6 +5391,7 @@ void CL_Init (void)
 	Stats_Init();
 #endif
 	CL_ClearState(false);	//make sure the cl.* fields are set properly if there's no ssqc or whatever.
+	R_BumpLightstyles(1);
 }
 
 
@@ -5839,7 +6017,7 @@ done:
 		if (!(f->flags & HRF_ACTION))
 		{
 			Key_Dest_Remove(kdm_console);
-			Menu_Prompt(Host_RunFilePrompted, f, va("Exec %s?\n", COM_SkipPath(f->fname)), "Yes", NULL, "Cancel");
+			Menu_Prompt(Host_RunFilePrompted, f, va("Exec %s?\n", COM_SkipPath(f->fname)), "Yes", NULL, "Cancel", true);
 			return;
 		}
 		if (f->flags & HRF_OPENED)
@@ -5950,17 +6128,17 @@ done:
 		Key_Dest_Remove(kdm_console);
 		if (haschanged)
 		{
-			Menu_Prompt(Host_RunFilePrompted, f, va("File already exists.\nWhat would you like to do?\n%s\n", displayname), "Overwrite", "Run old", "Cancel");
+			Menu_Prompt(Host_RunFilePrompted, f, va("File already exists.\nWhat would you like to do?\n%s\n", displayname), "Overwrite", "Run old", "Cancel", true);
 			return;
 		}
 		else if (isnew)
 		{
-			Menu_Prompt(Host_RunFilePrompted, f, va("File appears new.\nWould you like to install\n%s\n", displayname), "Install!", "", "Cancel");
+			Menu_Prompt(Host_RunFilePrompted, f, va("File appears new.\nWould you like to install\n%s\n", displayname), "Install!", "", "Cancel", true);
 			return;
 		}
 		else
 		{
-			Menu_Prompt(NULL, NULL, va("File is already installed\n%s\n", displayname), NULL, NULL, "Cancel");
+			Menu_Prompt(NULL, NULL, va("File is already installed\n%s\n", displayname), NULL, NULL, "Cancel", true);
 			f->flags |= HRF_ABORT;
 		}
 	}
@@ -6004,12 +6182,15 @@ done:
 qboolean Host_RunFile(const char *fname, int nlen, vfsfile_t *file)
 {
 	hrf_t *f;
-#if defined(_WIN32) && !defined(FTE_SDL) && !defined(WINRT) && !defined(_XBOX)
-	//win32 file urls are basically fucked, so defer to the windows api.
+#if defined(FTE_TARGET_WEB)
+	if (nlen >= 8 && !strncmp(fname, "file:///", 8))
+	{	//just here so we don't get confused by the arbitrary scheme check below.
+	}
+#else
+	//file urls need special handling, if only for percent-encoding.
 	char utf8[MAX_OSPATH*3];
-	if (nlen >= 7 && !strncmp(fname, "file://", 7))
+	if (nlen >= 5 && !strncmp(fname, "file:", 5))
 	{
-		qboolean Sys_ResolveFileURL(const char *inurl, int inlen, char *out, int outlen);
 		if (!Sys_ResolveFileURL(fname, nlen, utf8, sizeof(utf8)))
 		{
 			Con_Printf("Cannot resolve file url\n");
@@ -6017,17 +6198,6 @@ qboolean Host_RunFile(const char *fname, int nlen, vfsfile_t *file)
 		}
 		fname = utf8;
 		nlen = strlen(fname);
-	}
-#elif defined(FTE_TARGET_WEB)
-	if (nlen >= 8 && !strncmp(fname, "file:///", 8))
-	{	//just here so we don't get confused by the arbitrary scheme check below.
-	}
-#else
-	//unix file urls are fairly consistant - must be an absolute path.
-	if (nlen >= 8 && !strncmp(fname, "file:///", 8))
-	{
-		fname += 7;
-		nlen -= 7;
 	}
 #endif
 	else if((nlen >= 7 && !strncmp(fname, "http://", 7)) ||
@@ -6082,7 +6252,7 @@ qboolean Host_RunFile(const char *fname, int nlen, vfsfile_t *file)
 			}
 
 			schemelen++;
-			if (!strncmp(schemestart+schemelen, "//", schemelen))
+			if (!strncmp(schemestart+schemelen, "//", 2))
 				schemelen+=2;
 
 			t = Z_Malloc(urilen+1);
@@ -6142,7 +6312,6 @@ Runs all active servers
 ==================
 */
 extern cvar_t cl_netfps;
-extern cvar_t cl_sparemsec;
 
 void CL_StartCinematicOrMenu(void);
 int		nopacketcount;
@@ -6155,14 +6324,14 @@ double Host_Frame (double time)
 	static double		time3 = 0;
 	int			pass0, pass1, pass2, pass3, i;
 //	float fps;
-	double newrealtime;
-	static double spare;
+	double newrealtime, spare;
 	float maxfps;
 	qboolean maxfpsignoreserver;
 	qboolean idle;
 	extern int r_blockvidrestart;
 	static qboolean hadwork;
 	qboolean vrsync;
+	qboolean mustrenderbeforeread;
 
 	RSpeedLocals();
 
@@ -6286,33 +6455,34 @@ double Host_Frame (double time)
 	if (vid.isminimized && (maxfps <= 0 || maxfps > 10))
 		maxfps = 10;
 
-	if (maxfps > 0 
+	if (maxfps > 0
 #ifdef HAVE_MEDIA_ENCODER
 		&& Media_Capturing() != 2
 #endif
 		&& !vrsync)
 	{
-//		realtime += spare/1000;	//don't use it all!
-		double newspare = CL_FilterTime((spare/1000 + realtime - oldrealtime)*1000, maxfps, 1.5, maxfpsignoreserver);
-		if (!newspare)
+		spare = CL_FilterTime((realtime - oldrealtime)*1000, maxfps, 1.5, maxfpsignoreserver);
+		if (!spare)
 		{
 			while(COM_DoWork(0, false))
 				;
 			return (cl_yieldcpu.ival || vid.isminimized || idle)? (1.0 / maxfps - (realtime - oldrealtime)) : 0;
 		}
+		if (spare > cl_maxfps_slop.ival)
+			spare = cl_maxfps_slop.ival;
+		spare /= 1000;
+		if (spare > 0.5/maxfps)	//don't delay the next by
+			spare = 0.5/maxfps;
 		if (spare < 0 || cls.state < ca_onserver)
-			spare = 0;	//uncapped.
-		if (spare > cl_sparemsec.ival)
-			spare = cl_sparemsec.ival;
-		spare = newspare;
-
-//		realtime -= spare/1000;	//don't use it all!
+			spare = 0;
 	}
 	else
 		spare = 0;
-
 	host_frametime = (realtime - oldrealtime)*cl.gamespeed;
-	oldrealtime = realtime;
+	oldrealtime = realtime-spare;
+
+	if (host_speeds.ival)
+		time0 = Sys_DoubleTime ();	//end-of-idle
 
 	if (cls.demoplayback && !cl.stillloading)
 	{
@@ -6374,8 +6544,9 @@ double Host_Frame (double time)
 	cl.do_lerp_players = cl_lerp_players.ival || (cls.demoplayback==DPB_MVD || cls.demoplayback == DPB_EZTV) || (cls.demoplayback && !cl_nolerp.ival && !cls.timedemo);
 	CL_AllowIndependantSendCmd(false);
 
-	// fetch results from server
-	CL_ReadPackets ();
+	mustrenderbeforeread = cls.protocol == CP_QUAKE2;	//FIXME: quake2 MUST render a frame (or a later one) before it can read any acks from the server, otherwise its prediction screws up. I'm too lazy to rewrite that right now.
+//	if (mustrenderbeforeread)
+	CL_ReadPackets();	//this should be redundant.
 
 	CL_RequestNextDownload();
 
@@ -6418,9 +6589,6 @@ double Host_Frame (double time)
 
 	RSpeedEnd(RSPEED_PROTOCOL);
 
-	if (host_speeds.ival)
-		time0 = Sys_DoubleTime ();
-
 #ifdef HAVE_SERVER
 	if (sv.state)
 	{
@@ -6435,6 +6603,15 @@ double Host_Frame (double time)
 	else
 		MSV_PollSlaves();
 #endif
+
+	// fetch results from server... now that we've run it.
+	if (!mustrenderbeforeread)
+	{
+		CL_AllowIndependantSendCmd(false);
+		CL_ReadPackets ();
+		CL_AllowIndependantSendCmd(true);
+	}
+
 	CL_CalcClientTime();
 
 	// update video
@@ -6471,6 +6648,7 @@ double Host_Frame (double time)
 			{
 				RSpeedMark();
 				vid.ime_allow = false;
+				vrui.enabled = cl_forcevrui.ival;
 				if (SCR_UpdateScreen())
 					fps_count++;
 				if (R2D_Flush)
@@ -6481,6 +6659,8 @@ double Host_Frame (double time)
 		}
 		else
 			fps_count++;
+
+		sh_config.showbatches = false;
 	}
 
 	if (host_speeds.ival)
@@ -6590,11 +6770,6 @@ void CL_StartCinematicOrMenu(void)
 		startuppending = false;
 		Key_Dest_Remove(kdm_console);	//make sure console doesn't stay up weirdly.
 	}
-
-	//start up the ui now we have a renderer
-#ifdef VM_UI
-	UI_Start();
-#endif
 
 	Cbuf_AddText("menu_restart\n", RESTRICT_LOCAL);
 
@@ -6720,7 +6895,7 @@ void CL_ArgumentOverrides(void)
 //note that this does NOT include commandline.
 void CL_ExecInitialConfigs(char *resetcommand)
 {
-#ifdef QUAKESTATS
+#ifndef QUAKETC
 	int qrc, hrc;
 #endif
 	int def;
@@ -6746,6 +6921,10 @@ void CL_ExecInitialConfigs(char *resetcommand)
 	Cbuf_AddText(resetcommand, RESTRICT_LOCAL);
 	Cbuf_AddText("\n", RESTRICT_LOCAL);
 	COM_ParsePlusSets(true);
+
+#ifdef QUAKESTATS
+	Cbuf_AddText("register_bestweapon reset\n", RESTRICT_LOCAL);
+#endif
 
 	def = COM_FDepthFile("default.cfg", true);	//q2/q3/tc
 #ifdef QUAKETC
@@ -6913,7 +7092,7 @@ void Host_FinishLoading(void)
 			char *scheme = Sys_URIScheme_NeedsRegistering();
 			if (scheme)
 			{
-				Menu_Prompt(Host_URIPrompt, NULL, va("The URI scheme %s:// is not configured.\nRegister now?", scheme), "Register", NULL, "No");
+				Menu_Prompt(Host_URIPrompt, NULL, va("The URI scheme %s:// is not configured.\nRegister now?", scheme), "Register", NULL, "No", true);
 				Z_Free(scheme);
 			}
 		}
@@ -7017,10 +7196,6 @@ void Host_Init (quakeparms_t *parms)
 	Editor_Init();
 #endif
 
-#ifdef VM_UI
-	UI_Init();
-#endif
-
 #ifdef CL_MASTER
 	Master_SetupSockets();
 #endif
@@ -7037,6 +7212,10 @@ void Host_Init (quakeparms_t *parms)
 	Cvar_ParseWatches();
 	host_initialized = true;
 	forcesaveprompt = false;
+
+#ifdef PLUGINS
+	Plug_Initialise(false);
+#endif
 
 	Sys_SendKeyEvents();
 
@@ -7077,10 +7256,6 @@ void Host_Shutdown(void)
 	CSQC_Shutdown();
 #endif
 
-#ifdef VM_UI
-	UI_Stop();
-#endif
-
 	S_Shutdown(true);
 	CDAudio_Shutdown ();
 	IN_Shutdown ();
@@ -7110,15 +7285,16 @@ void Host_Shutdown(void)
 	Stats_Clear();
 #endif
 	Ruleset_Shutdown();
-#ifdef Q3CLIENT
-	VMQ3_FlushStringHandles();
-#endif
 
 	COM_DestroyWorkerThread();
 
 	P_ShutdownParticleSystem();
 	Cvar_Shutdown();
 	Validation_FlushFileList();
+
+#ifdef HAVE_GNUTLS
+	GnuTLS_Shutdown();
+#endif
 
 	Cmd_Shutdown();
 #ifdef PACKAGEMANAGER

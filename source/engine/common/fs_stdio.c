@@ -1,12 +1,19 @@
 #include "quakedef.h"
 #include "fs.h"
 #include "errno.h"
+#if _POSIX_C_SOURCE >= 200112L
+#include <sys/stat.h>
+#endif
 
 #if !defined(NACL) && !defined(FTE_TARGET_WEB) && (!defined(_WIN32) || defined(FTE_SDL))
 
 #ifdef WEBSVONLY
 	#define Z_Free free
 	#define Z_Malloc malloc
+	#define Con_Printf printf
+	#define fs_readonly true
+	#define FS_FlushFSHashFull()
+	int Sys_EnumerateFiles (const char *gpath, const char *match, int (QDECL *func)(const char *fname, qofs_t fsize, time_t modtime, void *parm, searchpathfuncs_t *spath), void *parm, searchpathfuncs_t *spath) {return 0;}
 #else
 	#if !defined(_WIN32) || defined(FTE_SDL) || defined(WINRT) || defined(_XBOX)
 		#define FSSTDIO_OpenPath VFSOS_OpenPath
@@ -235,7 +242,6 @@ vfsfile_t *VFSSTDIO_Open(const char *osname, const char *mode, qboolean *needsfl
 	return (vfsfile_t*)file;
 }
 
-#ifndef WEBSVONLY
 #if !defined(_WIN32) || defined(FTE_SDL) || defined(WINRT) || defined(_XBOX)
 vfsfile_t *VFSOS_Open(const char *osname, const char *mode)
 {
@@ -297,6 +303,9 @@ static unsigned int QDECL FSSTDIO_CreateLoc(searchpathfuncs_t *handle, flocation
 	stdiopath_t *sp = (void*)handle;
 	char	*ofs;
 
+	if (fs_readonly)
+		return FF_NOTFOUND;
+
 	loc->len = 0;
 	loc->offset = 0;
 	loc->fhandle = handle;
@@ -336,7 +345,19 @@ static unsigned int QDECL FSSTDIO_FLocate(searchpathfuncs_t *handle, flocation_t
 	if (Q_snprintfz (netpath, sizeof(netpath), "%s/%s", sp->rootpath, filename))
 		return FF_NOTFOUND;
 
-#if 0//def ANDROID
+#if _POSIX_C_SOURCE >= 200112L
+	{
+		struct stat sb;
+		if (stat(netpath, &sb) == 0)
+		{
+			len = sb.st_size;
+			if ((sb.st_mode & S_IFMT) != S_IFREG)
+				return FF_NOTFOUND; //no directories nor sockets! boo! (any simlink will already have been resolved)
+		}
+		else
+			return FF_NOTFOUND; //some kind of screwup.
+	}
+#elif 0//defined(ANDROID)
 	{
 		vfsfile_t *f = VFSSTDIO_Open(netpath, "rb", NULL);
 		if (!f)
@@ -476,6 +497,5 @@ searchpathfuncs_t *QDECL FSSTDIO_OpenPath(vfsfile_t *mustbenull, searchpathfuncs
 	return &np->pub;
 }
 
-#endif
 #endif
 

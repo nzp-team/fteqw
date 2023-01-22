@@ -104,7 +104,7 @@ extern int sv_max_staticentities;
 extern staticsound_state_t *sv_staticsounds;
 extern int sv_max_staticsounds;
 
-typedef struct
+typedef struct server_s
 {
 	qboolean	active;				// false when server is going down
 	server_state_t	state;			// precache commands are only valid during load
@@ -112,15 +112,14 @@ typedef struct
 	float		gamespeed;	//time progression multiplier, fixed per-level.
 	unsigned int csqcchecksum;
 	qboolean	mapchangelocked;
-	qboolean	restarting;
 
 #ifdef SAVEDGAMES
 	char		loadgame_on_restart[MAX_QPATH];	//saved game to load on map_restart
 	double		autosave_time;
 #endif
-	double		time;			//current map time
-	double		restartedtime;	//sv.time from last map restart
-	double		starttime;		//system time we changed map.
+	double		time;			//time passed since map (re)start
+	double		starttime;		//Sys_DoubleTime at the start of the map
+	double		restarttime;	//for delayed map restarts - map will restart once sv.time reaches this stamp
 	int framenum;
 	int logindatabase;
 
@@ -233,7 +232,9 @@ typedef struct
 
 	qboolean gamedirchanged;
 
+#ifdef QUAKESTATS
 	qboolean haveitems2;	//use items2 field instead of serverflags for the high bits of STAT_ITEMS
+#endif
 
 
 
@@ -390,26 +391,6 @@ typedef struct	//merge?
 	int					senttime;			// for ping calculations
 	float				ping_time;
 } q2client_frame_t;
-#endif
-#ifdef Q3SERVER
-#include "../client/clq3defs.h"
-typedef struct	//merge?
-{
-	int					flags;
-	int					areabytes;
-	qbyte				areabits[MAX_Q2MAP_AREAS/8];		// portalarea visibility bits
-	q3playerState_t		ps;
-	int					num_entities;
-	int					first_entity;		// into the circular sv_packet_entities[]
-	int					senttime;			// for ping calculations
-
-
-	int				serverMessageNum;
-	int				serverCommandNum;
-	int				serverTime;		// server time the message is valid for (in msec)
-	int				localTime;
-	int				deltaFrame;
-} q3client_frame_t;
 #endif
 
 #define MAX_BACK_BUFFERS 16
@@ -578,13 +559,28 @@ typedef struct client_s
 	char			*statss[MAX_CL_STATS];
 	char			*centerprintstring;
 
+	struct
+	{
+		qboolean active;
+		char *header;
+		double nextsend;	//qex is a one-off, other clients need spam.
+		size_t numopts, maxopts, selected;
+		struct
+		{
+			char *text;
+			int impulse;
+		} *opt;
+
+		int oldmove[2];
+	} prompt;
+
 	union{	//save space
 		client_frame_t	*frames;	// updates can be deltad from here
 #ifdef Q2SERVER
 		q2client_frame_t	*q2frames;
 #endif
 #ifdef Q3SERVER
-		q3client_frame_t	*q3frames;
+		void	*q3frames;
 #endif
 	} frameunion;
 	packet_entities_t sentents;
@@ -624,7 +620,7 @@ typedef struct client_s
 	//quake3 does reliables only via this mechanism. basically just like q1's stuffcmds.
 	int server_command_ack;				//number known to have been received.
 	int server_command_sequence;		//number available.
-	char server_commands[64][1024];		//the commands, to deal with resends
+	char server_commands[256][1024];		//the commands, to deal with resends
 #endif
 
 	//true/false/persist
@@ -698,6 +694,7 @@ typedef struct client_s
 	enum serverprotocols_e protocol;
 	unsigned int	supportedprotocols;
 	qboolean proquake_angles_hack;	//expect 16bit client->server angles .
+	qboolean qex;	//qex sends strange clc inputs and needs workarounds for its prediction. it also favours fitzquake's protocol but violates parts of it.
 
 	unsigned int lastruncmd;	//for non-qw physics. timestamp they were last run, so switching between physics modes isn't a (significant) cheat
 //speed cheat testing
@@ -939,7 +936,7 @@ typedef struct svtcpstream_s {
 } svtcpstream_t;
 #endif
 
-typedef struct
+typedef struct server_static_s
 {
 	gametype_e	gametype;
 	int			spawncount;			// number of servers spawned since start,
@@ -1175,6 +1172,7 @@ int SV_CalcPing (client_t *cl, qboolean forcecalc);
 void SV_FullClientUpdate (client_t *client, client_t *to);
 char *SV_PlayerPublicAddress(client_t *cl);
 
+const char *SV_GetProtocolVersionString(void);	//decorate the protocol version field of server queries with extra features...
 qboolean SVC_GetChallenge (qboolean respond_dp);
 int SV_NewChallenge (void);
 void SVC_DirectConnect(int expectedreliablesequence);
@@ -1183,6 +1181,7 @@ typedef struct
 	enum serverprotocols_e protocol;		//protocol used to talk to this client.
 #ifdef NQPROT
 	qboolean proquakeanglehack;				//specifies that the client will expect proquake angles if we give a proquake CCREP_ACCEPT response.
+	qboolean isqex;							//yay quirks...
 	unsigned int expectedreliablesequence;	//required for nq connection cookies (like tcp's syn cookies).
 	unsigned int supportedprotocols;		//1<<SCP_* bitmask
 #endif
@@ -1240,7 +1239,6 @@ void SSV_SavePlayerStats(client_t *cl, int reason);	//initial, periodic (in case
 void SSV_RequestShutdown(void); //asks the cluster to not send us new players
 
 vfsfile_t *Sys_ForkServer(void);
-void Sys_InstructMaster(sizebuf_t *cmd);	//first two bytes will always be the length of the data
 vfsfile_t *Sys_GetStdInOutStream(void);		//obtains a bi-directional pipe for reading/writing via stdin/stdout. make sure the system code won't be using it.
 
 qboolean MSV_NewNetworkedNode(vfsfile_t *stream, qbyte *reqstart, qbyte *buffered, size_t buffersize, const char *remoteaddr);	//call to register a pipe to a newly discovered node.
@@ -1292,24 +1290,6 @@ void MSGQ2_WriteDeltaEntity (q2entity_state_t *from, q2entity_state_t *to, sizeb
 void SVQ2_BuildBaselines(void);
 #endif
 
-//q3 stuff
-#ifdef Q3SERVER
-void SVQ3_ShutdownGame(qboolean restarting);
-qboolean SVQ3_InitGame(qboolean restarting);
-void SVQ3_ServerinfoChanged(const char *key);
-qboolean SVQ3_RestartGamecode(void);
-qboolean SVQ3_ConsoleCommand(void);
-qboolean SVQ3_HandleClient(void);
-void SVQ3_DirectConnect(void);
-void SVQ3_NewMapConnects(void);
-void SVQ3_DropClient(client_t *cl);
-int SVQ3_AddBot(void);
-void SVQ3_RunFrame(void);
-void SVQ3_SendMessage(client_t *client);
-qboolean SVQ3_Command(void);
-#endif
-
-
 //
 // sv_send.c
 //
@@ -1338,6 +1318,13 @@ void SV_StuffcmdToClient_Unreliable(client_t *cl, const char *string);
 void VARGS SV_ClientPrintf (client_t *cl, int level, const char *fmt, ...) LIKEPRINTF(3);
 void VARGS SV_ClientTPrintf (client_t *cl, int level, translation_t text, ...);
 void VARGS SV_BroadcastPrintf (int level, const char *fmt, ...) LIKEPRINTF(2);
+void SV_BroadcastPrint_QexLoc (unsigned int flags, int level, const char **arg, int args);
+void SV_BroadcastPrint (unsigned int flags, int level, const char *text);
+	//flags exposed to ktx.
+	#define BPRINT_IGNOREINDEMO  (1<<0) // broad cast print will be not put in demo
+	#define BPRINT_IGNORECLIENTS (1<<1) // broad cast print will not be seen by clients, but may be seen in demo
+	//#define BPRINT_QTVONLY       (1<<2) // if broad cast print goes to demo, then it will be only qtv sream, but not file
+	#define BPRINT_IGNORECONSOLE (1<<3) // broad cast print will not be put in server console
 void VARGS SV_BroadcastTPrintf (int level, translation_t fmt, ...);
 void VARGS SV_BroadcastCommand (const char *fmt, ...) LIKEPRINTF(1);
 void SV_SendMessagesToAll (void);
@@ -1345,6 +1332,10 @@ void SV_FindModelNumbers (void);
 void SV_SendFixAngle(client_t *client, sizebuf_t *msg, int fixtype, qboolean roll);
 
 void SV_BroadcastUserinfoChange(client_t *about, qboolean isbasic, const char *key, const char *newval);
+
+void SV_Prompt_Resend(client_t *cl);
+void SV_Prompt_Clear(client_t *cl);
+void SV_Prompt_Input(client_t *cl, usercmd_t *ucmd);
 
 //
 // sv_user.c

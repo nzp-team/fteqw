@@ -637,6 +637,7 @@ void Con_ToggleConsole_Force(void)
 		{
 			con_curwindow = con;
 			Key_Dest_Add(kdm_cwindows);
+			VRUI_SnapAngle();
 		}
 	}
 	else
@@ -644,7 +645,10 @@ void Con_ToggleConsole_Force(void)
 		if (Key_Dest_Has(kdm_console))
 			Key_Dest_Remove(kdm_console);
 		else
+		{
 			Key_Dest_Add(kdm_console);
+			VRUI_SnapAngle();
+		}
 	}
 }
 void Con_ToggleConsole_f (void)
@@ -983,6 +987,8 @@ void Con_PrintCon (console_t *con, const char *txt, unsigned int parseflags)
 				con->current->flags |= CONL_CENTERED;
 			if (parseflags & PFS_NONOTIFY)
 				con->current->flags |= CONL_NONOTIFY;
+			else if (!Key_Dest_Has(~kdm_game) && (con->flags & CONF_NOTIFY))
+				VRUI_SnapAngle();
 
 #if defined(HAVE_SPEECHTOTEXT)
 			if (con->current)
@@ -1307,7 +1313,7 @@ void VARGS Con_ThrottlePrintf (float *timer, int developerlevel, const char *fmt
 
 	if (*timer > now)
 		;	//in the future? zomg
-	else if (*timer > now-1)
+	else if (*timer >= now-1)
 		return;	//within the last second
 	*timer = now;	//in the future? zomg
 
@@ -1924,10 +1930,10 @@ static int Con_DrawProgress(int left, int right, int y)
 		if (progresspercent < 0)
 		{
 			if ((int)(realtime/2)&1 || total == 0)
-				sprintf(progresspercenttext, " (%ukbps)", CL_DownloadRate()/1000);
+				sprintf(progresspercenttext, " (%ukB/s)", CL_DownloadRate()/1000);
 			else
 			{
-				sprintf(progresspercenttext, " (%u%skb)", (int)(total/1024), extra?"+":"");
+				sprintf(progresspercenttext, " (%u%sKiB)", (int)(total/1024), extra?"+":"");
 			}
 
 			//do some marquee thing, so the user gets the impression that SOMETHING is happening.
@@ -1939,10 +1945,10 @@ static int Con_DrawProgress(int left, int right, int y)
 		else
 		{
 			if ((int)(realtime/2)&1 || total == 0)
-				sprintf(progresspercenttext, " %5.1f%% (%ukbps)", progresspercent, CL_DownloadRate()/1000);
+				sprintf(progresspercenttext, " %5.1f%% (%ukB/s)", progresspercent, CL_DownloadRate()/1000);
 			else
 			{
-				sprintf(progresspercenttext, " %5.1f%% (%u%skb)", progresspercent, (int)(total/1024), extra?"+":"");
+				sprintf(progresspercenttext, " %5.1f%% (%u%sKiB)", progresspercent, (int)(total/1024), extra?"+":"");
 			}
 		}
 	}
@@ -2743,25 +2749,27 @@ static void Con_DrawModelPreview(model_t *model, float x, float y, float w, floa
 	VectorScale(ent.axis[0], scale, ent.axis[0]);
 	VectorScale(ent.axis[1], scale, ent.axis[1]);
 	VectorScale(ent.axis[2], scale, ent.axis[2]);
-	/*if (strstr(model->name, "player"))
-	{
-		ent.bottomcolour	= genhsv(realtime*0.1 + 0, 1, 1);
-		ent.topcolour		= genhsv(realtime*0.1 + 0.5, 1, 1);
-	}
-	else*/
-	{
-		ent.topcolour = TOP_DEFAULT;
-		ent.bottomcolour = BOTTOM_DEFAULT;
-	}
+	ent.topcolour = TOP_DEFAULT;
+	ent.bottomcolour = BOTTOM_DEFAULT;
 //	ent.fatness = sin(realtime)*5;
 	ent.playerindex = -1;
 	ent.skinnum = 0;
 	ent.shaderTime = 0;//realtime;
 	ent.framestate.g[FS_REG].lerpweight[0] = 1;
-//				ent.framestate.g[FS_REG].frame[0] = animationnum;
 	ent.framestate.g[FS_REG].frametime[0] = ent.framestate.g[FS_REG].frametime[1] = realtime;
 	ent.framestate.g[FS_REG].endbone = 0x7fffffff;
-//				ent.customskin = Mod_RegisterSkinFile(va("%s_0.skin", mods->modelname));
+	if (model->submodelof)
+		;
+	else
+	{
+		ent.customskin = Mod_RegisterSkinFile(va("%s_0.skin", model->publicname));
+		if (ent.customskin == 0)
+		{
+			char haxxor[MAX_QPATH];
+			COM_StripExtension(model->publicname, haxxor, sizeof(haxxor));
+			ent.customskin = Mod_RegisterSkinFile(va("%s_default.skin", haxxor));
+		}
+	}
 
 	Vector4Set(ent.shaderRGBAf, 1,1,1,1);
 	VectorSet(ent.glowmod, 1,1,1);
@@ -2906,12 +2914,15 @@ static void Con_DrawMouseOver(console_t *mouseconsole)
 					}
 					else
 						shader = NULL;
-					key = Info_ValueForKey(info, "modelviewer");
-					if (*key)
+					if (!vrui.enabled)
 					{
-						model = Mod_ForName(key, MLV_WARN);
-						if (model->loadstate != MLS_LOADED)
-							model = NULL;
+						key = Info_ValueForKey(info, "modelviewer");
+						if (*key)
+						{
+							model = Mod_ForName(key, MLV_WARN);
+							if (model->loadstate != MLS_LOADED)
+								model = NULL;
+						}
 					}
 
 					key = Info_ValueForKey(info, "playaudio");
@@ -3283,7 +3294,7 @@ void Con_DrawConsole (int lines, qboolean noback)
 		}
 		selactive = Key_GetConsoleSelectionBox(con_current, &selsx, &selsy, &selex, &seley);
 
-		if ((con_current->flags & CONF_KEEPSELECTION) && con_current->selstartline && con_current->selendline)
+		if ((con_current->flags & CONF_KEEPSELECTION) && con_current->selstartline && con_current->selendline && con_current->buttonsdown != CB_SELECTED)
 			selactive = -1;
 
 		Font_BeginString(font_console, x, y, &x, &y);
@@ -3316,6 +3327,54 @@ void Con_DrawConsole (int lines, qboolean noback)
 
 		Font_EndString(font_console);
 		mouseconsole = con_mouseover?con_mouseover:con_current;
+
+
+		if (con_current->buttonsdown == CB_SELECTED)
+		{	//select was released...
+			console_t *con = con_current;
+			char *buffer;
+			con->buttonsdown = CB_NONE;
+			if (con->selstartline)
+			{
+				con->flags |= CONF_KEEPSELECTION;
+				if (con->userline)
+				{
+					if (con->flags & CONF_BACKSELECTION)
+					{
+						con->userline = con->selendline;
+						con->useroffset = con->selendoffset;
+					}
+					else
+					{
+						con->userline = con->selstartline;
+						con->useroffset = con->selstartoffset;
+					}
+				}
+				if (con->selstartline == con->selendline && con->selendoffset <= con->selstartoffset+1)
+				{
+					if (keydown[K_LSHIFT] || keydown[K_RSHIFT])
+						;
+					else
+					{
+						buffer = Con_CopyConsole(con, false, true, false);
+						if (buffer)
+						{
+							Key_HandleConsoleLink(con, buffer);
+							Z_Free(buffer);
+						}
+					}
+				}
+				else
+				{
+					buffer = Con_CopyConsole(con, true, false, true);	//don't keep markup if we're copying to the clipboard
+					if (buffer)
+					{
+						Sys_SaveClipboard(CBT_SELECTION,  buffer);
+						Z_Free(buffer);
+					}
+				}
+			}
+		}
 	}
 	else
 		mouseconsole = con_mouseover?con_mouseover:NULL;

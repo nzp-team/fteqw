@@ -35,7 +35,7 @@ cvar_t pr_tempstringsize = CVARD("pr_tempstringsize", "4096", "Obsolete");
 #ifdef MULTITHREAD
 cvar_t pr_gc_threaded = CVARD("pr_gc_threaded", "1", "Says whether to use a separate thread for tempstring garbage collections. This avoids main-thread stalls but at the expense of more memory usage.");
 #else
-cvar_t pr_gc_threaded = CVARD("pr_gc_threaded", "0", "Says whether to use a separate thread for tempstring garbage collections. This avoids main-thread stalls but at the expense of more memory usage.");
+cvar_t pr_gc_threaded = CVARFD("pr_gc_threaded", "0", CVAR_NOSET|CVAR_NOSAVE, "Says whether to use a separate thread for tempstring garbage collections. This avoids main-thread stalls but at the expense of more memory usage.");
 #endif
 cvar_t	pr_sourcedir = CVARD("pr_sourcedir", "src", "Subdirectory where your qc source is located. Used by the internal compiler and qc debugging functionality.");
 cvar_t pr_enable_uriget = CVARD("pr_enable_uriget", "1", "Allows gamecode to make direct http requests");
@@ -127,7 +127,7 @@ qofs_t PR_ReadBytesString(char *str)
 	double d = strtod(str, &str);
 	if (d < 0)
 	{
-#if defined(_WIN64) && !defined(WINRT)
+#if (defined(_WIN64) && !defined(WINRT)) || (defined(__linux__)&&defined(__LP64__))
 		return 0x80000000;	//use of virtual address space rather than physical memory means we can just go crazy and use the max of 2gb.
 #elif defined(FTE_TARGET_WEB)
 		return 8*1024*1024;
@@ -685,6 +685,256 @@ void VARGS PR_CB_Free(void *mem)
 	BZ_Free(mem);
 }
 
+////////////////////////////////////////////////////
+//JSON stuff.
+typedef struct qcjson_s
+{
+	int type;
+	string_t name;
+	union
+	{
+		struct
+		{
+			int childptr;
+			unsigned int count;	//for arrays and objects.
+		};
+		double num;			//for number types.
+		string_t strofs;	//for strings.
+	} u;
+} qcjson_t;
+static qcjson_t json_null = {json_type_null};	//dummy safe node that we poke on bad inputs.
+#define JSONFromQC(qcptr) ((unsigned int)qcptr >= prinst->stringtablesize-sizeof(qcjson_t))?PR_BIError (prinst, "PR_JSONFromQC: bad pointer"),&json_null:qcptr?(qcjson_t*)((char*)prinst->stringtable + qcptr):&json_null
+#define RETURN_JSON(r) G_INT(OFS_RETURN) = (const char*)r - prinst->stringtable
+
+#define JSON_PERSIST_STRINGDATA	//slower but safer
+static void PR_JSON_Count(json_t *r, size_t *nodes, size_t *strings)	//counts the nodes and bytes for string data.
+{
+	*nodes+=1;
+	if (*r->name)
+		*strings += strlen(r->name)+1;
+	safeswitch(r->type)
+	{
+	case json_type_object:
+	case json_type_array:
+		for(r = r->child; r; r = r->sibling)
+			PR_JSON_Count(r, nodes, strings);
+		break;
+	case json_type_string:
+#ifndef JSON_PERSIST_STRINGDATA
+		*strings += JSON_ReadBody(r, NULL, 0)+1;
+		break;
+#endif
+	case json_type_true:
+	case json_type_false:
+	case json_type_null:
+	case json_type_number:
+	safedefault:
+		break;
+	}
+}
+static void PR_JSON_Linearise(pubprogfuncs_t *prinst, json_t *r, qcjson_t *out, qcjson_t **nodes, char **strings)
+{
+	json_t *c;
+	size_t children = 0;
+	out->type = r->type;
+
+	//give it a name
+	if (*r->name)
+	{
+		out->name = *strings - prinst->stringtable;
+		memcpy(*strings, r->name, strlen(r->name)+1);
+		*strings += strlen(r->name)+1;
+	}
+
+	//make sure its values are valid.
+	safeswitch(out->type)
+	{
+	case json_type_string:
+#ifdef JSON_PERSIST_STRINGDATA
+		{	//allocate a tempstring for each, so that they last beyond node destruction.
+			size_t sz = JSON_ReadBody(r, NULL, 0);
+			char *tmp = alloca(sz+1);
+			JSON_ReadBody(r, tmp, sz+1);
+			out->u.strofs = PR_TempString(prinst, tmp);
+		}
+#else
+		out->u.strofs = *strings - prinst->stringtable;
+		JSON_ReadBody(r, *strings, prinst->stringtablesize - out->u.strofs-1);
+		*strings += strlen(*strings)+1;
+#endif
+		break;
+	case json_type_object:
+	case json_type_array:
+		out->u.childptr = (char*)*nodes - prinst->stringtable;
+		for(c = r->child; c; c = c->sibling)
+			children++;
+		out->u.count = children;
+		out = *nodes;
+		*nodes+=children;
+		for(c = r->child; c; c = c->sibling, out++)
+			PR_JSON_Linearise(prinst, c, out, nodes, strings);
+		break;
+	case json_type_false:
+	case json_type_null:
+		out->u.num = false;
+		break;
+	case json_type_true:
+		out->u.num = true;
+		break;
+	case json_type_number:
+	safedefault:
+		out->u.num = JSON_ReadFloat(r, 0);
+		break;
+	}
+}
+void QCBUILTIN PF_json_parse(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	json_t *inroot = JSON_Parse(PR_GetStringOfs(prinst, OFS_PARM0));
+	qcjson_t *outroot, *outnodes;
+	char *outstrings;
+	size_t n = 0, s = 0;
+	if (inroot)
+	{
+		//linearise the json nodes for easy access (just use qc pointers instead of needing lots of separate handles)
+		PR_JSON_Count(inroot, &n, &s);
+		outnodes = prinst->AddressableAlloc(prinst, sizeof(*outroot)*n + s);
+		outstrings = (char*)(outnodes + n);
+
+		outroot = outnodes++;
+		PR_JSON_Linearise(prinst, inroot, outroot, &outnodes, &outstrings);
+
+		JSON_Destroy(inroot);	//our input string becomes irrelevant at this point
+
+		RETURN_JSON(outroot);
+	}
+	else
+		G_INT(OFS_RETURN) = 0;
+}
+
+void QCBUILTIN PF_json_get_value_type(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	qcjson_t *handle = JSONFromQC(G_INT(OFS_PARM0));
+	G_INT(OFS_RETURN) = handle->type;
+}
+void QCBUILTIN PF_json_get_name(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	qcjson_t *handle = JSONFromQC(G_INT(OFS_PARM0));
+	G_INT(OFS_RETURN) = handle->name;
+}
+void QCBUILTIN PF_json_get_integer(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	qcjson_t *handle = JSONFromQC(G_INT(OFS_PARM0));
+	switch (handle->type)
+	{
+	case json_type_number:
+	case json_type_true:
+	case json_type_false:
+		G_INT(OFS_RETURN) = handle->u.num;
+		break;
+	case json_type_string:
+		G_INT(OFS_RETURN) = atoi(PR_GetString(prinst, handle->u.strofs));
+		break;
+	default:
+		G_INT(OFS_RETURN) = 0;
+		break;
+	}
+}
+void QCBUILTIN PF_json_get_float(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	qcjson_t *handle = JSONFromQC(G_INT(OFS_PARM0));
+	switch (handle->type)
+	{
+	case json_type_number:
+	case json_type_true:
+	case json_type_false:
+		G_FLOAT(OFS_RETURN) = handle->u.num;
+		break;
+	case json_type_string:
+		G_FLOAT(OFS_RETURN) = atof(PR_GetString(prinst, handle->u.strofs));
+		break;
+	default:
+		G_FLOAT(OFS_RETURN) = 0;
+		break;
+	}
+}
+void QCBUILTIN PF_json_get_string(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	qcjson_t *handle = JSONFromQC(G_INT(OFS_PARM0));
+	if (handle->type != json_type_string)
+		G_INT(OFS_RETURN) = 0;
+	else
+		G_INT(OFS_RETURN) = handle->u.strofs;
+}
+void QCBUILTIN PF_json_get_child_at_index(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	qcjson_t *handle = JSONFromQC(G_INT(OFS_PARM0));
+	size_t idx = G_INT(OFS_PARM1);
+	G_INT(OFS_RETURN) = 0;	//assume the worst
+	switch(handle->type)
+	{
+	case json_type_array:
+	case json_type_object:
+		if (idx < handle->u.count)
+			G_INT(OFS_RETURN) = handle->u.childptr + idx*sizeof(*handle);	//don't really need to validate this here.
+		break;
+	default:
+		break;
+	}
+}
+void QCBUILTIN PF_json_get_length(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	qcjson_t *handle = JSONFromQC(G_INT(OFS_PARM0));
+	switch (handle->type)
+	{
+	case json_type_object:
+	case json_type_array:
+		G_INT(OFS_RETURN) = handle->u.count;
+		break;
+	default:
+		G_INT(OFS_RETURN) = 0;
+		break;
+	}
+}
+void QCBUILTIN PF_json_find_object_child(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	qcjson_t *parent = JSONFromQC(G_INT(OFS_PARM0));
+	const char *childname = PR_GetStringOfs(prinst, OFS_PARM1);
+	unsigned int idx;
+	G_INT(OFS_RETURN) = 0;	//assume the worst
+	switch (parent->type)
+	{
+	case json_type_object:
+	case json_type_array:
+		for (idx = 0; idx < parent->u.count; idx++)
+		{
+			qcjson_t *childnode = JSONFromQC(parent->u.childptr + idx*sizeof(*childnode));
+			if (!strcmp(childname, PR_GetString(prinst, childnode->name)))
+			{
+				RETURN_JSON(childnode);
+				break;
+			}
+		}
+		break;
+	default:
+		break;
+	}
+}
+
+#ifdef FTE_TARGET_WEB
+#include <emscripten.h>
+#endif
+void QCBUILTIN PF_js_run_script(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+#ifdef FTE_TARGET_WEB
+	const char *jscript = PR_GetStringOfs(prinst, OFS_PARM0);
+	const char *ret;
+	ret = emscripten_run_script_string(jscript);
+	if (ret)
+		G_INT(OFS_RETURN) = PR_TempString(prinst, ret);
+	else
+#endif
+		G_INT(OFS_RETURN) = 0;
+}
 
 ////////////////////////////////////////////////////
 //model functions
@@ -1184,7 +1434,7 @@ void QCBUILTIN PF_setattachment(pubprogfuncs_t *prinst, struct globalvars_s *pr_
 		{
 			if (model && model->loadstate == MLS_LOADING)
 				COM_WorkerPartialSync(model, &model->loadstate, MLS_LOADING);
-			tagidx = Mod_TagNumForName(model, tagname);
+			tagidx = Mod_TagNumForName(model, tagname, 0);
 			if (tagidx == 0)
 				Con_DPrintf("setattachment(edict %i, edict %i, string \"%s\"): tried to find tag named \"%s\" on entity %i (model \"%s\") but could not find it\n", NUM_FOR_EDICT(prinst, e), NUM_FOR_EDICT(prinst, tagentity), tagname, tagname, NUM_FOR_EDICT(prinst, tagentity), model->name);
 		}
@@ -1614,9 +1864,9 @@ void QCBUILTIN PF_cvar_string (pubprogfuncs_t *prinst, struct globalvars_s *pr_g
 	if (cv && !(cv->flags & CVAR_NOUNSAFEEXPAND))
 	{
 		if(cv->latched_string)
-			RETURN_CSTRING(cv->latched_string);
+			RETURN_TSTRING(cv->latched_string);
 		else
-			RETURN_CSTRING(cv->string);
+			RETURN_TSTRING(cv->string);
 	}
 	else
 		G_INT(OFS_RETURN) = 0;
@@ -1633,7 +1883,7 @@ void QCBUILTIN PF_cvar_defstring (pubprogfuncs_t *prinst, struct globalvars_s *p
 	const char	*str = PR_GetStringOfs(prinst, OFS_PARM0);
 	cvar_t *cv = PF_Cvar_FindOrGet(str);
 	if (cv && !(cv->flags & CVAR_NOUNSAFEEXPAND))
-		RETURN_CSTRING(cv->defaultstr);
+		RETURN_TSTRING(cv->defaultstr);
 	else
 		G_INT(OFS_RETURN) = 0;
 }
@@ -1646,7 +1896,7 @@ void QCBUILTIN PF_cvar_description (pubprogfuncs_t *prinst, struct globalvars_s 
 	if (cv && !(cv->flags & CVAR_NOUNSAFEEXPAND))
 	{
 		if (cv->description)
-			RETURN_CSTRING(localtext(cv->description));
+			RETURN_TSTRING(localtext(cv->description));
 		else
 			G_INT(OFS_RETURN) = 0;
 	}
@@ -1808,11 +2058,13 @@ void QCBUILTIN PF_memptradd (pubprogfuncs_t *prinst, struct globalvars_s *pr_glo
 {
 	//convienience function. needed for: ptr = &ptr[5]; or ptr += 5;
 	int dst = G_INT(OFS_PARM0);
-	float ofs = G_FLOAT(OFS_PARM1);
-	if (ofs != (float)(int)ofs)
+	int ofs = G_FLOAT(OFS_PARM1);
+	if (ofs != G_FLOAT(OFS_PARM1))
 		PR_BIError(prinst, "PF_memptradd: non-integer offset\n");
-	if ((int)ofs & 3)
-		PR_BIError(prinst, "PF_memptradd: offset is not 32-bit aligned.\n");	//means pointers can internally be expressed as 16.16 with 18-bit segments/allocations.
+	if (ofs & 3)
+		PR_BIError(prinst, "PF_memptradd: offset is not 32-bit aligned.\n");	//allows for other implementations to provide this with eg pointers expressed as 16.16 with 18-bit segments/allocations.
+	if (((unsigned int)ofs & 0x80000000) && ofs!=0)
+		PR_BIError(prinst, "PF_memptradd: special pointers cannot be offset.\n");
 
 	G_INT(OFS_RETURN) = dst + ofs;
 }
@@ -2243,11 +2495,35 @@ typedef struct {
 } pf_fopen_files_t;
 static pf_fopen_files_t pf_fopen_files[MAX_QC_FILES];
 
+static qboolean QC_PathRequiresSandbox(const char *name)
+{
+	//if its a user config, ban any fallback locations so that csqc can't read passwords or whatever.
+	/* (sorry about the windows paths, it avoids compiler warnings... -Werror sucks)
+	bad:
+		*.cfg
+		configs\*.cfg
+	allowed:
+		particles\*.cfg (required for particle editor type stuff)
+		huds\*.cfg  (shouldn't have any passwords. yay editing)
+		models\*.*  (xonotic is evil)
+		sound\*.*  (xonotic is evil)
+	*/
+	if ((!strchr(name, '/') || !strnicmp(name, "configs/", 8))	//
+		&& !stricmp(COM_GetFileExtension(name, NULL), ".cfg"))
+		return true;
+	return false;
+}
+
 //returns false if the file is denied.
 //fallbackread can be NULL, if the qc is not allowed to read that (original) file at all.
 qboolean QC_FixFileName(const char *name, const char **result, const char **fallbackread)
 {
-	char ext[8];
+	if (!strncmp(name, "file:", 5))
+	{
+		*result = name;
+		*fallbackread = NULL;
+		return true;
+	}
 
 	if (!*name ||	//blank names are bad
 		strchr(name, ':') ||	//dos/win absolute path, ntfs ADS, amiga drives. reject them all.
@@ -2258,13 +2534,22 @@ qboolean QC_FixFileName(const char *name, const char **result, const char **fall
 		return false;
 	}
 
-	*fallbackread = name;
-	//if its a user config, ban any fallback locations so that csqc can't read passwords or whatever.
-	if ((!strchr(name, '/') || strnicmp(name, "configs/", 8)) 
-		&& !stricmp(COM_FileExtension(name, ext, sizeof(ext)), "cfg")
-		&& strnicmp(name, "particles/", 10) && strnicmp(name, "huds/", 5) && strnicmp(name, "models/", 7))
-		*fallbackread = NULL;
-	*result = va("data/%s", name);
+	if (!strncmp(name, "data/", 5))
+	{
+		*fallbackread = NULL;	//don't be weird.
+		*result = name;	//already has a data/ prefix.
+	}
+	else if (COM_CheckParm("-unsafefopen") && !QC_PathRequiresSandbox(name))
+	{
+		*fallbackread = va("data/%s", name);	//in case the mod was distributed with a data/ subdir.
+		*result = name;
+	}
+	else
+	{
+		*fallbackread = QC_PathRequiresSandbox(name)?NULL:name;
+		*result = va("data/%s", name);
+
+	}
 	return true;
 }
 
@@ -2489,7 +2774,6 @@ int PR_QCFile_From_Buffer (pubprogfuncs_t *prinst, const char *name, void *buffe
 //internal function used by search_begin
 static int PF_fopen_search (pubprogfuncs_t *prinst, const char *name, flocation_t *loc)
 {
-	const char *fallbackread;
 	int i;
 
 	Con_DPrintf("qcfopen(\"%s\") called\n", name);
@@ -2504,7 +2788,7 @@ static int PF_fopen_search (pubprogfuncs_t *prinst, const char *name, flocation_
 		return -1;
 	}
 
-	if (!QC_FixFileName(name, &name, &fallbackread) || !fallbackread)
+	if (QC_PathRequiresSandbox(name))
 	{	//we're ignoring the data/ dir so using only the fallback, but still blocking it if its a nasty path.
 		Con_Printf("qcfopen(\"%s\"): Access denied\n", name);
 		return -1;
@@ -2512,7 +2796,7 @@ static int PF_fopen_search (pubprogfuncs_t *prinst, const char *name, flocation_
 
 	pf_fopen_files[i].accessmode = FRIK_FILE_READ_DELAY;
 
-	Q_strncpyz(pf_fopen_files[i].name, fallbackread, sizeof(pf_fopen_files[i].name));
+	Q_strncpyz(pf_fopen_files[i].name, name, sizeof(pf_fopen_files[i].name));
 	if (loc->search->handle)
 		pf_fopen_files[i].file = FS_OpenReadLocation(name, loc);
 	else
@@ -3347,9 +3631,9 @@ static qboolean PF_search_getloc(flocation_t *loc, prvmsearch_t *s, int num)
 {
 	const char *fname = s->entry[num].name;
 	if (s->searchinfo.handle)	//we were only searching a single package...
-	{
+	{	//fail if its a directory, or a (pk3)symlink that we'd have to resolve.
 		loc->search = &s->searchinfo;
-		return loc->search->handle->FindFile(loc->search->handle, loc, fname, NULL);
+		return loc->search->handle->FindFile(loc->search->handle, loc, fname, NULL) == FF_FOUND;
 	}
 	else if (!s->entry[num].package)
 	{
@@ -5435,6 +5719,27 @@ void QCBUILTIN PF_digest_ptr (pubprogfuncs_t *prinst, struct globalvars_s *pr_gl
 		return;
 	}
 	PF_digest_internal(prinst, pr_globals, hashtype, prinst->stringtable + qcptr, size);
+}
+
+void QCBUILTIN PF_base64encode (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	size_t bytes = G_INT(OFS_PARM1);										//input blob size.
+	const void *input = PR_GetReadQCPtr(prinst, G_INT(OFS_PARM0), bytes);	//make sure the input is a valid qc pointer.
+	size_t chars = ((bytes+2)/3)*4+1;										//size required
+	char *temp;
+	G_INT(OFS_RETURN) = prinst->AllocTempString(prinst, (char**)&temp, chars);
+	Base64_EncodeBlock(input, bytes, temp, chars);							//spew out the string.
+}
+void QCBUILTIN PF_base64decode (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	const unsigned char *s = PR_GetStringOfs(prinst, OFS_PARM0);	//grab the input string
+	size_t bytes = Base64_DecodeBlock(s, NULL, NULL, 0);			//figure out how long the output needs to be
+	qbyte *ptr = prinst->AddressableAlloc(prinst, bytes);			//grab some qc memory
+	bytes = Base64_DecodeBlock(s, NULL, NULL, bytes);				//decode it.
+	ptr[bytes] = 0;													//make sure its null terminated or whatever.
+
+	G_INT(OFS_RETURN) = (char*)ptr - prinst->stringtable;			//let the qc know where it is.
+	G_INT(OFS_PARM1) = bytes;										//let the qc know how many bytes were actually read.
 }
 
 // #510 string(string in) uri_escape = #510;
@@ -7665,6 +7970,7 @@ qc_extension_t QSG_Extensions[] = {
 	{"DP_QC_GETSURFACE",				NULL,	6,{"getsurfacenumpoints", "getsurfacepoint", "getsurfacenormal", "getsurfacetexture", "getsurfacenearpoint", "getsurfaceclippedpoint"}},
 	{"DP_QC_GETSURFACEPOINTATTRIBUTE",	NULL,	1,{"getsurfacepointattribute"}},
 	{"DP_QC_GETTAGINFO",				NULL,	2,{"gettagindex", "gettaginfo"}},
+	{"DP_QC_I18N",						NULL,	0,{NULL}, "Specifies that the engine uses $MODULE.dat.$LANG.po files that translates the dotranslate_* globals on load - these are usually created via the _(\"foo\") qcc intrinsic."},
 	{"DP_QC_MINMAXBOUND",				NULL,	3,{"min", "max", "bound"}},
 	{"DP_QC_MULTIPLETEMPSTRINGS",		NULL,	0,{NULL}, "Superseded by DP_QC_UNLIMITEDTEMPSTRINGS. Functions that return a temporary string will not overwrite/destroy previous temporary strings until at least 16 strings are returned (or control returns to the engine)."},
 	{"DP_QC_RANDOMVEC",					check_notrerelease,	1,{"randomvec"}},
@@ -7718,6 +8024,7 @@ qc_extension_t QSG_Extensions[] = {
 	{"DP_SV_PRINT",						NULL,	1,{"print"}, "Says that the print builtin can be used from nqssqc (as well as just csqc), bypassing the developer cvar issues."},
 	{"DP_SV_ROTATINGBMODEL",			check_notrerelease,0,{NULL},		"Engines that support this support avelocity on MOVETYPE_PUSH entities, pushing entities out of the way as needed."},
 	{"DP_SV_SETCOLOR",					NULL,	1,{"setcolor"}},
+	{"DP_SV_SHUTDOWN"},
 	{"DP_SV_SPAWNFUNC_PREFIX"},
 	{"DP_SV_WRITEPICTURE",				NULL,	1,{"WritePicture"}},
 	{"DP_SV_WRITEUNTERMINATEDSTRING",	NULL,	1,{"WriteUnterminatedString"}},
@@ -7742,6 +8049,9 @@ qc_extension_t QSG_Extensions[] = {
 	{"EXT_DIMENSION_VISIBILITY"},
 	{"EXT_DIMENSION_PHYSICS"},
 	{"EXT_DIMENSION_GHOST"},
+//	{"EX_EXTENDED_EF",					NULL,	0,{NULL}, "Provides EF_CANDLELIGHT..."},
+//	{"EX_MOVETYPE_GIB",					NULL,	0,{NULL}, "Adds MOVETYPE_GIB - basically MOVETYPE_BOUNCE with gravity controlled by a cvar instead of just setting the .gravity field..."},
+	{"EX_PROMPT",						NULL,	3,{"ex_prompt", "ex_promptchoice", "ex_clearprompt"}, "Engine-driven alternative to centerprint menus."},
 	{"FRIK_FILE",						check_notrerelease,	11,{"stof", "fopen","fclose","fgets","fputs","strlen","strcat","substring","stov","strzone","strunzone"}},
 	{"FTE_CALLTIMEOFDAY",				NULL,	1,{"calltimeofday"}, "Replication of mvdsv functionality (call calltimeofday to cause 'timeofday' to be called, with arguments that can be saved off to a global). Generally strftime is simpler to use."},
 	{"FTE_CSQC_ALTCONSOLES",			NULL,	4,{"con_getset", "con_printf", "con_draw", "con_input"}, "The engine tracks multiple consoles. These may or may not be directly visible to the user."},
@@ -7822,7 +8132,7 @@ qc_extension_t QSG_Extensions[] = {
 
 	{"FTE_QC_BASEFRAME",				NULL,	0,{NULL}, "Specifies that .basebone and .baseframe exist in ssqc. These fields affect all bones in the entity's model with a lower index than the .basebone field, allowing you to give separate control to the legs of a skeletal model, without affecting the torso animations, from ssqc."},
 	{"FTE_QC_FILE_BINARY",				NULL,	4,{"fread","fwrite","fseek","fsize"}, "Extends FRIK_FILE with binary read+write, as well as allowing seeking. Requires pointers."},
-	{"FTE_QC_CHANGELEVEL_HUB",			NULL,	0,{NULL}, "Adds an extra argument to changelevel which is carried over to the next map in the 'spawnspot' global. Maps will be saved+reloaded until the extra argument is omitted again, purging all saved maps. Saved games will contain a copy of each preserved map. parm1-parm64 globals can be used, giving more space to transfer more player data."},
+	{"FTE_QC_CHANGELEVEL_HUB",			NULL,	0,{NULL}, "Adds an extra argument to changelevel which is carried over to the next map in the 'startspot' global. Maps will be saved+reloaded until the extra argument is omitted again, purging all saved maps. Saved games will contain a copy of each preserved map. parm1-parm64 globals can be used, giving more space to transfer more player data."},
 	{"FTE_QC_CHECKCOMMAND",				NULL,	1,{"checkcommand"}, "Provides a way to test if a console command exists, and whether its a command/alias/cvar. Does not say anything about the expected meanings of any arguments or values."},
 	{"FTE_QC_CHECKPVS",					NULL,	1,{"checkpvs"}},
 	{"FTE_QC_CROSSPRODUCT",				NULL,	1,{"crossproduct"}},

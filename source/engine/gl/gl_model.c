@@ -39,7 +39,7 @@ cvar_t mod_warnmodels						= CVARD("mod_warnmodels", "1", "Warn if any models fa
 cvar_t mod_litsprites_force					= CVARD("mod_litsprites_force", "0", "If set to 1, sprites will be lit according to world lighting (including rtlights), like Tenebrae. Ideally use EF_ADDITIVE or EF_FULLBRIGHT to make emissive sprites instead.");
 cvar_t mod_loadmappackages					= CVARD ("mod_loadmappackages", "1", "Load additional content embedded within bsp files.");
 cvar_t mod_lightscale_broken				= CVARFD("mod_lightscale_broken", "0", CVAR_RENDERERLATCH, "When active, replicates a bug from vanilla - the radius of r_dynamic lights is scaled by per-surface texture scale rather than using actual distance.");
-cvar_t temp_lit2support						= CVARD("temp_mod_lit2support", "0", "Set to 1 to enable lit2 support. This cvar will be removed once the format is finalised.");
+cvar_t mod_lightpoint_distance				= CVARD("mod_lightpoint_distance", "8192", "This is the maximum distance to trace when searching for a ground surface for lighting info on map formats without light more fancy lighting info. Use 2048 for full compat with Quake.");
 #ifdef SPRMODELS
 cvar_t r_sprite_backfacing					= CVARD	("r_sprite_backfacing", "0", "Make oriented sprites face backwards relative to their orientation, for compat with q1.");
 #endif
@@ -661,7 +661,7 @@ void Mod_Init (qboolean initial)
 		Cvar_Register(&mod_loadentfiles_dir, NULL);
 		Cvar_Register(&mod_loadmappackages, NULL);
 		Cvar_Register(&mod_lightscale_broken, NULL);
-		Cvar_Register(&temp_lit2support, NULL);
+		Cvar_Register(&mod_lightpoint_distance, NULL);
 		Cvar_Register (&r_meshpitch, "Gamecode");
 		Cvar_Register (&r_meshroll, "Gamecode");
 #ifdef RTLIGHTS
@@ -1012,11 +1012,7 @@ void Mod_ModelLoaded(void *ctx, void *data, size_t a, size_t b)
 #endif
 #ifndef SERVERONLY
 	if (mod->type == mod_brush)
-	{
 		Surf_BuildModelLightmaps(mod);
-		r_oldviewcluster = -1;	//just in case.
-		r_oldviewcluster2 = -2;
-	}
 	if (mod->type == mod_sprite)
 	{
 		Mod_LoadSpriteShaders(mod);
@@ -1060,6 +1056,7 @@ void Mod_ModelLoaded(void *ctx, void *data, size_t a, size_t b)
 			Con_Printf(CON_ERROR "Unable to load %s\n", mod->name);
 		break;
 	case MLV_SILENT:
+	case MLV_SILENTSYNC:
 		break;
 	}
 }
@@ -1089,6 +1086,9 @@ static void Mod_LoadModelWorker (void *ctx, void *data, size_t a, size_t b)
 	char ext[8];
 	int basedepth;
 
+	//clear out any old state.
+	memset(&mod->loadstate+1, 0, sizeof(*mod) - (qintptr_t)(&((model_t*)NULL)->loadstate+1));
+
 	if (!*mod->publicname)
 	{
 		mod->type = mod_dummy;
@@ -1117,7 +1117,6 @@ static void Mod_LoadModelWorker (void *ctx, void *data, size_t a, size_t b)
 //
 // load the file
 //
-	mod->maxlod = 0;
 	// set necessary engine flags for loading purposes
 	if (!strcmp(mod->publicname, "progs/player.mdl"))
 		mod->engineflags |= MDLF_PLAYER | MDLF_DOCRC;
@@ -1373,18 +1372,16 @@ model_t *Mod_LoadModel (model_t *mod, enum mlverbosity_e verbose)
 			COM_InsertWork(WG_LOADER, Mod_LoadModelWorker, mod, NULL, verbose, 0);
 		else
 			COM_AddWork(WG_LOADER, Mod_LoadModelWorker, mod, NULL, verbose, 0);
-
-		//block until its loaded, if we care.
-		if (verbose == MLV_ERROR || verbose == MLV_WARNSYNC)
-			COM_WorkerPartialSync(mod, &mod->loadstate, MLS_LOADING);
 	}
+
+	//block until its loaded, if we care.
+	if (mod->loadstate == MLS_LOADING && (verbose == MLV_ERROR || verbose == MLV_WARNSYNC || verbose == MLV_SILENTSYNC))
+		COM_WorkerPartialSync(mod, &mod->loadstate, MLS_LOADING);
 
 	if (verbose == MLV_ERROR)
 	{
 		//someone already tried to load it without caring if it failed or not. make sure its loaded.
 		//fixme: this is a spinloop.
-		if (mod->loadstate == MLS_LOADING)
-			COM_WorkerPartialSync(mod, &mod->loadstate, MLS_LOADING);
 
 		if (mod->loadstate != MLS_LOADED)
 			Host_EndGame ("Mod_NumForName: %s not found or couldn't load", mod->name);
@@ -1708,13 +1705,12 @@ void Mod_LoadLighting (model_t *loadmodel, bspx_header_t *bspx, qbyte *mod_base,
 		struct
 		{
 			char *pattern;
-			int type;
 		} litnames[] = {
-			{"%s.lit2",2},
-			{"%s.hdr",1},
-			{"%s.lit",0},
-			{"lits/%s.lit2",2},
-			{"lits/%s.lit",0},
+			{"%s.hdr"},
+			{"%s.lit"},
+#ifdef HAVE_LEGACY
+			{"lits/%s.lit"},
+#endif
 		};
 		char litbasep[MAX_QPATH];
 		char litbase[MAX_QPATH];
@@ -1730,8 +1726,6 @@ void Mod_LoadLighting (model_t *loadmodel, bspx_header_t *bspx, qbyte *mod_base,
 		COM_FileBase(loadmodel->name, litbase, sizeof(litbase));
 		for (i = 0; i < countof(litnames); i++)
 		{
-			if (!temp_lit2support.ival && litnames[i].type==2)
-				continue;
 			if (strchr(litnames[i].pattern, '/'))
 				Q_snprintfz(litname, sizeof(litname), litnames[i].pattern, litbase);
 			else
@@ -1790,12 +1784,7 @@ void Mod_LoadLighting (model_t *loadmodel, bspx_header_t *bspx, qbyte *mod_base,
 				unsigned short *extents = (unsigned short*)(offsets+ql2->numsurfs);
 				unsigned char *styles = (unsigned char*)(extents+ql2->numsurfs*2);
 				unsigned char *shifts = (unsigned char*)(styles+ql2->numsurfs*4);
-				if (!temp_lit2support.ival)
-				{
-					litdata = NULL;
-					Con_Printf("lit2 support is disabled, pending format finalisation (%s).\n", litname);
-				}
-				else if (loadmodel->numsurfaces != ql2->numsurfs)
+				if (loadmodel->numsurfaces != ql2->numsurfs)
 				{
 					litdata = NULL;
 					Con_Printf("lit \"%s\" doesn't match level. Ignored.\n", litname);
@@ -1807,6 +1796,8 @@ void Mod_LoadLighting (model_t *loadmodel, bspx_header_t *bspx, qbyte *mod_base,
 				}
 				else
 				{
+					Con_Printf("%s: lit2 support is unstandardised and may change in future.\n", litname);
+
 					inhibitvalidation = true;
 
 					//surface code needs to know the overrides.
@@ -2713,6 +2704,37 @@ static void Mod_UpdateBatchShader_Q1 (struct batch_s *batch)
 
 	batch->shader = base->shader;
 }
+
+// copy of Q1s, but with a different framerate
+static void Mod_UpdateBatchShader_HL (struct batch_s *batch)
+{
+	texture_t *base = batch->texture;
+	unsigned int	relative;
+	int				count;
+
+	if (batch->ent->framestate.g[FS_REG].frame[0])
+	{
+		if (base->alternate_anims)
+			base = base->alternate_anims;
+	}
+
+	if (base->anim_total)
+	{
+		relative = (unsigned int)(cl.time*20) % base->anim_total;
+
+		count = 0;
+		while (base->anim_min > relative || base->anim_max <= relative)
+		{
+			base = base->anim_next;
+			if (!base)
+				Sys_Error ("R_TextureAnimation: broken cycle");
+			if (++count > 100)
+				Sys_Error ("R_TextureAnimation: infinite cycle");
+		}
+	}
+
+	batch->shader = base->shader;
+}
 #endif
 
 #ifdef Q2BSPS
@@ -2886,8 +2908,10 @@ static int Mod_Batches_Generate(model_t *mod)
 #endif
 #ifdef Q1BSPS
 				case fg_quake:
-				case fg_halflife:
 					batch->buildmeshes = Mod_UpdateBatchShader_Q1;
+					break;
+				case fg_halflife:
+					batch->buildmeshes = Mod_UpdateBatchShader_HL;
 					break;
 #endif
 				default:
@@ -4695,6 +4719,11 @@ static qboolean Mod_LoadClipnodes (model_t *loadmodel, qbyte *mod_base, lump_t *
 			Con_Printf (CON_ERROR "MOD_LoadBmodel: funny lump size in %s\n",loadmodel->name);
 			return false;
 		}
+		if (count > (1u<<16))
+		{
+			Con_Printf (CON_ERROR "%s: clipnode count exceeds 16bit limit (%u). Try bsp2.\n", loadmodel->name, count);
+			return false;
+		}
 	}
 	out = ZG_Malloc(&loadmodel->memgroup, count*sizeof(*out));//space for both
 
@@ -5288,7 +5317,6 @@ static qboolean QDECL Mod_LoadBrushModel (model_t *mod, void *buffer, size_t fsi
 
 	mod_base = (qbyte *)buffer;
 	memcpy(&header, mod_base, sizeof(header));
-	header.version = LittleLong(header.version);
 	for (i=0 ; i<countof(header.lumps)/4 ; i++)
 	{
 		header.lumps[i].filelen = LittleLong(header.lumps[i].filelen);
@@ -5326,6 +5354,7 @@ static qboolean QDECL Mod_LoadBrushModel (model_t *mod, void *buffer, size_t fsi
 		Con_Printf (CON_ERROR "Mod_LoadBrushModel: %s has wrong version number (%i)\n", mod->name, i);
 		return false;
 	}
+	header.version = LittleLong(header.version);
 
 	mod->lightmaps.width = 128;//LMBLOCK_WIDTH;
 	mod->lightmaps.height = 128;//LMBLOCK_HEIGHT; 
@@ -5619,7 +5648,7 @@ void Mod_LoadDoomSprite (model_t *mod)
 
 //we need to override the rtlight shader for sprites so they get lit properly ignoring n+s+t dirs
 //so lets split the shader into parts to avoid too many dupes
-#define SPRITE_SHADER_MAIN									\
+#define SPRITE_SHADER_MAIN(extra)			\
 			"{\n"											\
 				"if gl_blendsprites\n"						\
 					"program defaultsprite\n"				\
@@ -5639,9 +5668,12 @@ void Mod_LoadDoomSprite (model_t *mod)
 					"rgbgen vertex\n"						\
 					"alphagen vertex\n"						\
 				"}\n"										\
-				"surfaceparm noshadows\n"
-#define SPRITE_SHADER_UNLIT	"surfaceparm nodlight\n"
-#define SPRITE_SHADER_LIT								\
+				"surfaceparm noshadows\n"					\
+				extra										\
+			"}\n"
+#define SPRITE_SHADER_UNLIT	SPRITE_SHADER_MAIN(			\
+				"surfaceparm nodlight\n")
+#define SPRITE_SHADER_LIT	SPRITE_SHADER_MAIN(			\
 				"sort seethrough\n"						\
 				"bemode rtlight\n"						\
 				"{\n"									\
@@ -5650,8 +5682,7 @@ void Mod_LoadDoomSprite (model_t *mod)
 						"map $diffuse\n"				\
 						"blendfunc add\n"				\
 					"}\n"								\
-				"}\n"
-#define SPRITE_SHADER_FOOTER "}\n"
+				"}\n")
 
 void Mod_LoadSpriteFrameShader(model_t *spr, int frame, int subframe, mspriteframe_t *frameinfo)
 {
@@ -5675,7 +5706,7 @@ void Mod_LoadSpriteFrameShader(model_t *spr, int frame, int subframe, mspritefra
 	{
 		int i;
 		/*
-		A quick note on tenebrae and sprites: In tenebrae, sprites are always lit, unless the light_lev field is set (which makes it fullbright).
+		A quick note on tenebrae and sprites: In tenebrae, sprites are always additive, unless the light_lev field is set (which makes it fullbright).
 		While its generally preferable and more consistent to assume lit sprites, this is incompatible with vanilla quake and thus unacceptable to us, but you can set the mod_assumelitsprites cvar if you want it.
 		So for better compatibility, we have a whitelist of 'well-known' sprites that tenebrae uses in this way, which we do lighting on.
 		You should still be able to use EF_FULLBRIGHT on these, but light_lev is an imprecise setting and will result in issues. Just be specific about fullbright or additive.
@@ -5697,9 +5728,10 @@ void Mod_LoadSpriteFrameShader(model_t *spr, int frame, int subframe, mspritefra
 #endif
 
 	if (litsprite)	// a ! in the filename makes it non-fullbright (and can also be lit by rtlights too).
-		shadertext = SPRITE_SHADER_MAIN SPRITE_SHADER_LIT SPRITE_SHADER_FOOTER;
+		shadertext = SPRITE_SHADER_LIT;
 	else
-		shadertext = SPRITE_SHADER_MAIN SPRITE_SHADER_UNLIT SPRITE_SHADER_FOOTER;
+		shadertext = SPRITE_SHADER_UNLIT;
+	frameinfo->lit = litsprite;
 	frameinfo->shader = R_RegisterShader(name, SUF_NONE, shadertext);
 	frameinfo->shader->defaulttextures->base = frameinfo->image;
 	frameinfo->shader->width = frameinfo->right-frameinfo->left;
@@ -5735,7 +5767,7 @@ void Mod_LoadSpriteShaders(model_t *spr)
 Mod_LoadSpriteFrame
 =================
 */
-static void * Mod_LoadSpriteFrame (model_t *mod, void *pin, void *pend, mspriteframe_t **ppframe, int framenum, int version, unsigned char *palette)
+static void * Mod_LoadSpriteFrame (model_t *mod, void *pin, void *pend, mspriteframe_t **ppframe, int framenum, int subframe, int version, unsigned char *palette)
 {
 	dspriteframe_t		*pinframe;
 	mspriteframe_t		*pspriteframe;
@@ -5784,7 +5816,10 @@ static void * Mod_LoadSpriteFrame (model_t *mod, void *pin, void *pend, mspritef
 		lowresfmt = TF_INVALID;
 	}
 
-	Q_snprintfz(name, sizeof(name), "%s_%i.tga", mod->name, framenum);
+	if (subframe == -1)
+		Q_snprintfz(name, sizeof(name), "%s_%i.tga", mod->name, framenum);
+	else
+		Q_snprintfz(name, sizeof(name), "%s_%i_%i.tga", mod->name, framenum, subframe);
 	pspriteframe->image = Image_GetTexture(name, "sprites", IF_NOMIPMAP|IF_NOGAMMA|IF_CLAMP|IF_PREMULTIPLYALPHA, dataptr, palette, width, height, lowresfmt);
 
 	return (void *)((qbyte *)(pinframe+1) + size);
@@ -5845,7 +5880,7 @@ static void * Mod_LoadSpriteGroup (model_t *mod, void * pin, void *pend, msprite
 
 	for (i=0 ; i<numframes ; i++)
 	{
-		ptemp = Mod_LoadSpriteFrame (mod, ptemp, pend, &pspritegroup->frames[i], framenum * 100 + i, version, palette);
+		ptemp = Mod_LoadSpriteFrame (mod, ptemp, pend, &pspritegroup->frames[i], framenum, i, version, palette);
 	}
 
 	return ptemp;
@@ -6000,7 +6035,7 @@ qboolean QDECL Mod_LoadSpriteModel (model_t *mod, void *buffer, size_t fsize)
 		{
 			pframetype = (dspriteframetype_t *)
 					Mod_LoadSpriteFrame (mod, pframetype + 1, (qbyte*)buffer + fsize,
-										 &psprite->frames[i].frameptr, i, version, pal);
+										 &psprite->frames[i].frameptr, i, -1, version, pal);
 		}
 		else
 		{

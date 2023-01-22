@@ -50,7 +50,6 @@ qbyte	bindcmdlevel[K_MAX][KEY_MODIFIERSTATES];	//should be a struct, but not due
 qboolean	consolekeys[K_MAX];	// if true, can't be rebound while in console
 int		keyshift[K_MAX];		// key to map to if shift held down in console
 unsigned int	keydown[K_MAX];	//	bitmask, for each device (to block autorepeat binds per-seat).
-//unsigned int	key_modifier[K_MAX];
 
 #define MAX_INDEVS 8
 
@@ -197,6 +196,12 @@ keyname_t keynames[] =
 	{"MOUSE10",		K_MOUSE10},
 	{"MWHEELUP",	K_MWHEELUP},
 	{"MWHEELDOWN",	K_MWHEELDOWN},
+	{"MWHEELLEFT",	K_MWHEELLEFT},
+	{"MWHEELRIGHT",	K_MWHEELRIGHT},
+	{"TOUCH",		K_TOUCH},
+	{"TOUCHSLIDE",	K_TOUCHSLIDE},
+	{"TOUCHTAP",	K_TOUCHTAP},
+	{"TOUCHLONG",	K_TOUCHLONG},
 
 	{"LWIN",	K_LWIN},	//windows name
 	{"RWIN",	K_RWIN},	//windows name
@@ -273,11 +278,13 @@ keyname_t keynames[] =
 	{"PLUS",		'+'},	// because "shift++" is inferior to shift+plus
 	{"MINUS",		'-'},	// because "shift+-" is inferior to shift+minus
 
+	{"APOSTROPHE",	'\''},	//can mess up string parsing, unfortunately
+	{"QUOTES",		'\"'},	//can mess up string parsing, unfortunately
 	{"TILDE",		'~'},
 	{"BACKQUOTE",	'`'},
 	{"BACKSLASH",	'\\'},
 
-	{"GP_A",			K_GP_A},
+	{"GP_A",			K_GP_A},	//note: xbox arrangement, not nintendo arrangement.
 	{"GP_B",			K_GP_B},
 	{"GP_X",			K_GP_X},
 	{"GP_Y",			K_GP_Y},
@@ -285,8 +292,8 @@ keyname_t keynames[] =
 	{"GP_RSHOULDER",	K_GP_RIGHT_SHOULDER},
 	{"GP_LTRIGGER",		K_GP_LEFT_TRIGGER},
 	{"GP_RTRIGGER",		K_GP_RIGHT_TRIGGER},
-	{"GP_BACK",			K_GP_BACK},
-	{"GP_START",		K_GP_START},
+	{"GP_VIEW",			K_GP_VIEW},
+	{"GP_MENU",			K_GP_MENU},
 	{"GP_LTHUMB",		K_GP_LEFT_STICK},
 	{"GP_RTHUMB",		K_GP_RIGHT_STICK},
 	{"GP_DPAD_UP",		K_GP_DPAD_UP},
@@ -302,12 +309,18 @@ keyname_t keynames[] =
 	{"GP_TOUCHPAD",		K_GP_TOUCHPAD},
 	{"GP_UNKNOWN",		K_GP_UNKNOWN},
 
+	//older xbox names
+	{"GP_BACK",			K_GP_BACK},
+	{"GP_START",		K_GP_START},
 	//names for playstation controllers
 	{"GP_CROSS",		K_GP_PS_CROSS},
 	{"GP_CIRCLE",		K_GP_PS_CIRCLE},
 	{"GP_SQUARE",		K_GP_PS_SQUARE},
 	{"GP_TRIANGLE",		K_GP_PS_TRIANGLE},
-	{"GP_MIC",		K_GP_MISC1},
+	{"GP_MIC",			K_GP_MISC1},
+	{"GP_SELECT",		K_GP_VIEW},
+	{"GP_SHARE",		K_GP_VIEW},
+	{"GP_OPTIONS",		K_GP_START},
 
 	//axis->button emulation
 	{"GP_LTHUMB_UP",	K_GP_LEFT_THUMB_UP},
@@ -318,6 +331,16 @@ keyname_t keynames[] =
 	{"GP_RTHUMB_DOWN",	K_GP_RIGHT_THUMB_DOWN},
 	{"GP_RTHUMB_LEFT",	K_GP_RIGHT_THUMB_LEFT},
 	{"GP_RTHUMB_RIGHT",	K_GP_RIGHT_THUMB_RIGHT},
+
+#ifdef Q2BSPS
+	//kingpin compat
+	{"ESC",				K_ESCAPE},
+	{"B_SPACE",			K_BACKSPACE},
+	{"U_ARROW",			K_UPARROW},
+	{"D_ARROW",			K_DOWNARROW},
+	{"L_ARROW",			K_LEFTARROW},
+	{"R_ARROW",			K_RIGHTARROW},
+#endif
 
 #ifndef QUAKETC
 	//dp compat
@@ -484,6 +507,8 @@ void CompleteCommand (qboolean force, int direction)
 	cmd_completion_t *c;
 
 	s = key_lines[edit_line];
+	if (!*s)
+		return;
 	if (*s == ' ' || *s == '\t')
 		s++;
 	if (*s == '\\' || *s == '/')
@@ -736,7 +761,7 @@ qboolean Key_GetConsoleSelectionBox(console_t *con, int *sx, int *sy, int *ex, i
 		*ey = con->mousecursor[1];
 		return true;
 	}
-	else if (con->buttonsdown == CB_COPY || con->buttonsdown == CB_SELECT)
+	else if (con->buttonsdown == CB_SELECT || con->buttonsdown == CB_SELECTED)
 	{
 		//right-mouse
 		//select. copy-to-clipboard on release.
@@ -1083,6 +1108,14 @@ void Key_DefaultLinkClicked(console_t *con, char *text, char *info)
 		return;
 	}
 #endif
+#ifdef SUPPORT_ICE
+	c = Info_ValueForKey(info, "ice");
+	if (*c && !strchr(c, ';') && !strchr(c, '\n'))
+	{
+		Cbuf_AddText(va("\nnet_ice_show \"%s\"\n", c), RESTRICT_LOCAL);
+		return;
+	}
+#endif
 	c = Info_ValueForKey(info, "impulse");
 	if (*c && !strchr(c, ';') && !strchr(c, '\n'))
 	{
@@ -1178,60 +1211,18 @@ void Key_HandleConsoleLink(console_t *con, char *buffer)
 	}
 }
 
-#define Key_IsTouchScreen() false
 void Key_ConsoleRelease(console_t *con, int key, unsigned int unicode)
 {
 	char *buffer;	
 	if (key < 0)
 		key = 0;
 
-	if (key == K_MOUSE1 && con->buttonsdown == CB_SELECT)
+	if ((key == K_TOUCHTAP || key == K_MOUSE1) && con->buttonsdown == CB_SELECT)
 	{
-		if (con->selstartline)
-		{
-			if (con->userline)
-			{
-				if (con->flags & CONF_BACKSELECTION)
-				{
-					con->userline = con->selendline;
-					con->useroffset = con->selendoffset;
-				}
-				else
-				{
-					con->userline = con->selstartline;
-					con->useroffset = con->selstartoffset;
-				}
-			}
-			if (con->selstartline == con->selendline && con->selendoffset <= con->selstartoffset+1)
-			{
-				con->flags &= ~CONF_KEEPSELECTION;
-				if (keydown[K_LSHIFT] || keydown[K_RSHIFT])
-					;
-				else
-				{
-					buffer = Con_CopyConsole(con, false, true, false);
-					if (buffer)
-					{
-						Key_HandleConsoleLink(con, buffer);
-						Z_Free(buffer);
-					}
-				}
-			}
-			else
-			{
-				con->flags |= CONF_KEEPSELECTION;
-
-				buffer = Con_CopyConsole(con, true, false, true);	//don't keep markup if we're copying to the clipboard
-				if (buffer)
-				{
-					Sys_SaveClipboard(CBT_SELECTION,  buffer);
-					Z_Free(buffer);
-				}
-			}
-		}
-		con->buttonsdown = CB_NONE;
+		con->buttonsdown = CB_SELECTED;
+		return;
 	}
-	if (key == K_MOUSE1 && con->buttonsdown == CB_SCROLL)// || (key == K_MOUSE2 && con->buttonsdown == CB_SCROLL_R))
+	if ((key == K_TOUCHSLIDE || key == K_MOUSE1) && con->buttonsdown == CB_SCROLL)// || (key == K_MOUSE2 && con->buttonsdown == CB_SCROLL_R))
 	{
 		con->buttonsdown = CB_NONE;
 		if (fabs(con->mousedown[0] - con->mousecursor[0]) < 5 && fabs(con->mousedown[1] - con->mousecursor[1]) < 5)
@@ -1266,7 +1257,7 @@ void Key_ConsoleRelease(console_t *con, int key, unsigned int unicode)
 		else
 			Con_Footerf(con, false, "");
 	}
-	if (key == K_MOUSE2 && con->buttonsdown == CB_COPY)
+	/*if ((key == K_TOUCHLONG || key == K_MOUSE2) && con->buttonsdown == CB_COPY)
 	{
 		con->buttonsdown = CB_NONE;
 		buffer = Con_CopyConsole(con, true, false, true);	//don't keep markup if we're copying to the clipboard
@@ -1274,7 +1265,7 @@ void Key_ConsoleRelease(console_t *con, int key, unsigned int unicode)
 			return;
 		Sys_SaveClipboard(CBT_CLIPBOARD,  buffer);
 		Z_Free(buffer);
-	}
+	}*/
 	if (con->buttonsdown == CB_CLOSE)
 	{	//window X (close)
 		if (con->mousecursor[0] > con->wnd_w-16 && con->mousecursor[1] < 8)
@@ -1285,6 +1276,9 @@ void Key_ConsoleRelease(console_t *con, int key, unsigned int unicode)
 			return;
 		}
 	}
+	if (con->buttonsdown == CB_SELECTED)
+		;	//will time out in the drawing code.
+	else
 //	if (con->buttonsdown == CB_MOVE)	//window title(move)
 		con->buttonsdown = CB_NONE;
 
@@ -1357,49 +1351,35 @@ static const qbyte *builtinemojidata =
 static void Key_LoadEmojiList(void)
 {
 	qbyte line[1024];
-	char nam[64];
-	char rep[64];
 	vfsfile_t *f;
-	char *json = FS_MallocFile("emoji.json", FS_GAME, NULL);	//https://unicodey.com/emoji-data/emoji.json
+	char *json = FS_MallocFile("data-by-emoji.json", FS_GAME, NULL);	//https://unpkg.com/unicode-emoji-json/data-by-emoji.json
 
 	emojidata = Z_StrDup(builtinemojidata);
 	if (json)
 	{
-		char *unified;
-		for (unified = json; (unified = strstr(unified, ",\"unified\":\"")); )
+		//eg: {	"utf8":{"slug":"text_for_emoji"}, ... } (there's a few other keys*/
+		json_t *root = JSON_Parse(json);
+		json_t *def;
+		char nam[64];
+		for (def = (root?root->child:NULL); def; def = def->sibling)
 		{
-			int i = 0;
-			char *t;
-			char *sn;
-			unsigned int u;
-			unified += 12;
-			t = unified;
-			//do
-			//{
-				u = strtol(t, &t, 16);
-				i += utf8_encode(rep+i, u, countof(rep)-i);
-			//} while (i < countof(rep) && *t++ == '-');
-			if (*t!='\"')
-				continue;
-			rep[i] = 0;
-
-			sn = strstr(unified, "\"short_names\":[");
-			if (sn)
+			int e;
+			const char *o;
+			utf8_decode(&e, def->name, &o);
+			if (*o)
+				continue;	//we can only cope with single codepoints.
+			if (JSON_GetString(def, "slug", nam+1, sizeof(nam)-2, NULL))
 			{
-				sn += 15;
-				while (sn && *sn == '\"')
-				{
-					sn = COM_ParseTokenOut(sn, NULL, nam+1, sizeof(nam)-1, NULL);
-					nam[0] = ':';
-					Q_strncatz(nam, ":", sizeof(nam));
-					line[0] = strlen(nam);
-					line[1] = strlen(rep);
-					strcpy(line+2, nam);
-					strcpy(line+2+line[0], rep);
-					Z_StrCat((char**)&emojidata, line);
-				}
+				nam[0] = ':';
+				Q_strncatz(nam, ":", sizeof(nam));
+				line[0] = strlen(nam);
+				line[1] = strlen(def->name);
+				strcpy(line+2, nam);
+				strcpy(line+2+line[0], def->name);
+				Z_StrCat((char**)&emojidata, line);
 			}
 		}
+		JSON_Destroy(root);
 		FS_FreeFile(json);
 	}
 
@@ -1647,7 +1627,7 @@ qboolean Key_EntryLine(console_t *con, unsigned char **line, int lineoffset, int
 			*linepos = utf_left((*line)+lineoffset, (*line) + *linepos, !alt) - (*line);
 		return true;
 	}
-	if (key == K_RIGHTARROW || key == K_KP_RIGHTARROW)
+	if (key == K_RIGHTARROW || key == K_KP_RIGHTARROW || key == K_GP_DPAD_RIGHT)
 	{
 		if ((*line)[*linepos])
 		{
@@ -1862,13 +1842,22 @@ qboolean Key_Console (console_t *con, int key, unsigned int unicode)
 	}
 	if (con->redirect)
 	{
-		if (key == K_MOUSE1 || key == K_MOUSE2)
+		if (key == K_TOUCHTAP || key == K_TOUCHSLIDE || key == K_TOUCHLONG || key == K_MOUSE1 || key == K_MOUSE2)
 			;
 		else if (con->redirect(con, unicode, key))
 			return true;
 	}
 
-	if ((key == K_MOUSE1 || key == K_MOUSE2))
+	if (key == K_GP_VIEW || key == K_GP_MENU)
+	{
+		Key_Dest_Remove(kdm_console);
+		Key_Dest_Remove(kdm_cwindows);
+		if (!cls.state && !Key_Dest_Has(~kdm_game))
+			M_ToggleMenu_f ();
+		return true;
+	}
+
+	if (key == K_TOUCHTAP || key == K_TOUCHSLIDE || key == K_TOUCHLONG || key == K_MOUSE1 || key == K_MOUSE2)
 	{
 		int olddown[2] = {con->mousedown[0],con->mousedown[1]};
 		if (con->flags & CONF_ISWINDOW)
@@ -1885,7 +1874,7 @@ qboolean Key_Console (console_t *con, int key, unsigned int unicode)
 		con->mousedown[1] = con->mousecursor[1];
 		if (con_mouseover && con->mousedown[1] < 8)//(8.0*vid.height)/vid.pixelheight)
 		{
-			if (key == K_MOUSE2 && !(con->flags & CONF_ISWINDOW))
+			if ((key == K_MOUSE2||key==K_TOUCHLONG) && !(con->flags & CONF_ISWINDOW))
 			{
 				if (con->close && !con->close(con, false))
 					return true;
@@ -1906,10 +1895,7 @@ qboolean Key_Console (console_t *con, int key, unsigned int unicode)
 				return true;
 
 			con->flags &= ~CONF_KEEPSELECTION;
-			if (Key_IsTouchScreen())	//o.O mouse2+touchscreen? really?
-				con->buttonsdown = CB_COPY;
-			else
-				con->buttonsdown = CB_SCROLL_R;
+			con->buttonsdown = CB_SCROLL_R;
 		}
 		else
 		{
@@ -1931,7 +1917,7 @@ qboolean Key_Console (console_t *con, int key, unsigned int unicode)
 					return true;
 				}
 #endif
-				if (Key_IsTouchScreen() || con->mousecursor[0] > ((con->flags & CONF_ISWINDOW)?con->wnd_w-16:vid.width)-8)
+				if (key == K_TOUCHSLIDE || con->mousecursor[0] > ((con->flags & CONF_ISWINDOW)?con->wnd_w-16:vid.width)-8)
 				{	//just scroll the console up/down
 					con->buttonsdown = CB_SCROLL;
 				}
@@ -1957,6 +1943,7 @@ qboolean Key_Console (console_t *con, int key, unsigned int unicode)
 					con->mousedowntime = realtime;
 
 					con->buttonsdown = CB_SELECT;
+					con->flags &= ~CONF_KEEPSELECTION;
 
 					if (shift)
 					{
@@ -1964,17 +1951,18 @@ qboolean Key_Console (console_t *con, int key, unsigned int unicode)
 						con->mousedown[1] = olddown[1];
 					}
 				}
-				con->flags &= ~CONF_KEEPSELECTION;
 			}
 		}
 
-		if ((con->buttonsdown == CB_COPY || con->buttonsdown == CB_SCROLL) && !con->linecount && (!con->linebuffered || con->linebuffered == Con_Navigate))
+		if (con->buttonsdown == CB_SCROLL && !con->linecount && (!con->linebuffered || con->linebuffered == Con_Navigate))
 			con->buttonsdown = CB_NONE;
 		else
 			return true;
 	}
+	if (key == K_TOUCH)
+		return true;	//eat it, so we don't get any kind of mouse emu junk
 
-	if (key == K_PGUP || key == K_KP_PGUP || key==K_MWHEELUP)
+	if (key == K_PGUP || key == K_KP_PGUP || key==K_MWHEELUP || key == K_GP_LEFT_THUMB_UP)
 	{
 		conline_t *l;
 		int i = 2;
@@ -2000,7 +1988,7 @@ qboolean Key_Console (console_t *con, int key, unsigned int unicode)
 			return true;
 		}
 	}
-	if (key == K_PGDN || key == K_KP_PGDN || key==K_MWHEELDOWN)
+	if (key == K_PGDN || key == K_KP_PGDN || key==K_MWHEELDOWN || key == K_GP_LEFT_THUMB_DOWN)
 	{
 		int i = 2;
 		if (ctrl)
@@ -2076,7 +2064,7 @@ qboolean Key_Console (console_t *con, int key, unsigned int unicode)
 		return false;
 	}
 	
-	if (key == K_ENTER || key == K_KP_ENTER || key == K_GP_START)
+	if (key == K_ENTER || key == K_KP_ENTER || key == K_GP_DIAMOND_CONFIRM)
 	{	// backslash text are commands, else chat
 		char demoji[8192];
 		const char *txt = Key_Demoji(demoji, sizeof(demoji), key_lines[edit_line]);
@@ -2231,7 +2219,7 @@ void Key_Message (int key, int unicode)
 		chat_bufferpos = 0;
 	}
 
-	if (key == K_ENTER || key == K_KP_ENTER || key == K_GP_START)
+	if (key == K_ENTER || key == K_KP_ENTER || key == K_GP_DIAMOND_CONFIRM)
 	{
 		if (chat_buffer && chat_buffer[0])
 		{	//send it straight into the command.
@@ -2264,7 +2252,7 @@ void Key_Message (int key, int unicode)
 		return;
 	}
 
-	if (key == K_ESCAPE || key == K_GP_BACK)
+	if (key == K_ESCAPE || key == K_TOUCHLONG || key == K_GP_DIAMOND_CANCEL)
 	{
 		Key_Dest_Remove(kdm_message);
 		chat_bufferpos = 0;
@@ -2420,6 +2408,39 @@ static char *Key_KeynumToStringRaw (int keynum)
 const char *Key_KeynumToString (int keynum, int modifier)
 {
 	const char *r = Key_KeynumToStringRaw(keynum);
+	if (r[0] == '<' && r[1])
+		modifier = 0;	//would be too weird.
+	switch(modifier)
+	{
+	case KEY_MODIFIER_CTRL|KEY_MODIFIER_ALT|KEY_MODIFIER_SHIFT:
+		return va("Ctrl+Alt+Shift+%s", r);
+	case KEY_MODIFIER_ALT|KEY_MODIFIER_SHIFT:
+		return va("Alt+Shift+%s", r);
+	case KEY_MODIFIER_CTRL|KEY_MODIFIER_SHIFT:
+		return va("Ctrl+Shift+%s", r);
+	case KEY_MODIFIER_CTRL|KEY_MODIFIER_ALT:
+		return va("Ctrl+Alt+%s", r);
+	case KEY_MODIFIER_CTRL:
+		return va("Ctrl+%s", r);
+	case KEY_MODIFIER_ALT:
+		return va("Alt+%s", r);
+	case KEY_MODIFIER_SHIFT:
+		return va("Shift+%s", r);
+	default:
+		return r;	//no modifier or a bindmap
+	}
+}
+
+const char *Key_KeynumToLocalString (int keynum, int modifier)
+{
+	const char *r;
+#if defined(_WIN32)	|| (defined(__linux__)&&!defined(NO_X11)) //not defined in all targets yet...
+	static char tmp[64];
+	if (INS_KeyToLocalName(keynum, tmp, sizeof(tmp)))
+		r = tmp;
+	else
+#endif
+		r = Key_KeynumToStringRaw(keynum);
 	if (r[0] == '<' && r[1])
 		modifier = 0;	//would be too weird.
 	switch(modifier)
@@ -2849,32 +2870,7 @@ void Key_Init (void)
 	}
 	consolekeys[K_MWHEELUP] = true;
 	consolekeys[K_MWHEELDOWN] = true;
-
-	for (i=0 ; i<K_MAX ; i++)
-		keyshift[i] = i;
-	for (i='a' ; i<='z' ; i++)
-		keyshift[i] = i - 'a' + 'A';
-	keyshift['1'] = '!';
-	keyshift['2'] = '@';
-	keyshift['3'] = '#';
-	keyshift['4'] = '$';
-	keyshift['5'] = '%';
-	keyshift['6'] = '^';
-	keyshift['7'] = '&';
-	keyshift['8'] = '*';
-	keyshift['9'] = '(';
-	keyshift['0'] = ')';
-	keyshift['-'] = '_';
-	keyshift['='] = '+';
-	keyshift[','] = '<';
-	keyshift['.'] = '>';
-	keyshift['/'] = '?';
-	keyshift[';'] = ':';
-	keyshift['\''] = '"';
-	keyshift['['] = '{';
-	keyshift[']'] = '}';
-	keyshift['`'] = '~';
-	keyshift['\\'] = '|';
+	consolekeys[K_TOUCH] = true;
 
 //
 // register our functions
@@ -2917,7 +2913,8 @@ void Key_Event (unsigned int devid, int key, unsigned int unicode, qboolean down
 {
 	unsigned int devbit = 1u<<devid;
 	int bl, bkey;
-	char	*dc, *uc;
+	const char	*dc;
+	char	*uc;
 	char	p[16];
 	int modifierstate;
 	int conkey = consolekeys[key] || ((unicode || key == '`') && (key != '`' || key_linepos>0));	//if the input line is empty, allow ` to toggle the console, otherwise enter it as actual text.
@@ -2951,17 +2948,15 @@ void Key_Event (unsigned int devid, int key, unsigned int unicode, qboolean down
 		shift_down = keydown[K_LSHIFT]|keydown[K_RSHIFT];
 	}
 
-	if (key == K_ESCAPE)
+	if ((key == K_ESCAPE  && (shift_down        &devbit)) ||
+		(key == K_GP_MENU && (keydown[K_GP_VIEW]&devbit)))
 	{
-		if (shift_down)
+		extern cvar_t con_stayhidden;
+		if (down && con_stayhidden.ival < 2)
 		{
-			extern cvar_t con_stayhidden;
-			if (down && con_stayhidden.ival < 2)
-			{
-				if (!Key_Dest_Has(kdm_console))	//don't toggle it when the console is already down. this allows typing blind to not care if its already active.
-					Con_ToggleConsole_Force();
-				return;
-			}
+			if (!Key_Dest_Has(kdm_console))	//don't toggle it when the console is already down. this allows typing blind to not care if its already active.
+				Con_ToggleConsole_Force();
+			return;
 		}
 	}
 
@@ -2974,7 +2969,7 @@ void Key_Event (unsigned int devid, int key, unsigned int unicode, qboolean down
 			return;
 #endif
 #ifdef VM_CG
-		if (CG_KeyPress(key, unicode, down))
+		if (q3 && q3->cg.KeyPressed(key, unicode, down))
 			return;
 #endif
 	}
@@ -3053,7 +3048,7 @@ void Key_Event (unsigned int devid, int key, unsigned int unicode, qboolean down
 				con = con_curwindow;
 			else
 				con = NULL;
-			if (con_mouseover && key >= K_MOUSE1 && key <= K_MWHEELDOWN)
+			if (con_mouseover && ((key >= K_MOUSE1 && key <= K_MWHEELDOWN) || key == K_TOUCH))
 				con = con_mouseover;
 			if (con_curwindow && con_curwindow != con)
 				con_curwindow->buttonsdown = CB_NONE;
@@ -3119,7 +3114,7 @@ void Key_Event (unsigned int devid, int key, unsigned int unicode, qboolean down
 	if (/*conkey &&*/Key_Dest_Has(kdm_console|kdm_cwindows))
 	{
 		console_t *con = Key_Dest_Has(kdm_console)?con_current:con_curwindow;
-		if ((con_mouseover||!Key_Dest_Has(kdm_console)) && key >= K_MOUSE1 && key <= K_MWHEELDOWN)
+		if ((con_mouseover||!Key_Dest_Has(kdm_console)) && ((key >= K_MOUSE1 && key <= K_MWHEELDOWN)||key==K_TOUCH))
 			con = con_mouseover;
 		if (con)
 		{
@@ -3213,12 +3208,12 @@ void Key_Event (unsigned int devid, int key, unsigned int unicode, qboolean down
 
 		//gamepad buttons should get fallbacks out of the box, even if they're not initially listed on the binds menu.
 		//these may be redefined later...
-		case K_GP_LEFT_SHOULDER:	dc = "impulse 12";		goto defaultedbind;	//matches QS's default.cfg
-		case K_GP_RIGHT_SHOULDER:	dc = "impulse 10";		goto defaultedbind;	//matches QS's default.cfg
-		case K_GP_LEFT_TRIGGER:		dc = "+button3";		goto defaultedbind;	//matches QS's default.cfg
-		case K_GP_RIGHT_TRIGGER:	dc = "+attack";			goto defaultedbind;	//matches QS's default.cfg
+		case K_GP_LEFT_SHOULDER:	dc = "+jump";			goto defaultedbind;	//qs: impulse 12 (should be 11 for qw...)
+		case K_GP_RIGHT_SHOULDER:	dc = "+weaponwheel";	goto defaultedbind;	//qs: impulse 10
+		case K_GP_LEFT_TRIGGER:		dc = "+button3";		goto defaultedbind;	//qs: jump
+		case K_GP_RIGHT_TRIGGER:	dc = "+attack";			goto defaultedbind;	//qs: +attack
 		case K_GP_START:			dc = "togglemenu";		goto defaultedbind;
-		case K_GP_A:				dc = "+jump";			goto defaultedbind;
+		case K_GP_A:				dc = "impulse 10";		goto defaultedbind;
 		case K_GP_B:				dc = "+button4";		goto defaultedbind;
 		case K_GP_X:				dc = "+button5";		goto defaultedbind;
 		case K_GP_Y:				dc = "+button6";		goto defaultedbind;
@@ -3241,9 +3236,9 @@ void Key_Event (unsigned int devid, int key, unsigned int unicode, qboolean down
 	}
 
 defaultedbind:
-	if (key == K_MOUSE1 && IN_MouseDevIsTouch(devid))
+	if (key == K_TOUCH || (key == K_MOUSE1 && IN_Touch_MouseIsAbs(devid)))
 	{
-		char *button = SCR_ShowPics_ClickCommand(mousecursor_x, mousecursor_y);
+		const char *button = SCR_ShowPics_ClickCommand(mousecursor_x, mousecursor_y, key == K_TOUCH);
 		if (button)
 		{
 			dc = button;
@@ -3257,17 +3252,18 @@ defaultedbind:
 				dc = keybindings[bkey][modifierstate];
 				bl = bindcmdlevel[bkey][modifierstate];
 			}
-			else
-			{
-				bkey = IN_TranslateMButtonPress(devid);
-				if (bkey)
-				{
-					dc = keybindings[bkey][modifierstate];
-					bl = bindcmdlevel[bkey][modifierstate];
-				}
-				else if (!Key_MouseShouldBeFree())
-					return;
-			}
+			else if (!Key_MouseShouldBeFree())
+				return;
+		}
+		IN_Touch_BlockGestures(devid);
+	}
+	if (key == K_TOUCHTAP && !dc)
+	{	//convert to mouse1 or mouse2 when touchstrafe is on and touchtap is unbound
+		bkey = IN_Touch_Fallback(devid);
+		if (bkey)
+		{
+			dc = keybindings[bkey][modifierstate];
+			bl = bindcmdlevel[bkey][modifierstate];
 		}
 	}
 

@@ -846,12 +846,15 @@ typedef struct
 	qboolean can_mipbias;		//gl1.4+
 	qboolean can_genmips;		//gl3.0+
 	qboolean havecubemaps;	//since gl1.3, so pretty much everyone will have this... should probably only be set if we also have seamless or clamp-to-edge.
+	unsigned int stencilbits;
 
 	void	 (*pDeleteProg)		(program_t *prog);
 	qboolean (*pLoadBlob)		(program_t *prog, unsigned int permu, vfsfile_t *blobfile);
 	qboolean (*pCreateProgram)	(program_t *prog, struct programpermu_s *permu, int ver, const char **precompilerconstants, const char *vert, const char *tcs, const char *tes, const char *geom, const char *frag, qboolean noerrors, vfsfile_t *blobfile);
 	qboolean (*pValidateProgram)(program_t *prog, struct programpermu_s *permu, qboolean noerrors, vfsfile_t *blobfile);
 	void	 (*pProgAutoFields)	(program_t *prog, struct programpermu_s *permu, char **cvarnames, int *cvartypes);
+
+	qboolean showbatches;	//print batches... cleared at end of video frame.
 } sh_config_t;
 extern sh_config_t sh_config;
 #endif
@@ -1061,7 +1064,9 @@ void Sh_PreGenerateLights(void);
 //Draws lights, called from the backend
 void Sh_DrawLights(qbyte *vis);
 void Sh_GenerateFakeShadows(void);
+#ifdef RTLIGHTS
 void Sh_CheckSettings(void);
+#endif
 void SH_FreeShadowMesh(struct shadowmesh_s *sm);
 //frees all memory
 void Sh_Shutdown(void);

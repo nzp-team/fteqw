@@ -35,6 +35,14 @@ extern	cvar_t		scr_viewsize;
 
 qboolean SCR_RSShot (void);
 
+typedef struct
+{
+	qboolean enabled;
+	vec3_t angles;
+} vrui_t;
+extern vrui_t vrui;
+void VRUI_SnapAngle(void);
+
 //void SCR_DrawConsole (qboolean noback);
 //void SCR_SetUpToDrawConsole (void);
 
@@ -74,7 +82,7 @@ void SCR_ShowPic_Hide(void);
 void SCR_ShowPic_Move(void);
 void SCR_ShowPic_Update(void);
 void SCR_ShowPic_ClearAll(qboolean persistflag);
-char *SCR_ShowPics_ClickCommand(int cx, int cy);
+const char *SCR_ShowPics_ClickCommand(float cx, float cy, qboolean loadtouch);
 void SCR_ShowPic_Script_f(void);
 void SCR_ShowPic_Remove_f(void);
 

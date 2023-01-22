@@ -27,7 +27,6 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 float in_sensitivityscale = 1;
 
-static void QDECL CL_SpareMsec_Callback (struct cvar_s *var, char *oldvalue);
 #ifdef NQPROT
 static cvar_t	cl_movement = CVARD("cl_movement","1", "Specifies whether to send movement sequence info over DPP7 protocols (other protocols are unaffected). Unlike cl_nopred, this can result in different serverside behaviour.");
 #endif
@@ -39,7 +38,6 @@ cvar_t	cl_c2spps = CVARD("cl_c2spps", "0", "Reduces outgoing packet rates by dro
 cvar_t	cl_c2sImpulseBackup = CVARD("cl_c2sImpulseBackup","3", "Prevents the cl_c2spps setting from dropping redundant packets that contain impulses, in an attempt to keep impulses more reliable.");
 static cvar_t	cl_c2sMaxRedundancy = CVARD("cl_c2sMaxRedundancy","5", "This is the maximum number of input frames to send in each input packet. Values greater than 1 provide redundancy and avoid prediction misses, though you might find cl_c2sdupe provides equivelent result and at lower latency. It is locked at 3 for vanilla quakeworld, and locked at 1 for vanilla netquake.");
 cvar_t	cl_netfps = CVARD("cl_netfps", "150", "Send up to this many packets to the server per second. The rate used is also limited by the server which usually forces a cap to this setting of 77. Low packet rates can result in extra extrapolation to try to hide the resulting latencies.");
-cvar_t	cl_sparemsec = CVARCD("cl_sparemsec", "10", CL_SpareMsec_Callback, "Allows the 'banking' of a little extra time, so that one slow frame will not delay the timing of the following frame so much.");
 cvar_t  cl_queueimpulses = CVARD("cl_queueimpulses", "0", "Queues unsent impulses instead of replacing them. This avoids the need for extra wait commands (and the timing issues of such commands), but potentially increases latency and can cause scripts to be desynced with regard to buttons and impulses.");
 cvar_t	cl_smartjump = CVARD("cl_smartjump", "1", "Makes the jump button act as +moveup when in water. This is typically quieter and faster.");
 cvar_t	cl_iDrive = CVARFD("cl_iDrive", "1", CVAR_SEMICHEAT, "Effectively releases movement keys when the opposing key is pressed. This avoids dead-time when both keys are pressed. This can be emulated with various scripts, but that's messy.");
@@ -289,60 +287,327 @@ static cvar_t	cl_weaponforgetorder = CVARD("cl_weaponforgetorder", "0", "The 'we
 cvar_t r_viewpreselgun = CVARD("r_viewpreselgun", "0", "HACK: Display the preselected weaponmodel, instead of the current weaponmodel.");
 static int preselectedweapons[MAX_SPLITS];
 static int preselectedweapon[MAX_SPLITS][32];
+static kbutton_t in_wwheel;
+static float wwheeldir[MAX_SPLITS][2];
+static size_t wwheelsel[MAX_SPLITS];
+static double wwheelseltime[MAX_SPLITS];
+
+static struct weaponinfo_s {
+	char shortname[32]; //must not look like an impulse.
+	int impulse; //primary key...
+	int items_mask;
+	int items_val;
+//	int weapon_val;	//unused...
+	int ammostat;
+	int ammomin;
+
+	char *icons[3]; //unselected,selected,ammo
+	char *viewmodel;
+} *weaponinfo;
+static size_t weaponinfo_count;
+
+static int IN_NameToWeaponIdx(const char *name)
+{
+	size_t i;
+	char *end;
+	i = strtoul(name, &end, 10);
+	if (i && !end)
+	{	//select by impulse when they specified something numeric.
+		for (i = 0; i < weaponinfo_count; i++)
+		{
+			if (weaponinfo[i].impulse == i)
+				return i;
+		}
+	}
+	else
+	{
+		for (i = 0; i < weaponinfo_count; i++)
+		{
+			if (!strcmp(name, weaponinfo[i].shortname))
+				return i;
+		}
+	}
+	return -1;
+}
+static int IN_RegisterWeapon(int impulse, const char *name, int items_mask, int items_val, int weapon_val, int ammostat, int ammomin, const char *viewmodel, const char *icon,const char *selicon, const char *ammoicon)
+{
+	size_t i;
+	char *end;
+	if (impulse <= 0 || impulse > 255)
+		return -1;	//no. just no...
+	if (strtol(name, &end, 10) != impulse)
+	{
+		if (!*end)
+			return -1;	//parsed as a number, which didn't match its impulse... don't break the impulse command.
+	}
+	//slots are unique/replaced by impulse
+	for (i = 0; i < weaponinfo_count; i++)
+	{
+		if (weaponinfo[i].impulse == impulse)
+			break;	//replace...
+	}
+	if (i == weaponinfo_count)
+		Z_ReallocElements((void**)&weaponinfo, &weaponinfo_count, i+1, sizeof(*weaponinfo));
+	weaponinfo[i].impulse = impulse;
+
+	Q_strncpyz(weaponinfo[i].shortname, name, sizeof(weaponinfo[i].shortname));
+	weaponinfo[i].items_mask = items_mask;
+	weaponinfo[i].items_val = items_val;
+//	weaponinfo[i].weapon_val;	//unused...
+	weaponinfo[i].ammostat = ammostat;
+	weaponinfo[i].ammomin = ammomin;
+
+#define Z_StrDupPtr2(v,s) do{Z_Free(*v),*(v) = (s&&*s)?strcpy(Z_Malloc(strlen(s)+1), s):NULL;}while(0)
+	Z_StrDupPtr2(&weaponinfo[i].viewmodel, viewmodel);
+	Z_StrDupPtr2(&weaponinfo[i].icons[0], icon);
+	Z_StrDupPtr2(&weaponinfo[i].icons[1], selicon);
+	Z_StrDupPtr2(&weaponinfo[i].icons[2], ammoicon);
+	return i;
+}
+static void IN_RegisterWeapon_Clear(void)
+{
+	while(weaponinfo_count)
+		Z_Free(weaponinfo[--weaponinfo_count].viewmodel);
+	Z_Free(weaponinfo);
+	weaponinfo = NULL;
+}
+void IN_RegisterWeapon_Reset(void)
+{
+	vfsfile_t *f;
+	IN_RegisterWeapon_Clear();
+
+	f = FS_OpenVFS("wwheel.txt", "rb", FS_GAME);
+	if (f)
+	{	//from the rerelease:
+		/*
+		slot N
+		{
+			impulse N
+			icon "gfx/weapons/ww_foo_1.lmp"
+			icon_sel "gfx/weapons/ww_foo_2.lmp"
+			ammoicon "FOO"
+			entvaroffs N
+			weaponnum N
+		}
+		*/
+		char line[1024];
+		char *v;
+		for(;;)
+		{
+			if (!VFS_GETS(f, line, sizeof(line)))
+				break;
+			v = COM_Parse(line);
+			if (!strcmp(com_token, "slot"))	//slot N... just assume they're ordered.
+			{
+				//v = COM_Parse(line);
+				//slot = com_token
+				if (!VFS_GETS(f, line, sizeof(line)))
+					break;
+				v = COM_Parse(line);
+				if (!strcmp(com_token, "{"))
+				{
+					int weaponbit=0;
+					int impulse=0;
+					int ammostat=-1;
+					int ammocount=0;
+					int field;
+					char *icon = NULL;
+					char *selicon = NULL;
+					char *ammoicon = NULL;
+					char *viewmodel = NULL;
+					char *name = NULL;
+
+					for (;;)
+					{
+						if (!VFS_GETS(f, line, sizeof(line)))
+							break;
+						v = COM_Parse(line);
+						if (!strcmp(com_token, "}"))
+						{	//end of this weapon.
+							IN_RegisterWeapon(impulse, name?name:va("%i", impulse), weaponbit,weaponbit, weaponbit, ammostat,ammocount, viewmodel, icon, selicon, ammoicon);
+							break;
+						}
+						else if (!strcmp(com_token, "impulse"))
+						{
+							v = COM_Parse(v);
+							impulse = atoi(com_token);
+						}
+						else if (!strcmp(com_token, "weaponnum"))
+						{
+							v = COM_Parse(v);
+							weaponbit = atoi(com_token);
+						}
+						else if (!strcmp(com_token, "icon"))
+						{
+							v = COM_Parse(v);
+							Z_StrDupPtr(&icon, com_token);
+						}
+						else if (!strcmp(com_token, "icon_sel"))
+						{
+							v = COM_Parse(v);
+							Z_StrDupPtr(&selicon, com_token);
+						}
+						else if (!strcmp(com_token, "ammoicon"))
+						{
+							v = COM_Parse(v);
+							if (strchr(com_token, '.') || strchr(com_token, '/'))
+								Z_StrDupPtr(&ammoicon, com_token);
+							else
+								Z_StrDupPtr(&ammoicon, va("gfx/%s", com_token));
+						}
+						else if (!strcmp(com_token, "entvaroffs"))
+						{	//this seems to be a host-only thing. the server can poke the qc's fields directly but other clients can't.
+							//remap known indexes to stats - this can only work for nq's system fields.
+							//note that rogue does some windowing thing so our client can only know either nails or lavanails, not both. either way those are NOT the normal stats and these weapons will appear to have infinite ammo as a result, sorry.
+							//they really should have used field names here, not numbers, but hey, not my spec... use our 'ammostat' instead for fancy mods.
+							v = COM_Parse(v);
+							field = atoi(com_token);
+							switch(field)
+							{
+							case 216:	ammostat = STAT_SHELLS, ammocount = 1;	break;
+							case 220:	ammostat = STAT_NAILS, ammocount = 1;	break;
+							case 224:	ammostat = STAT_ROCKETS, ammocount = 1;	break;
+							case 228:	ammostat = STAT_CELLS, ammocount = 1;	break;
+							default:	ammostat = -1, ammocount = 0;	break;
+							}
+						}
+						else if (!strcmp(com_token, "ammostat"))
+						{	//non-qe
+							v = COM_Parse(v);
+							ammostat = atoi(com_token);
+							if (ammocount <= 0)
+								ammocount = 1;
+						}
+						else if (!strcmp(com_token, "ammomin"))
+						{	//non-qe
+							v = COM_Parse(v);
+							ammocount = atoi(com_token);
+						}
+						else if (!strcmp(com_token, "viewmodel"))
+						{	//non-qe, so preselect can show the correct model before its actually changed.
+							v = COM_Parse(v);
+							Z_StrDupPtr(&viewmodel, com_token);
+						}
+						else if (!strcmp(com_token, "shortname"))
+						{	//non-qe, for `+fire nq`
+							v = COM_Parse(v);
+							Z_StrDupPtr(&name, com_token);
+						}
+						else if (*com_token)
+							Con_Printf("Unexpected line in wwheel.txt: %s\n", line);
+					}
+					Z_Free(icon);
+					Z_Free(selicon);
+					Z_Free(ammoicon);
+					Z_Free(viewmodel);
+					Z_Free(name);
+				}
+				else
+				{
+					Con_Printf("missing block, found: %s\n", line);
+					break;
+				}
+			}
+			else if (*com_token)
+				Con_Printf("Unexpected line in wwheel.txt: %s\n", line);
+		}
+		VFS_CLOSE(f);
+	}
+	else
+	{
+		IN_RegisterWeapon(2, "sg", IT_SHOTGUN,IT_SHOTGUN, IT_SHOTGUN, STAT_SHELLS,1, "progs/v_shot.mdl", NULL,NULL, "gfx/sb_shells");
+		IN_RegisterWeapon(3, "ssg", IT_SUPER_SHOTGUN,IT_SUPER_SHOTGUN, IT_SUPER_SHOTGUN, STAT_SHELLS,1, "progs/v_shot2.mdl", NULL,NULL, "gfx/sb_shells");
+		IN_RegisterWeapon(4, "ng", IT_NAILGUN,IT_NAILGUN, IT_NAILGUN, STAT_NAILS,1, "progs/v_nail.mdl", NULL,NULL, "gfx/sb_nails");
+		IN_RegisterWeapon(5, "sng", IT_SUPER_NAILGUN,IT_SUPER_NAILGUN, IT_SUPER_NAILGUN, STAT_NAILS,1, "progs/v_nail2.mdl", NULL,NULL, "gfx/sb_nails");
+		IN_RegisterWeapon(6, "gl", IT_GRENADE_LAUNCHER,IT_GRENADE_LAUNCHER, IT_GRENADE_LAUNCHER, STAT_ROCKETS,1, "progs/v_rock.mdl", NULL,NULL, "gfx/sb_rocket");
+		IN_RegisterWeapon(7, "rl", IT_ROCKET_LAUNCHER,IT_ROCKET_LAUNCHER, IT_ROCKET_LAUNCHER, STAT_ROCKETS,1, "progs/v_rock2.mdl", NULL,NULL, "gfx/sb_rocket");
+		IN_RegisterWeapon(8, "lg", IT_LIGHTNING,IT_LIGHTNING, IT_LIGHTNING, STAT_CELLS,1, "progs/v_light.mdl", NULL,NULL, "gfx/sb_cells");
+		IN_RegisterWeapon(1, "axe", IT_AXE,IT_AXE, IT_AXE, -1,0, "progs/v_axe.mdl", NULL, NULL, NULL);
+	}
+}
+static void IN_RegisterWeapon_f(void)
+{
+	if (Cmd_Argc() <= 2)
+	{
+		const char *arg = Cmd_Argv(1);
+		if (!strcmp(arg, "clear"))
+			IN_RegisterWeapon_Clear();
+		else if (!strcmp(arg, "reset") || !strcmp(arg, "quake"))	//'quake' for compat with dp.
+			IN_RegisterWeapon_Reset();
+		else
+			Con_Printf("Unknown arg %s\n", Cmd_Argv(1));
+	}
+	else
+	{
+		IN_RegisterWeapon(	atoi(Cmd_Argv(2)),	//impulse
+							Cmd_Argv(1),		//name
+							atoi(Cmd_Argv(3)),	//itemsmask
+							atoi(Cmd_Argv(3)),	//itemsval
+							atoi(Cmd_Argv(4)),	//weaponval
+							atoi(Cmd_Argv(5)),	//ammostat
+							atoi(Cmd_Argv(6)),	//ammomin
+							Cmd_Argv(7),		//viewmodel
+							Cmd_Argv(8),		//weaponicon
+							Cmd_Argv(9),		//weaponicon_sel
+							Cmd_Argv(10));		//ammoicon
+	}
+}
 
 //hacks, because we have to guess what the mod is doing. we'll probably get it wrong, which sucks.
-static qboolean IN_HaveWeapon(int pnum, int imp)
+static qboolean IN_HaveWeapon_Idx(int pnum, size_t widx)
 {
-	unsigned int items = cl.playerview[pnum].stats[STAT_ITEMS];
-	switch (imp)
-	{
-		case 1:	return (items & IT_AXE)?true:false;
-		case 2:	return (items & IT_SHOTGUN && cl.playerview[pnum].stats[STAT_SHELLS] >= 1)?true:false;
-		case 3:	return (items & IT_SUPER_SHOTGUN && cl.playerview[pnum].stats[STAT_SHELLS] >= 2)?true:false;
-		case 4:	return (items & IT_NAILGUN && cl.playerview[pnum].stats[STAT_NAILS] >= 1)?true:false;
-		case 5:	return (items & IT_SUPER_NAILGUN && cl.playerview[pnum].stats[STAT_NAILS] >= 2)?true:false;
-		case 6:	return (items & IT_GRENADE_LAUNCHER && cl.playerview[pnum].stats[STAT_ROCKETS] >= 1)?true:false;
-		case 7:	return (items & IT_ROCKET_LAUNCHER && cl.playerview[pnum].stats[STAT_ROCKETS] >= 1)?true:false;
-		case 8:	return (items & IT_LIGHTNING && cl.playerview[pnum].stats[STAT_CELLS] >= 1)?true:false;
-	}
+	if (widx < weaponinfo_count)
+		if ((cl.playerview[pnum].stats[STAT_ITEMS]&weaponinfo[widx].items_mask) == weaponinfo[widx].items_val)	//we have the weapon
+			if (weaponinfo[widx].ammostat < 0 || cl.playerview[pnum].stats[weaponinfo[widx].ammostat] >= weaponinfo[widx].ammomin)				//and we have enough ammo for it too.
+				return true;
 	return false;
+}
+static qboolean IN_HaveWeapon(int pnum, int impulse)
+{
+	size_t widx;
+	for (widx = 0; widx < weaponinfo_count; widx++)
+	{
+		if (weaponinfo[widx].impulse == impulse)
+			return IN_HaveWeapon_Idx(pnum, widx);
+	}
+	return false;	//we don't really know about it, but assume we can't because false negatives are better than false positives here.
+}
+static qboolean IN_HaveWeapon_Name(int pnum, char *name, int *impulse)
+{
+	int widx = IN_NameToWeaponIdx(name);
+	if (widx < 0)
+		return false;
+	if (!IN_HaveWeapon_Idx(pnum, widx))
+		return false;
+	*impulse = weaponinfo[widx].impulse;
+	return true;
 }
 static int IN_BestWeapon_Pre(unsigned int pnum);
 //if we're using weapon preselection, then we probably also want to show which weapon will be selected, instead of showing the shotgun the whole time.
 //this of course requires more hacks.
 const char *IN_GetPreselectedViewmodelName(unsigned int pnum)
 {
-	static const char *nametable[] =
-	{
-		NULL,	//can't cope with a 0
-		"progs/v_axe.mdl",
-		"progs/v_shot.mdl",
-		"progs/v_shot2.mdl",
-		"progs/v_nail.mdl",
-		"progs/v_nail2.mdl",
-		"progs/v_rock.mdl",
-		"progs/v_rock2.mdl",
-		"progs/v_light.mdl",
-	};
-
 	if (r_viewpreselgun.ival && cl_weaponpreselect.ival && pnum < countof(preselectedweapons) && preselectedweapons[pnum])
 	{
 		int best = IN_BestWeapon_Pre(pnum);
-		if (best < countof(nametable))
-			return nametable[best];
+		size_t widx;
+		for (widx = 0; widx < weaponinfo_count; widx++)
+		{
+			if (weaponinfo[widx].impulse == best)
+				return weaponinfo[widx].viewmodel;
+		}
 	}
 	return NULL;
 }
-//FIXME: make a script to decide if a weapon is held? call into the csqc?
+
 static int IN_BestWeapon_Args(unsigned int pnum, int firstarg, int argcount)
-{
+{	//returns impulses.
 	int i, imp;
 	unsigned int best = 0;
 
 	for (i = firstarg + argcount; --i >= firstarg; )
 	{
-		imp = Q_atoi(Cmd_Argv(i));
-		if (IN_HaveWeapon(pnum, imp))
+		if (IN_HaveWeapon_Name(pnum, Cmd_Argv(i), &imp))
 			best = imp;
 	}
 
@@ -365,12 +630,20 @@ static int IN_BestWeapon_Pre(unsigned int pnum)
 
 static void IN_DoPostSelect(void)
 {
+	int pnum = CL_TargettedSplit(false);
 	if (cl_weaponpreselect.ival)
 	{
-		int pnum = CL_TargettedSplit(false);
 		int best = IN_BestWeapon_Pre(pnum);
 		if (best)
 			CL_QueueImpulse(pnum, best);
+	}
+
+	if (in_wwheel.state[pnum]&1)
+	{
+		in_wwheel.state[pnum] = 0;
+		pnum = CL_TargettedSplit(false);
+		if (wwheelsel[pnum] < weaponinfo_count)
+			CL_QueueImpulse(pnum, weaponinfo[wwheelsel[pnum]].impulse);
 	}
 }
 //The weapon command autoselects a prioritised weapon like multi-arg impulse does.
@@ -381,9 +654,17 @@ void IN_Weapon (void)
 	int pnum = CL_TargettedSplit(false);
 	int mode, best, i;
 
+	preselectedweapons[pnum] = 0;
 	for (i = 1; i < Cmd_Argc() && i <= countof(preselectedweapon[pnum]); i++)
-		preselectedweapon[pnum][i-1] = atoi(Cmd_Argv(i));
-	preselectedweapons[pnum] = i-1;
+	{
+		best = IN_NameToWeaponIdx(Cmd_Argv(i));
+		if (best >= 0)
+			best = weaponinfo[best].impulse;	//a known weapon
+		else
+			best = atoi(Cmd_Argv(i));	//fall back
+		if (best > 0)
+			preselectedweapon[pnum][preselectedweapons[pnum]++] = best;
+	}
 
 	best = IN_BestWeapon_Pre(pnum);
 	if (best)
@@ -447,8 +728,7 @@ static void IN_DoWeaponHide(void)
 		while(l && *l)
 		{
 			l = COM_ParseOut(l, tok, sizeof(tok));
-			impulse = atoi(tok);
-			if (IN_HaveWeapon(pnum, impulse))
+			if (IN_HaveWeapon_Name(pnum, tok, &impulse))
 				best = impulse;
 		}
 		if (best)
@@ -475,6 +755,139 @@ void IN_FireUp(void)
 
 	if (KeyUp_Scan(&in_attack, k))
 		IN_DoWeaponHide();
+}
+
+qboolean IN_WeaponWheelIsShown(void)
+{
+	if (!(in_wwheel.state[0]&1) || !weaponinfo_count)
+		return false;
+	return true;
+}
+qboolean IN_WeaponWheelAccumulate(int pnum, float x, float y, float threshhold) //either mouse or controller
+{
+	if (!(in_wwheel.state[pnum]&1) || !weaponinfo_count)
+		return false;
+
+	if (x*x+y*y > threshhold*threshhold)	//protects against deadzones.
+	{
+		wwheeldir[pnum][0] += x;
+		wwheeldir[pnum][1] += y;
+	}
+	return true;
+}
+#include "shader.h"
+qboolean IN_DrawWeaponWheel(int pnum)
+{
+	int w;
+	float pos[2], centre[2];
+	const float radius = 64;
+	float d, a;
+	shader_t *s;
+	if (!(in_wwheel.state[pnum]&1) || !weaponinfo_count)
+		return false;
+	R2D_ImageColours(1,1,1,1);
+
+	centre[0] = cl.playerview[pnum].gamerect.x + cl.playerview[pnum].gamerect.width/2;
+	centre[1] = cl.playerview[pnum].gamerect.y + cl.playerview[pnum].gamerect.height/2;
+
+	d = DotProduct2(wwheeldir[pnum],wwheeldir[pnum]);
+	a = 32;
+	if (d > a*a && d)
+	{
+		wwheeldir[pnum][0] *= a/sqrt(d);
+		wwheeldir[pnum][1] *= a/sqrt(d);
+	}
+
+	a = atan2(wwheeldir[pnum][1], wwheeldir[pnum][0]);
+	w = (a/(2*M_PI)+1) * weaponinfo_count + 0.5;
+	w = w % weaponinfo_count;
+
+	if (w != wwheelsel[pnum])
+	{
+		wwheelseltime[pnum] = realtime;
+		wwheelsel[pnum] = w;
+	}
+
+	s = R2D_SafeCachePic("gfx/weaponwheel.lmp");
+	if (R_GetShaderSizes(s, NULL, NULL, false)>0)
+		R2D_Image(centre[0]-radius*2, centre[1]-radius*2, radius*4, radius*4, 0, 0, 1, 1, s);
+	for (w = 0; w < weaponinfo_count; w++)
+	{
+		pos[0] = centre[0] + cos((w*2*M_PI) / weaponinfo_count)*radius;
+		pos[1] = centre[1] + sin((w*2*M_PI) / weaponinfo_count)*radius;
+
+		if (weaponinfo[w].icons[0])
+		{	//draw a shadow
+			R2D_ImageColours(0,0,0,1);
+			R2D_Image(pos[0]-24+2, pos[1]-16+2, 48, 32, 0, 0, 1, 1, R2D_SafeCachePic(weaponinfo[w].icons[0]));
+		}
+
+		//and the real icon (dark if unavailable)
+		if (IN_HaveWeapon_Idx(pnum, w))
+			R2D_ImageColours(1,1,1,1);
+		else
+			R2D_ImageColours(0.2,0.2,0.2,1);
+		if (w == wwheelsel[pnum])
+			d = 1+sin((realtime - wwheelseltime[pnum])*10);	//make it bounce
+		else
+			d = 0;
+		if (cl.playerview[pnum].stats[STAT_ACTIVEWEAPON] == weaponinfo[w].items_val && weaponinfo[w].icons[1])
+			R2D_Image(pos[0]-24-d, pos[1]-16-d, 48, 32, 0, 0, 1, 1, R2D_SafeCachePic(weaponinfo[w].icons[1]));
+		else if (weaponinfo[w].icons[0])
+			R2D_Image(pos[0]-24-d, pos[1]-16-d, 48, 32, 0, 0, 1, 1, R2D_SafeCachePic(weaponinfo[w].icons[0]));
+		else
+			Draw_FunStringWidth(pos[0]-32-d, pos[1]-4-d, weaponinfo[w].shortname, 64, 2, cl.playerview[pnum].stats[STAT_ACTIVEWEAPON] == weaponinfo[w].items_val);
+	}
+	R2D_ImageColours(1,1,1,1);
+
+	w = wwheelsel[pnum];
+	if (weaponinfo[w].icons[2])
+		R2D_Image(centre[0]-12, centre[1]-12, 24, 24, 0, 0, 1, 1, R2D_SafeCachePic(weaponinfo[w].icons[2]));
+	Draw_FunStringWidth(centre[0]-32, centre[1] - 28, weaponinfo[w].shortname, 64, 2, false);
+	if (weaponinfo[w].ammostat >= 0)
+		Draw_FunStringWidth(centre[0]-32, centre[1] + 20, va("%s%d", (cl.playerview[pnum].stats[weaponinfo[w].ammostat]<20)?S_COLOR_RED:"", cl.playerview[pnum].stats[weaponinfo[w].ammostat]), 64, 2, false);
+
+	pos[0] = centre[0] + cos(a)*radius*0.6;
+	pos[1] = centre[1] + sin(a)*radius*0.6;
+	Draw_FunString(pos[0], pos[1], "X");
+	return true;
+}
+static void IN_WWheelDown (void)
+{
+#ifdef CSQC_DAT
+	int pnum = CL_TargettedSplit(false);
+	if (CSQC_ConsoleCommand(pnum, Cmd_Argv(0)))
+		return;
+#endif
+	if (!(in_wwheel.state[pnum]&1))
+	{
+		size_t w;
+		for (w = 0; w < weaponinfo_count; w++)
+		{
+			if (cl.playerview[pnum].stats[STAT_ACTIVEWEAPON] == weaponinfo[w].items_val)
+			{	//this is our active weapon. start with it highlighted.
+				wwheelseltime[pnum] = realtime;
+				wwheelsel[pnum] = w;
+
+				wwheeldir[pnum][0] = cos((wwheelsel[pnum]*2*M_PI) / weaponinfo_count)*16;
+				wwheeldir[pnum][1] = sin((wwheelsel[pnum]*2*M_PI) / weaponinfo_count)*16;
+				break;
+			}
+		}
+	}
+	KeyDown(&in_wwheel, NULL);
+}
+static void IN_WWheelUp (void)
+{
+	int pnum = CL_TargettedSplit(false);
+#ifdef CSQC_DAT
+	if (CSQC_ConsoleCommand(pnum, Cmd_Argv(0)))
+		return;
+#endif
+	if (!KeyUp(&in_wwheel))
+		return;
+	if (wwheelsel[pnum] < weaponinfo_count)
+		CL_QueueImpulse(pnum, weaponinfo[wwheelsel[pnum]].impulse);
 }
 #else
 #define IN_DoPostSelect()
@@ -767,7 +1180,7 @@ cvar_t	cl_anglespeedkey = CVAR("cl_anglespeedkey","1.5");
 
 
 #define GATHERBIT(bname,bit)	if (bname.state[pnum] & 3)	{bits |=   (1u<<(bit));} bname.state[pnum]	&= ~2;
-#define UNUSEDBUTTON(bnum)		if (in_button[bnum].state[pnum] & 3)	{Con_Printf("+button%i is not supported on this protocol\n", pnum); } in_button[bnum].state[pnum]	&= ~3;
+#define UNUSEDBUTTON(bnum)		if (in_button[bnum].state[pnum] & 3)	{Con_Printf("+button%i is not supported on this protocol\n", bnum); } in_button[bnum].state[pnum]	&= ~3;
 void CL_GatherButtons (usercmd_t *cmd, int pnum)
 {
 	unsigned int bits = 0;
@@ -911,34 +1324,24 @@ CL_BaseMove
 Send the intended movement message to the server
 ================
 */
-void CL_BaseMove (usercmd_t *cmd, int pnum, float priortime, float extratime)
+static void CL_BaseMove (vec3_t moves, int pnum)
 {
-	float nscale = extratime?extratime / (extratime+priortime):0;
-	float oscale = 1 - nscale;
-
-	cmd->fservertime = cl.time;
-	cmd->servertime = cl.time*1000;
-
+	float scale;
 //
 // adjust for speed key
 //
-	if ((in_speed.state[pnum] & 1) ^ cl_run.ival)
-		nscale *= cl_movespeedkey.value;
+	scale = ((in_speed.state[pnum] & 1) ^ cl_run.ival)?cl_movespeedkey.value:1;
 
-	if (in_strafe.state[pnum] & 1)
-		cmd->sidemove = cmd->sidemove*oscale + nscale*cl_sidespeed.value * (CL_KeyState (&in_right, pnum, true) - CL_KeyState (&in_left, pnum, true)) * (in_xflip.ival?-1:1);
-	cmd->sidemove = cmd->sidemove*oscale + nscale*cl_sidespeed.value * (CL_KeyState (&in_moveright, pnum, true) - CL_KeyState (&in_moveleft, pnum, true)) * (in_xflip.ival?-1:1);
-
-	cmd->upmove = cmd->upmove*oscale + nscale*cl_upspeed.value * (CL_KeyState (&in_up, pnum, true) - CL_KeyState (&in_down, pnum, true));
-
+	moves[0] = 0;
 	if (! (in_klook.state[pnum] & 1) )
-	{	
-		cmd->forwardmove = cmd->forwardmove*oscale + nscale*(cl_forwardspeed.value * CL_KeyState (&in_forward, pnum, true) - 
-								(*cl_backspeed.string?cl_backspeed.value:cl_forwardspeed.value) * CL_KeyState (&in_back, pnum, true));
+	{
+		moves[0] += scale*(cl_forwardspeed.value * CL_KeyState (&in_forward, pnum, true) -
+					(*cl_backspeed.string?cl_backspeed.value:cl_forwardspeed.value) * CL_KeyState (&in_back, pnum, true));
 	}
-
-	if (!priortime)	//only gather buttons if we've not had any this frame. this avoids jump feeling weird with prediction. FIXME: should probably still allow +attack to reduce latency
-		CL_GatherButtons(cmd, pnum);
+	moves[1] = scale*cl_sidespeed.value * (CL_KeyState (&in_moveright, pnum, true) - CL_KeyState (&in_moveleft, pnum, true)) * (in_xflip.ival?-1:1);
+	if (in_strafe.state[pnum] & 1)
+		moves[1] += scale*cl_sidespeed.value * (CL_KeyState (&in_right, pnum, true) - CL_KeyState (&in_left, pnum, true)) * (in_xflip.ival?-1:1);
+	moves[2] = scale*cl_upspeed.value * (CL_KeyState (&in_up, pnum, true) - CL_KeyState (&in_down, pnum, true));
 }
 
 void CL_ClampPitch (int pnum, float frametime)
@@ -1215,6 +1618,64 @@ static void CL_FinishMove (usercmd_t *cmd, int pnum)
 }
 
 
+static void CL_AccumlateInput(int plnum, float frametime/*extra contribution*/, float framemsecs/*total accumulated*/)
+{
+	usercmd_t *cmd = &cl_pendingcmd[plnum];
+	int i;
+	static vec3_t mousemovements[MAX_SPLITS];
+	vec3_t newmoves;
+
+	float nscale = framemsecs?framemsecs / (framemsecs+cmd->msec):0;
+	float oscale = 1 - nscale;
+	unsigned int st;
+
+	CL_BaseMove (newmoves, plnum);
+
+	CL_AdjustAngles (plnum, frametime);
+	if (!cmd->msec)
+		VectorClear(mousemovements[plnum]);
+	IN_Move (mousemovements[plnum], newmoves, plnum, frametime);
+	CL_ClampPitch(plnum, frametime);
+
+	for (i=0 ; i<3 ; i++)
+		cmd->angles[i] = ((int)(cl.playerview[plnum].viewangles[i]*65536.0/360)&65535);
+
+	cmd->fservertime = cl.servertime;
+	cmd->servertime = cl.time*1000;
+#ifdef CSQC_DAT
+	cmd->fclienttime = realtime - cl.mapstarttime;
+#endif
+
+	cmd->forwardmove = bound(-32768, cmd->forwardmove*oscale + newmoves[0]*nscale + mousemovements[plnum][0], 32767);
+	cmd->sidemove = bound(-32768, cmd->sidemove*oscale + newmoves[1]*nscale + mousemovements[plnum][1], 32767);
+	cmd->upmove = bound(-32768, cmd->upmove*oscale + newmoves[2]*nscale + mousemovements[plnum][2], 32767);
+
+	if (!cmd->msec && framemsecs)
+	{
+		CL_GatherButtons(cmd, plnum);	//buttons are from the initial state. don't blend them.
+
+		CL_FinishMove(cmd, plnum);
+		Cbuf_Waited();	//its okay to stop waiting now
+	}
+	cmd->msec = framemsecs;
+
+	if (cl.movesequence >= 1)
+	{	//fix up the servertime value to make sure our msecs are actually correct.
+		st = cl.outframes[(cl.movesequence-1)&UPDATE_MASK].cmd[plnum].servertime + (cmd->msec);	//round it.
+		if (abs((int)st-(int)cmd->servertime) < 50)
+		{
+			cmd->servertime = st;
+			cmd->fservertime = (double)st/1000.0;
+		}
+	}
+
+	// if we are spectator, try autocam
+//	if (cl.spectator)
+	Cam_Track(&cl.playerview[plnum], &cl_pendingcmd[plnum]);
+	Cam_FinishMove(&cl.playerview[plnum], &cl_pendingcmd[plnum]);
+}
+
+
 static qboolean CLFTE_SendVRCmd (sizebuf_t *buf, unsigned int seats)
 {
 	//compute the delay between receiving the frame we're acking and when we're sending the new frame
@@ -1322,29 +1783,6 @@ void CL_UpdatePrydonCursor(usercmd_t *from, int pnum)
 			from->cursor_screen[1] = 1;
 	}
 
-	/*
-	if (cl.cmd.cursor_screen[0] < -1)
-	{
-		cl.viewangles[YAW] -= m_yaw.value * (cl.cmd.cursor_screen[0] - -1) * vid.realwidth * sensitivity.value * cl.viewzoom;
-		cl.cmd.cursor_screen[0] = -1;
-	}
-	if (cl.cmd.cursor_screen[0] > 1)
-	{
-		cl.viewangles[YAW] -= m_yaw.value * (cl.cmd.cursor_screen[0] - 1) * vid.realwidth * sensitivity.value * cl.viewzoom;
-		cl.cmd.cursor_screen[0] = 1;
-	}
-	if (cl.cmd.cursor_screen[1] < -1)
-	{
-		cl.viewangles[PITCH] += m_pitch.value * (cl.cmd.cursor_screen[1] - -1) * vid.realheight * sensitivity.value * cl.viewzoom;
-		cl.cmd.cursor_screen[1] = -1;
-	}
-	if (cl.cmd.cursor_screen[1] > 1)
-	{
-		cl.viewangles[PITCH] += m_pitch.value * (cl.cmd.cursor_screen[1] - 1) * vid.realheight * sensitivity.value * cl.viewzoom;
-		cl.cmd.cursor_screen[1] = 1;
-	}
-	*/
-
 	VectorClear(from->cursor_start);
 	temp[0] = (from->cursor_screen[0]+1)/2;
 	temp[1] = (-from->cursor_screen[1]+1)/2;
@@ -1385,6 +1823,12 @@ void CLNQ_SendMove (usercmd_t *cmd, int pnum, sizebuf_t *buf)
 		return;
 	}
 
+	if (cls.qex)
+	{
+		MSG_WriteByte (buf, clc_delta);
+		MSG_WriteULEB128(buf, cl.movesequence);
+	}
+
 	MSG_WriteByte (buf, clc_move);
 
 	if (cls.protocol_nq >= CPNQ_DP7)
@@ -1398,6 +1842,9 @@ void CLNQ_SendMove (usercmd_t *cmd, int pnum, sizebuf_t *buf)
 		MSG_WriteShort(buf, cl.movesequence&0xffff);
 
 	MSG_WriteFloat (buf, cmd->fservertime);	// use latest time. because ping reports!
+
+	if (cls.qex)
+		MSG_WriteByte(buf, 1);
 
 	for (i=0 ; i<3 ; i++)
 	{
@@ -1550,8 +1997,16 @@ float CL_FilterTime (double time, float wantfps, float limit, qboolean ignoreser
 	}
 
 	//its not time yet
-	if (time < ceil(1000 / fps))
-		return 0;
+	if (ignoreserver)
+	{	//don't try to hold to milliseconds.
+		if (time < 1000 / fps)
+			return 0;
+	}
+	else
+	{
+		if (time < ceil(1000 / fps))
+			return 0;
+	}
 
 	//clamp it if we have over 1.5 frame banked somehow
 	if (limit && time - (1000 / fps) > (1000 / fps)*limit)
@@ -1586,7 +2041,7 @@ void VARGS CL_SendSeatClientCommand(qboolean reliable, unsigned int seat, char *
 #ifdef Q3CLIENT
 	if (cls.protocol == CP_QUAKE3)
 	{
-		CLQ3_SendClientCommand("%s", string);
+		q3->cl.SendClientCommand("%s", string);
 		return;
 	}
 #endif
@@ -1771,20 +2226,6 @@ void CL_UseIndepPhysics(qboolean allow)
 {
 }
 #endif
-
-static void QDECL CL_SpareMsec_Callback (struct cvar_s *var, char *oldvalue)
-{
-	if (var->value > 50)
-	{
-		Cvar_ForceSet(var, "50");
-		return;
-	}
-	else if (var->value < 0)
-	{
-		Cvar_ForceSet(var, "0");
-		return;
-	}
-}
 
 void CL_UpdateSeats(void)
 {
@@ -2071,15 +2512,12 @@ qboolean CLQW_SendCmd (sizebuf_t *buf, qboolean actuallysend)
 		cl.validsequence = 0;
 
 	//delta_sequence is the _expected_ previous sequences, so is set before it arrives.
-	if (cl.validsequence && !cl_nodelta.ival && cls.state == ca_active && !cls.demorecording)
+	if (cl.validsequence && !cl_nodelta.ival && cls.state == ca_active)// && !cls.demorecording)
 	{
-		cl.inframes[cls.netchan.outgoing_sequence&UPDATE_MASK].delta_sequence = cl.validsequence;
 		MSG_WriteByte (buf, clc_delta);
 //		Con_Printf("%i\n", cl.validsequence);
 		MSG_WriteByte (buf, cl.validsequence&255);
 	}
-	else
-		cl.inframes[cls.netchan.outgoing_sequence&UPDATE_MASK].delta_sequence = -1;
 
 	if (cl.sendprespawn || !actuallysend)
 		buf->cursize = st;	//don't send movement commands while we're still supposedly downloading. mvdsv does not like that.
@@ -2112,7 +2550,7 @@ static void CL_SendUserinfoUpdate(void)
 		if (info == &cls.userinfo[0])
 		{
 			InfoBuf_ToString(info, userinfo, sizeof(userinfo), NULL, NULL, NULL, NULL, NULL);
-			CLQ3_SendClientCommand("userinfo \"%s\"", userinfo);
+			q3->cl.SendClientCommand("userinfo \"%s\"", userinfo);
 		}
 		return;
 	}
@@ -2234,37 +2672,12 @@ void CL_SendCmd (double frametime, qboolean mainloop)
 			}
 			for (plnum = 0; plnum < cl.splitclients; plnum++)
 			{
-				vec3_t mousemovements;
 				playerview_t *pv = &cl.playerview[plnum];
 				cmd = &cl.outframes[i].cmd[plnum];
 
-				memset(cmd, 0, sizeof(*cmd));
-				msecs += frametime*1000;
-				if (msecs > 50)
-					msecs = 50;
-				cmd->msec = msecs;
-				msecs -= cmd->msec;
-				cl_pendingcmd[plnum].msec = 0;
-
-				CL_AdjustAngles (plnum, frametime);
-				// get basic movement from keyboard
-				CL_BaseMove (cmd, plnum, 0, 1);
-
-				// allow mice or other external controllers to add to the move
-				VectorClear(mousemovements);
-				IN_Move (mousemovements, plnum, frametime);
-				cl_pendingcmd[plnum].forwardmove += mousemovements[0];
-				cl_pendingcmd[plnum].sidemove += mousemovements[1];
-				cl_pendingcmd[plnum].upmove += mousemovements[2];
-				CL_ClampPitch(plnum, frametime);
-
-				// if we are spectator, try autocam
-				if (pv->spectator)
-					Cam_Track(pv, cmd);
-
-				CL_FinishMove(cmd, plnum);
-
-				Cam_FinishMove(pv, cmd);
+				CL_AccumlateInput(plnum, frametime, frametime*1000);
+				*cmd = cl_pendingcmd[plnum];
+				memset(&cl_pendingcmd[plnum], 0, sizeof(*cmd));	//reset the pending for the next frame.
 
 #ifdef CSQC_DAT
 				CSQC_Input_Frame(plnum, cmd);
@@ -2291,7 +2704,7 @@ void CL_SendCmd (double frametime, qboolean mainloop)
 			cls.netchan.outgoing_sequence = cl.movesequence;
 		}
 
-		IN_Move (NULL, 0, frametime);
+		IN_Move (NULL, NULL, 0, frametime);
 
 		Cbuf_Waited();	//its okay to stop waiting now
 		return; // sendcmds come from the demo
@@ -2404,32 +2817,7 @@ void CL_SendCmd (double frametime, qboolean mainloop)
 	if (!CLHL_BuildUserInput(msecstouse, &cl_pendingcmd[0]))
 #endif
 	for (plnum = 0; plnum < (cl.splitclients?cl.splitclients:1); plnum++)
-	{
-		vec3_t mousemovements;
-		CL_AdjustAngles (plnum, frametime);
-		VectorClear(mousemovements);
-		IN_Move (mousemovements, plnum, frametime);
-		CL_ClampPitch(plnum, frametime);
-		cl_pendingcmd[plnum].forwardmove += mousemovements[0];	//FIXME: this will get nuked by CL_BaseMove.
-		cl_pendingcmd[plnum].sidemove += mousemovements[1];
-		cl_pendingcmd[plnum].upmove += mousemovements[2];
-
-		for (i=0 ; i<3 ; i++)
-			cl_pendingcmd[plnum].angles[i] = ((int)(cl.playerview[plnum].viewangles[i]*65536.0/360)&65535);
-
-		CL_BaseMove (&cl_pendingcmd[plnum], plnum, cl_pendingcmd[plnum].msec, framemsecs);
-		if (!cl_pendingcmd[plnum].msec && framemsecs)
-		{
-			CL_FinishMove(&cl_pendingcmd[plnum], plnum);
-			Cbuf_Waited();	//its okay to stop waiting now
-		}
-		cl_pendingcmd[plnum].msec = framemsecs;
-
-		// if we are spectator, try autocam
-	//	if (cl.spectator)
-		Cam_Track(&cl.playerview[plnum], &cl_pendingcmd[plnum]);
-		Cam_FinishMove(&cl.playerview[plnum], &cl_pendingcmd[plnum]);
-	}
+		CL_AccumlateInput(plnum, frametime, framemsecs);
 
 	//the main loop isn't allowed to send
 	if (runningindepphys && mainloop)
@@ -2554,7 +2942,11 @@ void CL_SendCmd (double frametime, qboolean mainloop)
 #ifdef Q3CLIENT
 		case CP_QUAKE3:
 			msecs -= (double)msecstouse;
-			CLQ3_SendCmd(&cl_pendingcmd[0]);
+			i = cl.movesequence&UPDATE_MASK;
+			memcpy(cl.outframes[i].cmd, cl_pendingcmd, sizeof(usercmd_t)*bound(1, cl.splitclients, MAX_SPLITS));
+			cl.outframes[i].cmd_sequence = cl.movesequence++;
+			q3->cl.SendCmd(cls.sockets, cl.outframes[i].cmd, cl.movesequence, cl.time);
+			cls.netchan.outgoing_sequence = cl.movesequence;
 			CL_ClearPendingCommands();
 
 			//don't bank too much, because that results in banking speedcheats
@@ -2706,7 +3098,6 @@ void CL_InitInput (void)
 	Cvar_Register (&cl_c2spps, inputnetworkcvargroup);
 	Cvar_Register (&cl_queueimpulses, inputnetworkcvargroup);
 	Cvar_Register (&cl_netfps, inputnetworkcvargroup);
-	Cvar_Register (&cl_sparemsec, inputnetworkcvargroup);
 	Cvar_Register (&cl_run, inputnetworkcvargroup);
 	Cvar_Register (&cl_iDrive, inputnetworkcvargroup);
 
@@ -2779,6 +3170,10 @@ void CL_InitInput (void)
 	Cmd_AddCommand ("-mlook",		IN_MLookUp);
 
 #ifdef QUAKESTATS
+	Cmd_AddCommand ("+weaponwheel",		IN_WWheelDown);
+	Cmd_AddCommand ("-weaponwheel",		IN_WWheelUp);
+	Cmd_AddCommandD ("register_bestweapon",		IN_RegisterWeapon_f, "Normally set via a mod's default.cfg file");
+	Cmd_AddCommandD ("bestweapon",		IN_Impulse, "Works like 'impulse', for compat with other engines.");
 	Cvar_Register (&cl_weaponhide, inputnetworkcvargroup);
 	Cvar_Register (&cl_weaponhide_preference, inputnetworkcvargroup);
 	Cvar_Register (&cl_weaponpreselect, inputnetworkcvargroup);

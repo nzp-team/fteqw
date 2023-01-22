@@ -108,12 +108,15 @@ typedef struct menu_s {
 	qboolean (*joyaxis)	(struct menu_s *, unsigned int devid, int axis, float val);
 	void (*drawmenu)	(struct menu_s *);
 	struct key_cursor_s *cursor; //NULL for relative motion
+	qboolean lowpriority;	//appears underneath other menus.
 	qboolean isopaque;	//guarentees an opaque background
 	qboolean persist;	//try really hard to not kill this.
+	qboolean showosk;
 } menu_t;
 extern menu_t *topmenu;		//the currently visible menu.
 extern menu_t *promptmenu;	//the currently visible prompt (separate from menus, so they always appear over the top of consoles too, they also always show the menu underneath)
 void Menu_KeyEvent(qboolean down, int qdeviceid, int key, int unicode);
+int Menu_WantOSK(void);
 void Menu_Draw(void);
 void Prompts_Draw(void);
 void Menu_PopAll(void); //attempts to pop all menus (this is for map starts, some might linger)
@@ -128,7 +131,7 @@ typedef enum
 	PROMPT_NO		= 1,
 	PROMPT_CANCEL	= -1,
 } promptbutton_t;
-void Menu_Prompt (void (*callback)(void *, promptbutton_t), void *ctx, const char *messages, const char *optionyes, const char *optionno, const char *optioncancel);
+void Menu_Prompt (void (*callback)(void *, promptbutton_t), void *ctx, const char *messages, const char *optionyes, const char *optionno, const char *optioncancel, qboolean highpri);
 
 #ifndef NOBUILTINMENUS
 
@@ -548,7 +551,7 @@ void		Plug_DrawReloadImages(void);
 void		Plug_Initialise(qboolean fromgamedir);
 void		Plug_Shutdown(qboolean preliminary);
 qboolean	Plug_Menu_Event(int eventtype, int keyparam, int unicodeparam);
-void		Plug_ResChanged(void);
+void		Plug_ResChanged(qboolean restarted);
 void		Plug_SBar(playerview_t *pv);
 qboolean	Plug_ServerMessage(char *buffer, int messagelevel);
 void		Plug_Tick(void);

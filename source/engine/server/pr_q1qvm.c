@@ -47,11 +47,11 @@ oh, wait, ktx no longer supports those properly.
 13: 2009/june gamecode no longer aware of edict_t data (just 'qc' fields).
 14: 2017/march gamedata_t.maxentities added
 15: 2017/june for-64bit string indirection changes. added GAME_CLEAR_EDICT.
-16: wasted_edict_t_size is finally 0
+16: wasted_edict_t_size is finally 0, mod is responsible for querying all strings.
 */
-#define	GAME_API_VERSION		15
+#define	GAME_API_VERSION		16
 #define	GAME_API_VERSION_MIN	8
-#define MAX_Q1QVM_EDICTS	768 //according to ktx at api version 12 (fte's protocols go to 2048)
+#define MAX_Q1QVM_EDICTS	768 //according to ktx at api version 12 (fte's protocols go to 2048). removed in v14.
 #define MAPNAME_LEN 64
 
 void PR_SV_FillWorldGlobals(world_t *w);
@@ -168,6 +168,7 @@ typedef enum
 	G_SETPAUSE,
 	G_SETUSERINFO,
 	G_MOVETOGOAL,
+	G_VISIBLETO,
 
 
 	G_MAX
@@ -448,7 +449,10 @@ static void Q1QVMED_ClearEdict (edict_t *e, qboolean wipe)
 {
 	int num = e->entnum;
 	if (wipe)
+	{
 		memset (e->v, 0, sv.world.edict_size - wasted_edict_t_size);
+		memset (e->xv, 0, sizeof(*e->xv));
+	}
 	if (qvm_api_version >= 15)
 	{
 		int oself = pr_global_struct->self;
@@ -515,8 +519,9 @@ static edict_t *QDECL Q1QVMPF_EntAlloc(pubprogfuncs_t *pf, pbool object, size_t 
 	sv.world.num_edicts++;
 	e = (edict_t*)Q1QVMPF_EdictNum(pf, i);
 
-// new ents come ready wiped
-//	Q1QVMED_ClearEdict (e, false);
+// new ents come ready wiped (unless 15 in which case we need to give the gamecode a chance to set safe defaults)
+	if (qvm_api_version >= 15)
+		Q1QVMED_ClearEdict (e, false);
 
 	ED_Spawned((struct edict_s *) e, false);
 
@@ -872,14 +877,32 @@ static qintptr_t QVM_SetModel (void *offset, quintptr_t mask, const qintptr_t *a
 }
 static qintptr_t QVM_BPrint (void *offset, quintptr_t mask, const qintptr_t *arg)
 {
-	SV_BroadcastPrintf(arg[0], "%s", (char*)VM_POINTER(arg[1]));
+	unsigned int flags = VM_LONG(arg[2]);
+	if (qvm_api_version < 13)
+		flags = 0;	//added mid-v12, resulting in undefined values with early-12 mods.
+	SV_BroadcastPrint(flags, arg[0], (char*)VM_POINTER(arg[1]));
 	return 0;
 }
 static qintptr_t QVM_SPrint (void *offset, quintptr_t mask, const qintptr_t *arg)
 {
-	if ((unsigned)VM_LONG(arg[0])-1u >= sv.allocated_client_slots)
+	unsigned int clnum = VM_LONG(arg[0])-1;
+	int level = VM_LONG(arg[1]);
+	const char *text = VM_POINTER(arg[2]);
+	unsigned int flags = VM_LONG(arg[3]);
+#define SPRINT_IGNOREINDEMO   (   1<<0) // do not put such message in mvd demo
+	client_t *cl = &svs.clients[clnum];
+	if (clnum >= sv.allocated_client_slots)
 		return 0;
-	SV_ClientPrintf(&svs.clients[VM_LONG(arg[0])-1], VM_LONG(arg[1]), "%s", (char*)VM_POINTER(arg[2]));
+	if (qvm_api_version < 13)
+		flags = 0;	//added mid-v12, resulting in undefined values with early-12 mods.
+
+	if (flags & SPRINT_IGNOREINDEMO)
+	{
+		if (level >= cl->messagelevel)
+			SV_PrintToClient(cl, level, text);
+	}
+	else
+		SV_ClientPrintf(cl, level, "%s", text);
 	return 0;
 }
 static qintptr_t QVM_CenterPrint (void *offset, quintptr_t mask, const qintptr_t *arg)
@@ -1300,66 +1323,166 @@ static qintptr_t QVM_TraceBox (void *offset, quintptr_t mask, const qintptr_t *a
 	WrapQCBuiltin(PF_svtraceline, offset, mask, arg, "vvinvv");
 	return 0;
 }
+
+
+
+typedef struct {
+	vfsfile_t *file;
+} vm_fopen_files_t;
+static vm_fopen_files_t vm_fopen_files[64];
+
 static qintptr_t QVM_FS_OpenFile (void *offset, quintptr_t mask, const qintptr_t *arg)
 {
-//0 = name
-//1 = &handle
-//2 = mode
-//ret = filesize or -1
-
-//	Con_Printf("G_FSOpenFile: %s (mode %i)\n", VM_POINTER(arg[0]), arg[2]);
-	int mode;
-	switch((q1qvmfsMode_t)arg[2])
-	{
-	default:
+	const char *name = VM_POINTER(arg[0]);
+	int *handle = VM_POINTER(arg[1]);
+	int fmode = VM_LONG(arg[2]);
+	int fnum;
+	static struct {
+		const char *mode;
+		enum fs_relative root;
+	} mode[] = {
+		/*FS_READ_BIN*/{"rb",FS_GAME},
+		/*FS_READ_TXT*/{"rt",FS_GAME},
+		/*FS_WRITE_BIN*/{"wb",FS_GAMEONLY},
+		/*FS_WRITE_TXT*/{"wt",FS_GAMEONLY},
+		/*FS_APPEND_BIN*/{"ab",FS_GAMEONLY},
+		/*FS_APPEND_TXT*/{"at",FS_GAMEONLY},
+	};
+	if (fmode < 0 || fmode >= countof(mode))
 		return -1;
-	case FS_READ_BIN:
-	case FS_READ_TXT:
-		mode = VM_FS_READ;
-		break;
-	case FS_WRITE_BIN:
-	case FS_WRITE_TXT:
-		mode = VM_FS_WRITE;
-		break;
-	case FS_APPEND_BIN:
-	case FS_APPEND_TXT:
-		mode = VM_FS_APPEND;
-		break;
-	}
-	return VM_fopen(VM_POINTER(arg[0]), VM_POINTER(arg[1]), mode, VMFSID_Q1QVM);
+	for (fnum = 0; fnum < countof(vm_fopen_files); fnum++)
+		if (!vm_fopen_files[fnum].file)
+			break;
+	if (fnum == countof(vm_fopen_files))	//too many already open
+		return -1;
+
+	vm_fopen_files[fnum].file = FS_OpenVFS(name, mode[fmode].mode, mode[fmode].root);
+	if (!vm_fopen_files[fnum].file)
+		return -1;
+	*handle = fnum+1;
+	return VFS_GETLEN(vm_fopen_files[fnum].file);
 }
 static qintptr_t QVM_FS_CloseFile (void *offset, quintptr_t mask, const qintptr_t *arg)
 {
-	VM_fclose(arg[0], VMFSID_Q1QVM);
-	return 0;
+	int fnum = VM_LONG(arg[0])-1;
+	if (fnum >= 0 && fnum < countof(vm_fopen_files) && vm_fopen_files[fnum].file)
+	{
+		VFS_CLOSE(vm_fopen_files[fnum].file);
+		vm_fopen_files[fnum].file = NULL;
+		return 0;
+	}
+	return -1;
+}
+static void QVM_FS_CloseFileAll (void)
+{
+	size_t fnum;
+	for (fnum = 0; fnum < countof(vm_fopen_files); fnum++)
+		if (vm_fopen_files[fnum].file)
+		{
+			VFS_CLOSE(vm_fopen_files[fnum].file);
+			vm_fopen_files[fnum].file = NULL;
+		}
 }
 static qintptr_t QVM_FS_ReadFile (void *offset, quintptr_t mask, const qintptr_t *arg)
 {
-	if (VM_OOB(arg[0], arg[1]))
+	void *dest = VM_POINTER(arg[0]);
+	int size = VM_LONG(arg[1]);
+	int fnum = VM_LONG(arg[2])-1;
+	if (VM_OOB(arg[0], size))
 		return 0;
-	return VM_FRead(VM_POINTER(arg[0]), VM_LONG(arg[1]), VM_LONG(arg[2]), VMFSID_Q1QVM);
+	if (fnum >= 0 && fnum < countof(vm_fopen_files) && vm_fopen_files[fnum].file && vm_fopen_files[fnum].file->ReadBytes)
+		return VFS_READ(vm_fopen_files[fnum].file, dest, size);
+	return 0;
 }
 static qintptr_t QVM_FS_WriteFile (void *offset, quintptr_t mask, const qintptr_t *arg)
 {
-	if (VM_OOB(arg[0], arg[1]))
+	void *dest = VM_POINTER(arg[0]);
+	int size = VM_LONG(arg[1]);
+	int fnum = VM_LONG(arg[2])-1;
+	if (VM_OOB(arg[0], size))
 		return 0;
-	return VM_FWrite(VM_POINTER(arg[0]), VM_LONG(arg[1]), VM_LONG(arg[2]), VMFSID_Q1QVM);
+	if (fnum >= 0 && fnum < countof(vm_fopen_files) && vm_fopen_files[fnum].file && vm_fopen_files[fnum].file->ReadBytes)
+		return VFS_WRITE(vm_fopen_files[fnum].file, dest, size);
+	return 0;
 }
 static qintptr_t QVM_FS_SeekFile (void *offset, quintptr_t mask, const qintptr_t *arg)
 {
-	//fixme: what should the return value be?
-	VM_FSeek(VM_LONG(arg[0]), VM_LONG(arg[1]), VM_LONG(arg[2]), VMFSID_Q1QVM);
+	int fnum = VM_LONG(arg[0])-1;
+	quintptr_t foffset = arg[1];
+	int seektype = VM_LONG(arg[2]);
+	if (fnum >= 0 && fnum < countof(vm_fopen_files) && vm_fopen_files[fnum].file && vm_fopen_files[fnum].file->seekstyle != SS_UNSEEKABLE)
+	{
+		if (seektype == 0)	//cur
+			foffset += VFS_TELL(vm_fopen_files[fnum].file);
+		else if (seektype == 2)	//end
+			foffset = VFS_GETLEN(vm_fopen_files[fnum].file) + (qintptr_t)foffset;
+		return VFS_SEEK(vm_fopen_files[fnum].file, foffset);
+	}
 	return 0;
 }
 static qintptr_t QVM_FS_TellFile (void *offset, quintptr_t mask, const qintptr_t *arg)
 {
-	return VM_FTell(VM_LONG(arg[0]), VMFSID_Q1QVM);
+	int fnum = VM_LONG(arg[0])-1;
+	if (fnum >= 0 && fnum < countof(vm_fopen_files) && vm_fopen_files[fnum].file)
+	{
+		return VFS_TELL(vm_fopen_files[fnum].file);
+	}
+	return -1;
+}
+
+
+
+
+//filesystem searches result in a tightly-packed blob of null-terminated filenames (along with a count for how many entries)
+typedef struct {
+	char *initialbuffer;
+	char *buffer;
+	int found;
+	int bufferleft;
+	int skip;
+} vmsearch_t;
+static int QDECL VMEnum(const char *match, qofs_t size, time_t mtime, void *args, searchpathfuncs_t *spath)
+{
+	char *check;
+	int newlen;
+	match += ((vmsearch_t *)args)->skip;
+	newlen = strlen(match)+1;
+	if (newlen > ((vmsearch_t *)args)->bufferleft)
+		return false;	//too many files for the buffer
+
+	check = ((vmsearch_t *)args)->initialbuffer;
+	while(check < ((vmsearch_t *)args)->buffer)
+	{
+		if (!Q_strcasecmp(check, match))
+			return true;	//we found this one already
+		check += strlen(check)+1;
+	}
+
+	memcpy(((vmsearch_t *)args)->buffer, match, newlen);
+	((vmsearch_t *)args)->buffer+=newlen;
+	((vmsearch_t *)args)->bufferleft-=newlen;
+	((vmsearch_t *)args)->found++;
+	return true;
 }
 static qintptr_t QVM_FS_GetFileList (void *offset, quintptr_t mask, const qintptr_t *arg)
 {
-	if (VM_OOB(arg[2], arg[3]))
+	vmsearch_t vms;
+	const char *path = VM_POINTER(arg[0]);
+	const char *ext = VM_POINTER(arg[1]);
+	char *output = VM_POINTER(arg[2]);
+	size_t buffersize = VM_LONG(arg[3]);
+	if (VM_OOB(arg[2], buffersize))
 		return 0;
-	return VM_GetFileList(VM_POINTER(arg[0]), VM_POINTER(arg[1]), VM_POINTER(arg[2]), VM_LONG(arg[3]));
+
+	vms.initialbuffer = vms.buffer = output;
+	vms.skip = strlen(path)+1;
+	vms.bufferleft = buffersize;
+	vms.found=0;
+	if (*(const char *)ext == '.' || *(const char *)ext == '/')
+		COM_EnumerateFiles(va("%s/*%s", path, ext), VMEnum, &vms);
+	else
+		COM_EnumerateFiles(va("%s/*.%s", path, ext), VMEnum, &vms);
+	return vms.found;
 }
 static qintptr_t QVM_CVar_Set_Float (void *offset, quintptr_t mask, const qintptr_t *arg)
 {
@@ -1650,8 +1773,7 @@ static qintptr_t QVM_strftime (void *offset, quintptr_t mask, const qintptr_t *a
 	time(&curtime);
 	curtime += VM_LONG(arg[3]);
 	local = localtime(&curtime);
-	strftime(out, VM_LONG(arg[1]), fmt, local);
-	return 0;
+	return strftime(out, VM_LONG(arg[1]), fmt, local);
 }
 static qintptr_t QVM_Cmd_ArgS (void *offset, quintptr_t mask, const qintptr_t *arg)
 {
@@ -1720,6 +1842,44 @@ static qintptr_t QVM_SetPause (void *offset, quintptr_t mask, const qintptr_t *a
 	sv.pausedstart = Sys_DoubleTime();
 	return !!(sv.paused&PAUSE_EXPLICIT);
 }
+
+static qintptr_t QVM_VisibleTo (void *offset, quintptr_t mask, const qintptr_t *arg)
+{
+	unsigned int viewernum = VM_LONG(arg[0]);
+	unsigned int first = VM_LONG(arg[1]);
+	unsigned int count = VM_LONG(arg[2]);
+	qbyte		 *results = VM_POINTER(arg[3]);
+	unsigned int i, e, last = first + count;
+	unsigned int ret = 0;
+	if (viewernum < sv.world.num_edicts && !VM_OOB(arg[3], count) && first < last && last <= sv.world.num_edicts)
+	{
+		pvscache_t *viewer = &q1qvmprogfuncs.edicttable[viewernum]->pvsinfo;
+		pvscache_t *viewee;
+		edict_t *ed;
+		int areas[] = {2,viewer->areanum, viewer->areanum2};
+		memset(results, 0, count);	//assume the worst...
+		for (e = first; e < last; e++)
+		{
+			ed = q1qvmprogfuncs.edicttable[e];
+			if (ED_ISFREE(ed))
+				continue;	//free ents can't be visible (should not be linked, but oh well)
+			if (e >= 1 && e <= sv.allocated_client_slots && svs.clients[e - 1].state != cs_spawned)
+				continue;	//player ents are weird, skip them for mods that do weird stuff.
+			viewee = &ed->pvsinfo;
+			for (i = 0; i < viewer->num_leafs; i++)
+			{
+				qbyte *pvs = sv.world.worldmodel->funcs.ClusterPVS(sv.world.worldmodel, viewer->leafnums[i], NULL, PVM_FAST);
+				if (sv.world.worldmodel->funcs.EdictInFatPVS(sv.world.worldmodel, viewee, pvs, areas))
+				{	//one of the viewer's clusters can see the viewee.
+					results[e - first] = true;
+					ret+=1;
+					break;
+				}
+			}
+		}
+	}
+	return ret;
+}
 static qintptr_t QVM_NotYetImplemented (void *offset, quintptr_t mask, const qintptr_t *arg)
 {
 	SV_Error("Q1QVM: Trap not implemented\n");
@@ -1747,23 +1907,27 @@ svextqcfields
 }
 static qintptr_t QVM_SetExtField (void *offset, quintptr_t mask, const qintptr_t *arg)
 {
-	edict_t *e = VM_POINTER(arg[0]);
+	unsigned int entnum = ((char*)VM_POINTER(arg[0]) - (char*)evars)/sv.world.edict_size;
 	int i = QVM_FindExtField(VM_POINTER(arg[1]));
 	int value = VM_LONG(arg[2]);
 
-	if (i < 0)
-		return 0;
-	((int*)e->xv)[i] = value;
-	return value;
+	if (i >= 0 && entnum < q1qvmprogfuncs.edicttable_length && q1qvmprogfuncs.edicttable[entnum])
+	{
+		((int*)q1qvmprogfuncs.edicttable[entnum]->xv)[i] = value;
+		return value;
+	}
+	return 0;
 }
 static qintptr_t QVM_GetExtField (void *offset, quintptr_t mask, const qintptr_t *arg)
 {
-	edict_t *e = VM_POINTER(arg[0]);
+	unsigned int entnum = ((char*)VM_POINTER(arg[0]) - (char*)evars)/sv.world.edict_size;
 	int i = QVM_FindExtField(VM_POINTER(arg[1]));
 
-	if (i < 0)
-		return 0;
-	return ((int*)e->xv)[i];
+	if (i >= 0 && entnum < q1qvmprogfuncs.edicttable_length && q1qvmprogfuncs.edicttable[entnum])
+	{
+		return ((int*)q1qvmprogfuncs.edicttable[entnum]->xv)[i];
+	}
+	return 0;
 }
 
 #ifdef WEBCLIENT
@@ -1897,20 +2061,20 @@ static qintptr_t QVM_SetSendNeeded(void *offset, quintptr_t mask, const qintptr_
 	return 0;
 }
 
-static qintptr_t QVM_VisibleTo (void *offset, quintptr_t mask, const qintptr_t *arg)
+static qintptr_t QVM_VisibleTo_FTE (void *offset, quintptr_t mask, const qintptr_t *arg)
 {
 	unsigned int a0 = VM_LONG(arg[0]);
 	unsigned int a1 = VM_LONG(arg[1]);
-	if (a0 < sv.world.num_edicts || a1 < sv.world.num_edicts)
+	if (a0 < sv.world.num_edicts && a1 < sv.world.num_edicts)
 	{
 		pvscache_t *viewer = &q1qvmprogfuncs.edicttable[a0]->pvsinfo;
 		pvscache_t *viewee = &q1qvmprogfuncs.edicttable[a1]->pvsinfo;
 		if (viewer->num_leafs && viewee->num_leafs)
 		{
 			unsigned int i;
+			int areas[] = {2,viewer->areanum, viewer->areanum2};
 			for (i = 0; i < viewer->num_leafs; i++)
 			{
-				int areas[] = {2,viewer->areanum, viewer->areanum2};
 				qbyte *pvs = sv.world.worldmodel->funcs.ClusterPVS(sv.world.worldmodel, viewer->leafnums[i], NULL, PVM_FAST);
 				if (sv.world.worldmodel->funcs.EdictInFatPVS(sv.world.worldmodel, viewee, pvs, areas))
 					return true;	//viewer can see viewee
@@ -2019,7 +2183,8 @@ traps_t bitraps[G_MAX] =
 	QVM_Precache_VWep_Model,
 	QVM_SetPause,
 	QVM_SetUserInfo,
-	QVM_MoveToGoal
+	QVM_MoveToGoal,
+	QVM_VisibleTo,
 };
 
 struct
@@ -2040,7 +2205,7 @@ struct
 	{"clientstat",			QVM_clientstat},	//csqc extension
 	{"pointerstat",			QVM_pointerstat},	//csqc extension
 	{"setsendneeded",		QVM_SetSendNeeded},		//csqc extension
-	{"VisibleTo",			QVM_VisibleTo},		//alternative to mvdsv's visclients hack
+	{"VisibleTo",			QVM_VisibleTo_FTE},		//alternative to mvdsv's visclients hack. redundant now. FIXME: Remove.
 
 	//sql?
 	//model querying?
@@ -2093,7 +2258,7 @@ static int syscallqvm (void *offset, quintptr_t mask, int fn, const int *arg)
 	{
 		qintptr_t args[13];
 		int i;
-		for (i = 0; i < 13; i++)
+		for (i = 0; i < countof(args); i++)
 			args[i] = arg[i];
 		if (fn >= countof(traps))
 			return QVM_NotYetImplemented(offset, mask, args);
@@ -2142,7 +2307,7 @@ void Q1QVM_Shutdown(qboolean notifygame)
 			VM_Call(q1qvm, GAME_SHUTDOWN, 0, 0, 0);
 		VM_Destroy(q1qvm);
 		q1qvm = NULL;
-		VM_fcloseall(VMFSID_Q1QVM);
+		QVM_FS_CloseFileAll();
 		if (svprogfuncs == &q1qvmprogfuncs)
 			sv.world.progs = svprogfuncs = NULL;
 		Z_FreeTags(VMFSID_Q1QVM);
@@ -2222,13 +2387,13 @@ qboolean PR_LoadQ1QVM(void)
 
 	Q1QVM_Shutdown(true);
 
-	q1qvm = VM_Create(fname, com_nogamedirnativecode.ival?NULL:syscallnative, fname, syscallqvm);
+	q1qvm = VM_Create(fname, com_gamedirnativecode.ival?syscallnative:NULL, fname, syscallqvm);
 	if (!q1qvm)
 		q1qvm = VM_Create(fname, syscallnative, fname, NULL);
 	if (!q1qvm)
 	{
-		if (com_nogamedirnativecode.ival && COM_FCheckExists(va("%s"ARCH_DL_POSTFIX, fname)))
-			Con_Printf(CON_WARNING"%s"ARCH_DL_POSTFIX" exists, but is blocked from loading due to known bugs in other engines. If this is from a safe source then either ^aset com_nogamedirnativecode 0^a or rename to eg %s%s_%s"ARCH_DL_POSTFIX"\n", fname, ((host_parms.binarydir && *host_parms.binarydir)?host_parms.binarydir:host_parms.basedir), fname, FS_GetGamedir(false));
+		if (!com_gamedirnativecode.ival && COM_FCheckExists(va("%s"ARCH_DL_POSTFIX, fname)))
+			Con_Printf(CON_WARNING"%s"ARCH_DL_POSTFIX" exists, but is blocked from loading due to known bugs in other engines. If this is from a safe source then either ^aset com_gamedirnativecode 1^a or rename to eg %s%s_%s"ARCH_DL_POSTFIX"\n", fname, ((host_parms.binarydir && *host_parms.binarydir)?host_parms.binarydir:host_parms.basedir), fname, FS_GetGamedir(false));
 		if (svprogfuncs == &q1qvmprogfuncs)
 			sv.world.progs = svprogfuncs = NULL;
 		return false;
@@ -2331,9 +2496,15 @@ qboolean PR_LoadQ1QVM(void)
 		return false;
 	}
 
-	//in version 13, the actual edict_t struct is gone, and there's a pointer to it in its place (which is unusable, and changes depending on modes).
-	if (qvm_api_version)
+	if (qvm_api_version >= 16)
+	{	//version 16 finally removed the last remnant of the server's state from the qvm.
+		wasted_edict_t_size = 0;
+	}
+	else if (qvm_api_version >= 13)
+	{
+		//in version 13, the actual edict_t struct is gone, and there's a pointer to it in its place (which is unusable, and changes depending on modes).
 		wasted_edict_t_size = (VM_NonNative(q1qvm)?sizeof(int):sizeof(void*));
+	}
 	else
 	{
 		//fte/qclib has split edict_t and entvars_t.
@@ -2370,11 +2541,11 @@ qboolean PR_LoadQ1QVM(void)
 
 //WARNING: global is not remapped yet...
 //This code is written evilly, but works well enough
-#define globalint(required, name) pr_global_ptrs->name = Q1QVMPF_PointerToNative(&q1qvmprogfuncs, (qintptr_t)&gvars->name)	//the logic of this is somewhat crazy
-#define globalfloat(required, name) pr_global_ptrs->name = Q1QVMPF_PointerToNative(&q1qvmprogfuncs, (qintptr_t)&gvars->name)
-#define globalstring(required, name) pr_global_ptrs->name = Q1QVMPF_PointerToNative(&q1qvmprogfuncs, (qintptr_t)&gvars->name)
-#define globalvec(required, name) pr_global_ptrs->name = Q1QVMPF_PointerToNative(&q1qvmprogfuncs, (qintptr_t)&gvars->name)
-#define globalfunc(required, name) pr_global_ptrs->name = Q1QVMPF_PointerToNative(&q1qvmprogfuncs, (qintptr_t)&gvars->name)
+#define globalint(required, name) pr_global_ptrs->name = Q1QVMPF_PointerToNative(&q1qvmprogfuncs, (qintptr_t)&gvars->name - (qintptr_t)q1qvmprogfuncs.stringtable)	//the logic of this is somewhat crazy
+#define globalfloat(required, name) pr_global_ptrs->name = Q1QVMPF_PointerToNative(&q1qvmprogfuncs, (qintptr_t)&gvars->name - (qintptr_t)q1qvmprogfuncs.stringtable)
+#define globalstring(required, name) pr_global_ptrs->name = Q1QVMPF_PointerToNative(&q1qvmprogfuncs, (qintptr_t)&gvars->name - (qintptr_t)q1qvmprogfuncs.stringtable)
+#define globalvec(required, name) pr_global_ptrs->name = Q1QVMPF_PointerToNative(&q1qvmprogfuncs, (qintptr_t)&gvars->name - (qintptr_t)q1qvmprogfuncs.stringtable)
+#define globalfunc(required, name) pr_global_ptrs->name = Q1QVMPF_PointerToNative(&q1qvmprogfuncs, (qintptr_t)&gvars->name - (qintptr_t)q1qvmprogfuncs.stringtable)
 #define globalnull(required, name) pr_global_ptrs->name = NULL
 	globalint		(true, self);	//we need the qw ones, but any in standard quake and not quakeworld, we don't really care about.
 	globalint		(true, other);
@@ -2443,7 +2614,7 @@ qboolean PR_LoadQ1QVM(void)
 
 	dimensionsend = dimensiondefault = 255;
 	for (i = 0; i < 16; i++)
-		pr_global_ptrs->spawnparamglobals[i] = (float*)((char*)VM_MemoryBase(q1qvm)+(qintptr_t)(&gvars->parm1 + i));
+		pr_global_ptrs->spawnparamglobals[i] = (float*)(&gvars->parm1 + i);
 	for (; i < NUM_SPAWN_PARMS; i++)
 		pr_global_ptrs->spawnparamglobals[i] = NULL;
 	pr_global_ptrs->parm_string = NULL;
@@ -2488,8 +2659,8 @@ qboolean PR_LoadQ1QVM(void)
 		}
 		pr_global_struct->self = 0;
 
-
-		Q1QVMPF_SetStringGlobal(sv.world.progs, &gvars->mapname, svs.name, MAPNAME_LEN);
+		if (qvm_api_version == 15)
+			Q1QVMPF_SetStringGlobal(sv.world.progs, &gvars->mapname, svs.name, MAPNAME_LEN);
 	}
 	else
 	{
@@ -2508,7 +2679,12 @@ qboolean PR_LoadQ1QVM(void)
 
 void Q1QVM_ClientConnect(client_t *cl)
 {
-	if (qvm_api_version >= 15 && !VM_NonNative(q1qvm))
+	if (qvm_api_version >= 16)
+	{
+		Q_strncpyz(cl->namebuf, cl->name, sizeof(cl->namebuf));
+		cl->name = cl->namebuf;
+	}
+	else if (qvm_api_version >= 15 && !VM_NonNative(q1qvm))
 	{
 		Q_strncpyz(cl->namebuf, cl->name, sizeof(cl->namebuf));
 		Q1QVMPF_SetStringField(sv.world.progs, cl->edict, &cl->edict->v->netname, cl->namebuf, true);
@@ -2593,14 +2769,14 @@ qboolean Q1QVM_ClientSay(edict_t *player, qboolean team)
 	return washandled;
 }
 
-qboolean Q1QVM_UserInfoChanged(edict_t *player)
+qboolean Q1QVM_UserInfoChanged(edict_t *player, qboolean after)
 {	//mod will use G_CMD_ARGV to get argv1+argv2 to read the info that is changing.
 	if (!q1qvm)
 		return false;
 
 	pr_global_struct->time = sv.world.physicstime;
 	pr_global_struct->self = Q1QVMPF_EdictToProgs(svprogfuncs, player);
-	return VM_Call(q1qvm, GAME_CLIENT_USERINFO_CHANGED, 0, 0, 0);
+	return VM_Call(q1qvm, GAME_CLIENT_USERINFO_CHANGED, after, 0, 0);
 }
 
 void Q1QVM_PlayerPreThink(void)

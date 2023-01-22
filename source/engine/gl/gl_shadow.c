@@ -1188,7 +1188,7 @@ static void SHM_RecursiveWorldNodeQ2_r (dlight_t *dl, mnode_t *node)
 	SHM_RecursiveWorldNodeQ2_r (dl, node->children[!side]);
 }
 
-static void SHM_MarkLeavesQ2(dlight_t *dl, unsigned char *lvis)
+static void SHM_MarkLeavesQ2(dlight_t *dl, const unsigned char *lvis)
 {
 	mnode_t *node;
 	int i;
@@ -1241,9 +1241,9 @@ static void SHM_MarkLeavesQ2(dlight_t *dl, unsigned char *lvis)
 		}
 	}
 }
-void Q2BSP_GenerateShadowMesh(model_t *model, dlight_t *dl, qbyte *lvis, int type)
+void Q2BSP_GenerateShadowMesh(model_t *model, dlight_t *dl, const qbyte *lightvis, qbyte *litvis, void (*callback)(msurface_t *surf))
 {
-	SHM_MarkLeavesQ2(dl, lvis);
+	SHM_MarkLeavesQ2(dl, lightvis);
 	SHM_RecursiveWorldNodeQ2_r(dl, model->nodes);
 }
 #endif
@@ -1277,7 +1277,7 @@ static void SHM_RecursiveWorldNodeQ3_r (dlight_t *dl, mnode_t *node)
 
 			//FIXME: radius check
 			SHM_Shadow_Cache_Surface(surf);
-			if (sh_shmesh->type == SMT_SHADOWMAP)
+			if (sh_shmesh->type == SMT_SHADOWMAP && !(surf->texinfo->texture->shader->flags & SHADER_NOSHADOWS))
 				SHM_MeshFrontOnly(surf->mesh->numvertexes, surf->mesh->xyz_array, surf->mesh->numindexes, surf->mesh->indexes);
 		}
 		return;
@@ -1482,7 +1482,7 @@ static void SHM_ComposeVolume_BruteForce(dlight_t *dl)
 		sms = &sh_shmesh->batches[tno];
 		if (!sms->count)
 			continue;
-		if ((cl.worldmodel->shadowbatches[tno].tex->shader->flags & (SHADER_BLEND|SHADER_NODRAW)))
+		if ((cl.worldmodel->shadowbatches[tno].tex->shader->flags & (SHADER_BLEND|SHADER_NODRAW|SHADER_NOSHADOWS)))
 			continue;
 
 		for (sno = 0; sno < sms->count; sno++)
@@ -1827,37 +1827,7 @@ static qboolean Sh_VisOverlaps(qbyte *v1, qbyte *v2)
 	return false;
 }
 
-#if 1
 #define Sh_LeafInView Sh_VisOverlaps
-#else
-static qboolean Sh_LeafInView(qbyte *lightvis, qbyte *vvis)
-{
-	int i;
-	int m = (cl.worldmodel->numvisleafs);
-	mleaf_t *wl = cl.worldmodel->leafs;
-	unsigned char lv;
-
-	/*we can potentially walk off the end of the leafs, but lightvis shouldn't be set for those*/
-
-
-	for (i = 0; i < m; i += 1<<3)
-	{
-		lv = lightvis[i>>3];// & vvis[i>>3];
-		if (!lv)
-			continue;
-		if ((lv&0x01) && wl[i+0].visframe == r_visframecount) return true;
-		if ((lv&0x02) && wl[i+1].visframe == r_visframecount) return true;
-		if ((lv&0x04) && wl[i+2].visframe == r_visframecount) return true;
-		if ((lv&0x08) && wl[i+3].visframe == r_visframecount) return true;
-		if ((lv&0x10) && wl[i+4].visframe == r_visframecount) return true;
-		if ((lv&0x20) && wl[i+5].visframe == r_visframecount) return true;
-		if ((lv&0x40) && wl[i+6].visframe == r_visframecount) return true;
-		if ((lv&0x80) && wl[i+7].visframe == r_visframecount) return true;
-	}
-
-	return false;
-}
-#endif
 
 
 /*
@@ -3454,7 +3424,7 @@ static qboolean Sh_DrawStencilLight(dlight_t *dl, vec3_t colour, vec3_t axis[3],
 				sfrontfail = GL_DECR_WRAP_EXT;
 			}
 		#else
-			sref = (1<<gl_stencilbits)-1; /*this is halved for two-sided stencil support, just in case there's no wrap support*/
+			sref = (1<<sh_config.stencilbits)-1; /*this is halved for two-sided stencil support, just in case there's no wrap support*/
 			sbackfail = GL_DECR;
 			sfrontfail = GL_INCR;
 			if (gl_config.ext_stencil_wrap)
@@ -3965,7 +3935,7 @@ void Sh_CheckSettings(void)
 			else if (!gl_config.arb_depth_texture)
 				Con_DPrintf("Shadowmapping unsupported: No arb_depth_texture\n");
 		}
-		if (gl_stencilbits)
+		if (sh_config.stencilbits)
 			canstencil = true;
 		break;
 #endif
@@ -4022,14 +3992,6 @@ void Sh_CheckSettings(void)
 	else
 	{
 		//both shadow methods available.
-	}
-
-	r_dynamic.ival = r_dynamic.value;
-	if (canshadowless && r_dynamic.value && !r_shadow_realtime_dlight.ival && (r_temporalscenecache.ival))// || (cl.worldmodel && cl.worldmodel->fromgame == fg_quake3)))
-	{
-		r_shadow_realtime_dlight.ival = 1;
-		r_shadow_realtime_dlight_shadows.ival = 0;
-		r_dynamic.ival = 0;
 	}
 
 	cansmap = cansmap && (r_shadows.ival==2);
@@ -4127,13 +4089,12 @@ void Sh_DrawLights(qbyte *vis)
 	if (r_lightprepass)
 		return;
 
-	if (!r_shadow_realtime_world.ival && !r_shadow_realtime_dlight.ival)
-	{
-		return;
-	}
-
 	ignoreflags = (r_shadow_realtime_world.ival?LFLAG_REALTIMEMODE:0)
 				| (r_shadow_realtime_dlight.ival?LFLAG_NORMALMODE:0);
+	if (r_dynamic.ival == -1 && r_dynamic.value > 0)
+		ignoreflags |= LFLAG_LIGHTMAP;	//if we're using scenecache then we cannot use lightmap hacks for dlights, so draw them via rtlight code instead.
+	if (!ignoreflags)
+		return;
 
 //	if (r_refdef.recurse)
 	for (dl = cl_dlights+rtlights_first, i=rtlights_first; i<rtlights_max; i++, dl++)
@@ -4257,7 +4218,9 @@ void Sh_DrawLights(qbyte *vis)
 		}
 		else if (dl->flags & LFLAG_CREPUSCULAR)
 			Sh_DrawCrepuscularLight(dl, colour);
-		else if (((i >= RTL_FIRST)?!r_shadow_realtime_world_shadows.ival:!r_shadow_realtime_dlight_shadows.ival) || dl->flags & LFLAG_NOSHADOWS)
+		else if (dl->flags & LFLAG_NOSHADOWS ||
+			((i >= RTL_FIRST)?!r_shadow_realtime_world_shadows.ival:!r_shadow_realtime_dlight_shadows.ival) || //force shadowless when configured that way...
+			ignoreflags==LFLAG_LIGHTMAP)	//scenecache fallback...
 		{
 			Sh_DrawShadowlessLight(dl, colour, axis, vis);
 		}

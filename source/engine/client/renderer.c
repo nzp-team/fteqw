@@ -277,6 +277,9 @@ cvar_t vid_conautoscale						= CVARAF ("vid_conautoscale", "2",
 cvar_t vid_conautoscale						= CVARAFD ("vid_conautoscale", "0",
 												"scr_conscale"/*qs*/ /*"vid_conscale"ez*/, CVAR_ARCHIVE | CVAR_RENDERERCALLBACK, "Changes the 2d scale, including hud, console, and fonts. To specify an explicit font size, divide the desired 'point' size by 8 to get the scale. High values will be clamped to maintain at least a 320*200 virtual size.");
 #endif
+cvar_t vid_baseheight						= CVARD ("vid_baseheight", "", "Specifies a mod's target height and used only when the 2d scale is not otherwise forced. Unlike vid_conheight the size is not fixed and will be padded to avoid inconsistent filtering.");
+cvar_t vid_minsize							= CVARFD ("vid_minsize", "320 200",
+												CVAR_NOTFROMSERVER, "Specifies a mod's minimum virtual size.");
 cvar_t vid_conheight						= CVARF ("vid_conheight", "0",
 												CVAR_ARCHIVE);
 cvar_t vid_conwidth							= CVARF ("vid_conwidth", "0",
@@ -378,7 +381,7 @@ cvar_t r_deluxemapping_cvar					= CVARAFD ("r_deluxemapping", "1", "r_glsl_delux
 cvar_t mod_loadsurfenvmaps					= CVARD ("r_loadsurfenvmaps", "1", "Load local reflection environment-maps, where available. These are normally defined via env_cubemap entities dotted around the place.");
 qboolean r_deluxemapping;
 cvar_t r_shaderblobs						= CVARD ("r_shaderblobs", "0", "If enabled, can massively accelerate vid restarts / loading (especially with the d3d renderer). Can cause issues when upgrading engine versions, so this is disabled by default.");
-cvar_t gl_compress							= CVARFD ("gl_compress", "0", CVAR_ARCHIVE, "Enable automatic texture compression even for textures which are not pre-compressed.");
+cvar_t gl_compress							= CVARAFD ("gl_compress", "0", "r_ext_compressed_textures"/*q3*/, CVAR_ARCHIVE, "Enable automatic texture compression even for textures which are not pre-compressed.");
 cvar_t gl_conback							= CVARFCD ("gl_conback", "",
 												CVAR_RENDERERCALLBACK, R2D_Conback_Callback, "Specifies which conback shader/image to use. The Quake fallback is gfx/conback.lmp");
 //cvar_t gl_detail							= CVARF ("gl_detail", "0",
@@ -440,9 +443,9 @@ cvar_t gl_specular_fallbackexp				= CVARF  ("gl_specular_fallbackexp", "1", CVAR
 cvar_t gl_texture_anisotropic_filtering		= CVARAFCD("gl_texture_anisotropy", "4",
 												"gl_texture_anisotropic_filtering"/*old*/, CVAR_ARCHIVE | CVAR_RENDERERCALLBACK,
 												Image_TextureMode_Callback, "Allows for higher quality textures on surfaces that slope away from the camera (like the floor). Set to 16 or something. Only supported with trilinear filtering.");
-cvar_t gl_texturemode						= CVARFCD("gl_texturemode", "GL_LINEAR_MIPMAP_LINEAR",
+cvar_t gl_texturemode						= CVARAFCD("gl_texturemode", "GL_LINEAR_MIPMAP_LINEAR", "r_texturemode"/*q3*/,
 												CVAR_ARCHIVE | CVAR_RENDERERCALLBACK | CVAR_SAVE, Image_TextureMode_Callback,
-												"Specifies how world/model textures appear. Typically 3 letters eg lln.\nFirst letter can be l(inear) or n(earest) and says how to sample from the mip (when downsampling).\nThe middle letter can . to disable mipmaps, or l or n to describe whether to blend between mipmaps.\nThe third letter says what to do when the texture is too low resolution and is thus the most noticable with low resolution textures, a n will make it look like lego, while an l will keep it smooth.");
+												"Specifies how world/model textures appear. Typically 3 letters eg "S_COLOR_GREEN"nll"S_COLOR_WHITE" or "S_COLOR_GREEN"lll"S_COLOR_WHITE".\nFirst letter can be l(inear) or n(earest) and says how to upscale low-res textures (n for the classic look - often favoured for embedded textures, l for blurry - best for high-res textures).\nThe middle letter can be set to '.' to disable mipmaps, or n for ugly banding with distance, or l for smooth mipmap transitions.\nThe third letter says what to do when the texture is too high resolution, and should generally be set to 'l' to reduce sparkles including when aiming for the classic lego look.");
 cvar_t gl_texture_lodbias					= CVARAFCD("d_lodbias", "0", "gl_texture_lodbias",
 												CVAR_ARCHIVE | CVAR_RENDERERCALLBACK,
 												Image_TextureMode_Callback, "Biases choice of mipmap levels. Positive values will give more blury textures, while negative values will give crisper images (but will also give some mid-surface aliasing artifacts).");
@@ -682,6 +685,13 @@ void R_ListSkins_f(void)
 void R_SetRenderer_f (void);
 void R_ReloadRenderer_f (void);
 
+#ifdef _DEBUG
+static void R_ShowBatches_f(void)
+{
+	sh_config.showbatches = true;
+}
+#endif
+
 void R_ToggleFullscreen_f(void)
 {
 	double time;
@@ -757,6 +767,10 @@ void Renderer_Init(void)
 	Cmd_AddCommand("r_remapshader", Shader_RemapShader_f);
 	Cmd_AddCommand("r_showshader", Shader_ShowShader_f);
 
+#ifdef _DEBUG
+	Cmd_AddCommand("r_showbatches", R_ShowBatches_f);
+#endif
+
 #ifdef SWQUAKE
 	{
 	extern cvar_t sw_interlace;
@@ -791,9 +805,11 @@ void Renderer_Init(void)
 	Cvar_Register (&vid_bpp, VIDCOMMANDGROUP);
 	Cvar_Register (&vid_depthbits, VIDCOMMANDGROUP);
 
+	Cvar_Register (&vid_baseheight, VIDCOMMANDGROUP);
 	Cvar_Register (&vid_conwidth, VIDCOMMANDGROUP);
 	Cvar_Register (&vid_conheight, VIDCOMMANDGROUP);
 	Cvar_Register (&vid_conautoscale, VIDCOMMANDGROUP);
+	Cvar_Register (&vid_minsize, VIDCOMMANDGROUP);
 
 	Cvar_Register (&vid_triplebuffer, VIDCOMMANDGROUP);
 	Cvar_Register (&vid_width, VIDCOMMANDGROUP);
@@ -1691,7 +1707,7 @@ TRACE(("dbg: R_ApplyRenderer: clearing world\n"));
 
 		if (sv.world.worldmodel->loadstate != MLS_LOADED)
 			SV_UnspawnServer();
-		else if (svs.gametype == GT_PROGS)
+		else if (svs.gametype == GT_PROGS || svs.gametype == GT_Q1QVM)
 		{
 			for (i = 0; i < MAX_PRECACHE_MODELS; i++)
 			{
@@ -1756,7 +1772,7 @@ TRACE(("dbg: R_ApplyRenderer: clearing world\n"));
 	}
 #endif
 #ifdef PLUGINS
-	Plug_ResChanged();
+	Plug_ResChanged(true);
 #endif
 	Cvar_ForceCallback(&r_particlesystem);
 #ifdef MENU_NATIVECODE
@@ -1775,15 +1791,17 @@ TRACE(("dbg: R_ApplyRenderer: starting on client state\n"));
 	if (!isDedicated)
 		S_DoRestart(true);
 
+#ifdef VM_UI
+	if (q3)
+		q3->ui.Reset();
+#endif
+
 #ifdef Q3SERVER
 	if (svs.gametype == GT_QUAKE3)
 	{
 		cl.worldmodel = NULL;
-		CG_Stop();
-		memset(cl.model_precache, 0, sizeof(cl.model_precache));
-		CG_Start();
-		if (cl.worldmodel)
-			Surf_NewMap();
+		if (q3)
+			q3->cg.VideoRestarted();
 	}
 	else
 #endif
@@ -1847,9 +1865,7 @@ TRACE(("dbg: R_ApplyRenderer: done the models\n"));
 //				Con_Printf ("You may need to download or purchase a client pack in order to play on this server.\n\n");
 
 				CL_Disconnect ("Worldmodel missing after video reload");
-#ifdef VM_UI
-				UI_Reset();
-#endif
+
 				if (newr)
 					memcpy(&currentrendererstate, newr, sizeof(currentrendererstate));
 				return true;
@@ -1862,18 +1878,12 @@ TRACE(("dbg: R_ApplyRenderer: checking any wad textures\n"));
 			cl_static_entities[i].ent.model = NULL;
 
 TRACE(("dbg: R_ApplyRenderer: Surf_NewMap\n"));
-		Surf_NewMap();
+		Surf_NewMap(cl.worldmodel);
 TRACE(("dbg: R_ApplyRenderer: efrags\n"));
 
 //		Skin_FlushAll();
 		Skin_FlushPlayers();
 
-	}
-	else
-	{
-#ifdef VM_UI
-		UI_Reset();
-#endif
 	}
 
 #ifdef SKELETALOBJECTS
@@ -2661,115 +2671,8 @@ unsigned int	r_viewcontents;
 //mleaf_t		*r_viewleaf, *r_oldviewleaf;
 //mleaf_t		*r_viewleaf2, *r_oldviewleaf2;
 int r_viewarea;
-int		r_viewcluster, r_viewcluster2, r_oldviewcluster, r_oldviewcluster2;
-int r_visframecount;
-static pvsbuffer_t	curframevis[R_MAX_RECURSE];
+int		r_viewcluster, r_viewcluster2;
 
-
-#ifdef Q1BSPS
-qbyte *R_MarkLeaves_Q1 (qboolean getvisonly)
-{
-	static qbyte	*cvis[R_MAX_RECURSE];
-	qbyte *vis;
-	mnode_t	*node;
-	int		i;
-	int portal = r_refdef.recurse;
-
-	//for portals to work, we need two sets of any pvs caches
-	//this means lights can still check pvs at the end of the frame despite recursing in the mean time
-	//however, we still need to invalidate the cache because we only have one 'visframe' field in nodes.
-
-	if (r_refdef.forcevis)
-	{
-		vis = cvis[portal] = r_refdef.forcedvis;
-
-		r_oldviewcluster = -1;
-		r_oldviewcluster2 = -2;
-	}
-	else
-	{
-		if (!portal)
-		{
-			if (((r_oldviewcluster == r_viewcluster && r_oldviewcluster2 == r_viewcluster2) && !r_novis.ival) || r_novis.ival & 2)
-				return cvis[portal];
-
-			r_oldviewcluster = r_viewcluster;
-			r_oldviewcluster2 = r_viewcluster2;
-		}
-		else
-		{
-			r_oldviewcluster = -1;
-			r_oldviewcluster2 = -2;
-		}
-
-		if (r_novis.ival)
-		{
-			if (curframevis[portal].buffersize < cl.worldmodel->pvsbytes)
-				curframevis[portal].buffer = BZ_Realloc(curframevis[portal].buffer, curframevis[portal].buffersize=cl.worldmodel->pvsbytes);
-			vis = cvis[portal] = curframevis[portal].buffer;
-			memset (curframevis[portal].buffer, 0xff, curframevis[portal].buffersize);
-
-			r_oldviewcluster = -1;
-			r_oldviewcluster2 = -2;
-		}
-		else
-		{
-			if (r_viewcluster2 != -1 && r_viewcluster2 != r_viewcluster)
-			{
-				vis = cvis[portal] = cl.worldmodel->funcs.ClusterPVS(cl.worldmodel, r_viewcluster, &curframevis[portal], PVM_REPLACE);
-				vis = cvis[portal] = cl.worldmodel->funcs.ClusterPVS(cl.worldmodel, r_viewcluster2, &curframevis[portal], PVM_MERGE);
-			}
-			else
-				vis = cvis[portal] = cl.worldmodel->funcs.ClusterPVS(cl.worldmodel, r_viewcluster, &curframevis[portal], PVM_FAST);
-		}
-	}
-
-	r_visframecount++;
-
-	if (getvisonly)
-		return vis;
-	else if (r_viewcluster == -1)
-	{
-		//to improve spectating, when the camera is in a wall, we ignore any sky leafs.
-		//this prevents seeing the upwards-facing sky surfaces within the sky volumes.
-		//this will not affect inwards facing sky, so sky will basically appear as though it is identical to solid brushes.
-		for (i=0 ; i<cl.worldmodel->numclusters ; i++)
-		{
-			if (vis[i>>3] & (1<<(i&7)))
-			{
-				if (cl.worldmodel->leafs[i+1].contents == Q1CONTENTS_SKY)
-					continue;
-				node = (mnode_t *)&cl.worldmodel->leafs[i+1];
-				do
-				{
-					if (node->visframe == r_visframecount)
-						break;
-					node->visframe = r_visframecount;
-					node = node->parent;
-				} while (node);
-			}
-		}
-	}
-	else
-	{
-		for (i=0 ; i<cl.worldmodel->numclusters ; i++)
-		{
-			if (vis[i>>3] & (1<<(i&7)))
-			{
-				node = (mnode_t *)&cl.worldmodel->leafs[i+1];
-				do
-				{
-					if (node->visframe == r_visframecount)
-						break;
-					node->visframe = r_visframecount;
-					node = node->parent;
-				} while (node);
-			}
-		}
-	}
-	return vis;
-}
-#endif
 
 /*
 =================

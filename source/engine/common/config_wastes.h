@@ -1,22 +1,27 @@
 /***
 *
-*   Copyright (c) 2000-2019, Vera Visions. All rights reserved.
+*   Copyright (c) 2000-2022, Vera Visions. All rights reserved.
 *
 ****/
 
-/* branding defaults */
+#ifndef DEMO
+	#define FULLENGINENAME		"The Wastes"
+	#define GAME_SHORTNAME		"TW"
+	#define GAME_BASEGAMES		"platform","wastes"
+	#define GAME_PROTOCOL		"The-Wastes"
+#else
+	#define FULLENGINENAME		"The Wastes Demo"
+	#define GAME_SHORTNAME		"TWDemo"
+	#define GAME_BASEGAMES		"platform","demotw"
+	#define GAME_PROTOCOL		"TW-Demo"
+#endif
+
+#define BRANDING_ICON "wastes.ico"
 #define DISTRIBUTION "VTW"
 #define DISTRIBUTIONLONG "Vera Visions"
-#define FULLENGINENAME "The Wastes"
-#define ENGINEWEBSITE "https://www.vera-visions.com/"
-#define BRANDING_ICON "wastes.ico"
-
-/* FS rebranding */
-#define GAME_SHORTNAME		"wastes"
 #define GAME_FULLNAME		FULLENGINENAME
-#define GAME_BASEGAMES		"logos","wastes"
-#define GAME_PROTOCOL		"The-Wastes"
 #define GAME_DEFAULTPORT	23000
+#define ENGINEWEBSITE "https://www.vera-visions.com/"
 
 #ifndef GLQUAKE
 #define GLQUAKE
@@ -41,7 +46,6 @@
 #define CSQC_DAT /* clientside qcvm */
 #define MENU_DAT /* persistent qcvm */
 #define PSET_SCRIPT /* scripts defining particles */
-#define RTLIGHTS /* only way FTE does dlights on Q3BSP basically */
 #define LOADERTHREAD /* multithreading related */
 #define USEAREAGRID /* leave it on, improves performance */
 #define AVAIL_DINPUT /* input for Windows */
@@ -49,9 +53,19 @@
 #define AVAIL_STBI /* avoid libpng/libjpeg dependancies */
 #define ENGINE_ROUTING /* engine-side, fast routing */
 
+#ifndef LEGACY_GPU
+	#define RTLIGHTS
+#else
+	#undef RTLIGHTS
+#endif
+
+#undef D3D9QUAKE	/* MICROS~1 trash */
+#undef D3D11QUAKE	/* MICROS~1 trash */
+#undef D3D8QUAKE	/* MICROS~1 trash */
+
 /* uncompressed textures */
 #define IMAGEFMT_BMP /* sprays */
-#define IMAGEFMT_TGA /* disable for RELEASE? */
+#define IMAGEFMT_TGA
 
 /* compressed textures */
 #define IMAGEFMT_KTX
@@ -87,19 +101,27 @@
 #define TERRAIN
 
 /* audio */
-#define AVAIL_OPENAL
+#define AVAIL_DSOUND
+#undef AVAIL_OPENAL
 #define AVAIL_OGGVORBIS
 #define HAVE_OPUS
 #define VOICECHAT
+
+/* todo: make OpenAL only */
+#define HAVE_MIXER
 
 /* Model formats, IQM/VVM and HLMDL for legacy maps */
 #define INTERQUAKEMODELS
 #define HALFLIFEMODELS
 
+/* physics */
+#undef USE_INTERNAL_ODE
+#undef USE_INTERNAL_BULLET
+#undef USERBE 
+#undef RAGDOLL
+
 /* we don't need any of these */
 #undef IMAGEFMT_PCX
-#undef USE_INTERNAL_BULLET
-#undef USE_INTERNAL_ODE
 #undef PACKAGE_DOOMWAD
 #undef DOOMWADS
 #undef MAP_PROC
@@ -118,11 +140,8 @@
 #undef PSKMODELS
 #undef MENU_NATIVECODE	/* native menu replacing menuQC */
 #undef MVD_RECORDING	/* server can record MVDs. */
-#undef D3D9QUAKE	/* MICROS~1 trash */
-#undef D3D11QUAKE	/* MICROS~1 trash */
-#undef D3D8QUAKE	/* MICROS~1 trash */
 #undef AVAIL_WASAPI	/* windows advanced sound api */
-#undef AVAIL_DSOUND	/* MICROS~1 trash */
+//#undef AVAIL_DSOUND	/* MICROS~1 trash */
 #undef BOTLIB_STATIC	/* q3 botlib */
 #undef AVAIL_XZDEC	/* .xz decompression */
 #undef HAVE_SPEEX	/* .xz decompression */
@@ -140,9 +159,7 @@
 #undef QUAKEHUD		/* support for drawing the vanilla hud */
 #undef QWSKINS		/* disabling this means no qw .pcx skins nor enemy/team skin/colour forcing */
 #undef SVRANKING	/* legacy server-side ranking system */
-#undef USERBE 		/* required for physics */
-#undef RAGDOLL		/* ragdoll support. requires RBE support */
-#undef HUFFNETWORK	/* crappy network compression. probably needs reseeding */
+#define HUFFNETWORK	/* crappy network compression. probably needs reseeding */
 #undef SVCHAT		/* ancient lame builtin to support NPC-style chat.. */
 #undef VM_Q1		/* q1qvm implementation, to support ktx */
 #undef Q2SERVER		/* q2 server+gamecode */
@@ -163,13 +180,12 @@
 #undef SIDEVIEWS
 #undef MAX_SPLITS
 #undef SUBSERVERS		/* multi-map */
-#undef HAVE_MIXER		/* OpenAL only */
 #undef VM_LUA			/* lua game-logic */
 #undef HLCLIENT			/* regressed, unfinished*/
 #undef HLSERVER			/* regressed, unfinished */
 #undef FTPSERVER
 #undef HAVE_JUKEBO		/* includes built-in jukebox */
-#undef HAVE_MEDIA_DECODER	/* can play cin/roq, more with plugins */
+#define HAVE_MEDIA_DECODER	/* can play cin/roq, more with plugins */
 #undef HAVE_MEDIA_ENCODER	/* capture/capturedemo work */
 #undef HAVE_SPEECHTOTEXT	/* Windows speech-to-text thing */
 #undef SAVEDGAMES
@@ -219,6 +235,10 @@
  * engine itself, instead of as a plugin. */
 #ifdef USE_INTERNAL_BULLET
 -DLINK_INTERNAL_BULLET
+#endif
+
+#ifdef USE_INTERNAL_ODE
+-DODE_STATIC
 #endif
 
 /* disable static speex */

@@ -2203,7 +2203,7 @@ char *Sys_ConsoleInput (void)
 						{
 							memcpy(net_message.data, text+2, len-2);
 							net_message.cursize = len-2;
-							MSG_BeginReading (msg_nullnetprim);
+							MSG_BeginReading (&net_message, msg_nullnetprim);
 
 							SSV_ReadFromControlServer();
 							

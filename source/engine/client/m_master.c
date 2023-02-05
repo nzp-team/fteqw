@@ -268,8 +268,9 @@ static servertypes_t flagstoservertype(int flags)
 
 	switch(flags & SS_PROTOCOLMASK)
 	{
+	case SS_QEPROT:
+		return ST_NETQUAKE;
 	case SS_NETQUAKE:
-	case SS_DARKPLACES:
 		return ST_NETQUAKE;
 	case SS_QUAKE2:
 		return ST_QUAKE2;
@@ -835,6 +836,7 @@ static qboolean SL_Key	(int key, emenu_t *menu)
 			if (server)
 				Master_FindRoute(server->adr);
 			serverpreview = SVPV_ROUTE;
+			return true;
 		}
 #endif
 		else if (key == 'b' || key == 'o' || key == 'j' || key == K_ENTER || key == K_KP_ENTER || key == K_GP_START)	//join
@@ -1107,7 +1109,6 @@ static void CalcFilters(emenu_t *menu)
 	else
 	{
 		if (info->filter[SLFILTER_HIDENETQUAKE]) Master_SetMaskInteger(false, SLKEY_BASEGAME, SS_NETQUAKE, SLIST_TEST_NOTEQUAL);
-		if (info->filter[SLFILTER_HIDENETQUAKE]) Master_SetMaskInteger(false, SLKEY_BASEGAME, SS_DARKPLACES, SLIST_TEST_NOTEQUAL);
 		if (info->filter[SLFILTER_HIDEQUAKEWORLD]) Master_SetMaskInteger(false, SLKEY_BASEGAME, SS_QUAKEWORLD, SLIST_TEST_NOTEQUAL);
 	}
 	if (info->filter[SLFILTER_HIDEPROXIES]) Master_SetMaskInteger(false, SLKEY_FLAGS, SS_PROXY, SLIST_TEST_NOTCONTAIN);

@@ -86,10 +86,15 @@ int		net_drop;
 cvar_t	showpackets = CVAR("showpackets", "0");
 cvar_t	showdrop = CVAR("showdrop", "0");
 cvar_t	qport = CVARF("qport_", "0", CVAR_NOSAVE);
+#ifdef FTE_TARGET_WEB //with webrtc our packets will be layered over sctp(header=28,extras=20ish) over dtls(13),
+cvar_t	net_mtu = CVARD("net_mtu", "1384", "Specifies a maximum udp payload size, above which packets will be fragmented. If routers all worked properly this could be some massive value, and some massive value may work really nicely for lans. Use smaller values than the default if you're connecting through nested tunnels through routers that fail with IP fragmentation.");
+#else
 cvar_t	net_mtu = CVARD("net_mtu", "1440", "Specifies a maximum udp payload size, above which packets will be fragmented. If routers all worked properly this could be some massive value, and some massive value may work really nicely for lans. Use smaller values than the default if you're connecting through nested tunnels through routers that fail with IP fragmentation.");
+#endif
 cvar_t	net_compress = CVARD("net_compress", "0", "Enables huffman compression of network packets.");
 
 cvar_t	pext_vrinputs = CVARD("_pext_vrinputs", "0", "RENAME ME WHEN STABLE. Networks player inputs slightly differently, allowing for greater capabilities, particuarly vr controller info.");
+cvar_t	pext_lerptime = CVARD("_pext_lerptime", "0", "RENAME ME WHEN STABLE. Sends timing hints for interpolation.");
 cvar_t	pext_infoblobs = CVARD("_pext_infoblobs", "0", "RENAME ME WHEN STABLE. Enables the use of very large infokeys containing potentially invalid chars. Note that the userinfo is still limited by sv_userinfo_bytelimit and sv_userinfo_keylimit.");
 cvar_t	pext_replacementdeltas = CVARD("pext_replacementdeltas", "1", "Enables the use of alternative nack-based entity deltas");
 cvar_t	pext_predinfo = CVARD("pext_predinfo", "1", "Enables some extra things to support prediction over NQ protocols.");
@@ -281,6 +286,7 @@ void Netchan_Init (void)
 	Cvar_Register (&pext_replacementdeltas, "Protocol Extensions");
 	Cvar_Register (&pext_infoblobs, "Protocol Extensions");
 	Cvar_Register (&pext_vrinputs, "Protocol Extensions");
+	Cvar_Register (&pext_lerptime, "Protocol Extensions");
 	Cvar_Register (&showpackets, "Networking");
 	Cvar_Register (&showdrop, "Networking");
 	Cvar_Register (&qport, "Networking");
@@ -295,7 +301,7 @@ Netchan_OutOfBand
 Sends an out-of-band datagram
 ================
 */
-void Netchan_OutOfBand (netsrc_t sock, netadr_t *adr, int length, qbyte *data)
+void Netchan_OutOfBand (netsrc_t sock, netadr_t *adr, int length, const qbyte *data)
 {
 	sizebuf_t	send;
 	qbyte		send_buf[MAX_QWMSGLEN + PACKET_HEADER];
@@ -443,6 +449,7 @@ qboolean ServerPaused(void);
 #endif
 
 #ifdef NQPROT
+size_t ZLib_DecompressBuffer(qbyte *in, size_t insize, qbyte *out, size_t maxoutsize);
 enum nqnc_packettype_e NQNetChan_Process(netchan_t *chan)
 {
 	int header;
@@ -450,15 +457,47 @@ enum nqnc_packettype_e NQNetChan_Process(netchan_t *chan)
 	int drop;
 
 	chan->bytesin += net_message.cursize;
-	MSG_BeginReading (chan->netprim);
+	MSG_BeginReading (&net_message, chan->netprim);
 
 	header = LongSwap(MSG_ReadLong());
-	if (net_message.cursize != (header & NETFLAG_LENGTH_MASK))
-		return NQNC_IGNORED;	//size was wrong, couldn't have been ours.
 
 	if (header & NETFLAG_CTL)
 		return NQNC_IGNORED;	//huh?
 
+#ifdef HAVE_CLIENT
+	if (header & NETFLAG_ZLIB)
+	{	//note: qex gets the size header wrong here.
+		qbyte *tmp;
+		if (net_message.cursize <= PACKET_HEADER || net_message.cursize != PACKET_HEADER+(header & NETFLAG_LENGTH_MASK))
+			return NQNC_IGNORED;	//huh?
+		/*redundantsequence =*/ MSG_ReadLong();	//wasting 4 bytes...
+#ifdef AVAIL_ZLIB
+		tmp = alloca(0xffff);
+		//note: its zlib rather than raw deflate (wasting a further 6 bytes...).
+		net_message.cursize = ZLib_DecompressBuffer(net_message.data+8, net_message.cursize-8, tmp, 0xffff);
+		if (net_message.cursize < PACKET_HEADER)
+#endif
+		{
+			if (chan->sock == NS_CLIENT)
+			{	//clients can just throw an error. the server will appear dead if we try to just ignore it.
+				Host_EndGame("QuakeEx netchan decompression error");
+				return NQNC_IGNORED;
+			}
+			else
+			{	//inject a disconnect request. clients shouldn't be sending this anyway.
+				net_message.data[8] = clc_disconnect;
+				net_message.cursize = 9;
+				return NQNC_RELIABLE;
+			}
+		}
+		memcpy(net_message.data, tmp, net_message.cursize);
+
+		MSG_BeginReading (&net_message, chan->netprim);
+		header = LongSwap(MSG_ReadLong());	//re-read the now-decompressed copy of the header for the real flags
+	}
+#endif
+	if (net_message.cursize != (header & NETFLAG_LENGTH_MASK))
+		return NQNC_IGNORED;	//size was wrong, couldn't have been ours.
 	sequence = LongSwap(MSG_ReadLong());
 
 	if (header & NETFLAG_ACK)
@@ -565,7 +604,7 @@ enum nqnc_packettype_e NQNetChan_Process(netchan_t *chan)
 				SZ_Clear(&net_message);
 				SZ_Write(&net_message, chan->in_fragment_buf, chan->in_fragment_length);
 				chan->in_fragment_length = 0;
-				MSG_BeginReading(chan->netprim);
+				MSG_BeginReading(&net_message, chan->netprim);
 
 				if (showpackets.value)
 					Con_Printf ("in  %s r=%i %i\n"
@@ -968,7 +1007,7 @@ qboolean Netchan_Process (netchan_t *chan)
 	chan->bytesin += net_message.cursize;
 
 // get sequence numbers		
-	MSG_BeginReading (chan->netprim);
+	MSG_BeginReading (&net_message, chan->netprim);
 	sequence = MSG_ReadLong ();
 	sequence_ack = MSG_ReadLong ();
 
@@ -1054,7 +1093,7 @@ qboolean Netchan_Process (netchan_t *chan)
 
 	if (offset)
 	{
-		int len = net_message.cursize - msg_readcount;
+		int len = net_message.cursize - MSG_GetReadCount();
 		qboolean more = false;
 		if (offset & 1)
 		{
@@ -1084,7 +1123,7 @@ qboolean Netchan_Process (netchan_t *chan)
 			return false; /*dropped one*/
 		}
 
-		memcpy(chan->in_fragment_buf + offset, net_message.data + msg_readcount, len);
+		memcpy(chan->in_fragment_buf + offset, net_message.data + MSG_GetReadCount(), len);
 		chan->in_fragment_length += len;
 
 		if (more)
@@ -1093,7 +1132,7 @@ qboolean Netchan_Process (netchan_t *chan)
 			return false;
 		}
 		memcpy(net_message.data, chan->in_fragment_buf, chan->in_fragment_length);
-		msg_readcount = 0;
+		net_message.currentbit = 0;
 		net_message.cursize = chan->in_fragment_length;
 
 		if (showpackets.value)
@@ -1161,7 +1200,7 @@ qboolean Netchan_Process (netchan_t *chan)
 	if (chan->compresstable)
 	{
 //		Huff_CompressPacket(&net_message, (chan->sock == NS_SERVER)?10:8);
-		Huff_DecompressPacket(chan->compresstable, &net_message, msg_readcount);
+		Huff_DecompressPacket(chan->compresstable, &net_message, MSG_GetReadCount());
 	}
 #endif
 

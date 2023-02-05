@@ -1091,7 +1091,7 @@ void CL_CheckForResend (void)
 
 			net_message.packing = SZ_RAWBYTES;
 			net_message.cursize = 0;
-			MSG_BeginReading(net_message.prim);
+			MSG_BeginReading(&net_message, net_message.prim);
 
 			if (connectinfo.subprotocol == CPNQ_ID && !proquakeangles)
 			{
@@ -1224,6 +1224,9 @@ void CL_CheckForResend (void)
 			Con_TPrintf ("Connecting to %s...\n", cls.servername);
 	}
 
+	if (connectinfo.clogged)
+		connectinfo.clogged = false;
+
 	if (connectinfo.tries == 0 && to == &connectinfo.adr[0])
 		if (!NET_EnsureRoute(cls.sockets, "conn", cls.servername, to))
 		{
@@ -1351,6 +1354,14 @@ void CL_BeginServerReconnect(void)
 		NET_DTLS_Disconnect(cls.sockets, &connectinfo.adr[0]);
 	connectinfo.dtlsupgrade = 0;
 #endif
+#ifdef SUPPORT_ICE
+	while (connectinfo.numadr)
+	{
+		if (connectinfo.adr[connectinfo.numadr-1].type != NA_ICE)
+			break;
+		connectinfo.numadr++;
+	}
+#endif
 	if (*cl_disconnectreason.string)
 		Cvar_Set(&cl_disconnectreason, "");
 	connectinfo.trying = true;
@@ -1359,6 +1370,14 @@ void CL_BeginServerReconnect(void)
 	connectinfo.tries = 0;	//re-ensure routes.
 
 	NET_InitClient(false);
+}
+
+void CL_Transfer(netadr_t *adr)
+{
+	connectinfo.adr[0] = *adr;
+	connectinfo.numadr = 1;
+	connectinfo.istransfer = true;
+	CL_CheckForResend();
 }
 
 void CL_Transfer_f(void)
@@ -3135,7 +3154,7 @@ void CL_ConnectionlessPacket (void)
 	int		c;
 	char	adr[MAX_ADR_SIZE];
 
-	MSG_BeginReading (msg_nullnetprim);
+	MSG_BeginReading (&net_message, msg_nullnetprim);
 	MSG_ReadLong ();        // skip the -1
 
 	Cmd_TokenizeString(net_message.data+4, false, false);
@@ -3184,7 +3203,7 @@ void CL_ConnectionlessPacket (void)
 
 	if (c == A2C_PRINT)
 	{
-		if (!strncmp(net_message.data+msg_readcount, "\\chunk", 6))
+		if (!strncmp(net_message.data+MSG_GetReadCount(), "\\chunk", 6))
 		{
 			if (NET_CompareBaseAdr(&cls.netchan.remote_address, &net_from) == false)
 				if (cls.realserverip.type == NA_INVALID || NET_CompareBaseAdr(&cls.realserverip, &net_from) == false)
@@ -3196,7 +3215,7 @@ void CL_ConnectionlessPacket (void)
 
 			if (CL_ParseOOBDownload())
 			{
-				if (msg_readcount != net_message.cursize)
+				if (MSG_GetReadCount() != net_message.cursize)
 				{
 					Con_Printf ("junk on the end of the packet\n");
 					CL_Disconnect_f();
@@ -3534,20 +3553,20 @@ void CL_ConnectionlessPacket (void)
 	if (connectinfo.protocol == CP_QUAKE2)
 	{
 		char *nl;
-		msg_readcount--;
-		c = msg_readcount;
+		MSG_ReadSkip(-1);
+		c = MSG_GetReadCount();
 		s = MSG_ReadString ();
 		nl = strchr(s, '\n');
 		if (nl)
 		{
-			msg_readcount = c + nl-s + 1;
+			MSG_ReadSkip(c + nl-s + 1 - MSG_GetReadCount());
 			msg_badread = false;
 			*nl = '\0';
 		}
 
 		if (!strcmp(s, "print"))
 		{
-			Con_TPrintf ("print\n");
+			Con_TPrintf (S_COLOR_GRAY"print\n");
 
 			s = MSG_ReadString ();
 			if (connectinfo.trying && CL_IsPendingServerBaseAddress(&net_from) == false)
@@ -3578,7 +3597,7 @@ void CL_ConnectionlessPacket (void)
 		else
 		{
 			Con_TPrintf ("unknown connectionless packet for q2:  %s\n", s);
-			msg_readcount = c;
+			MSG_ReadSkip(c - MSG_GetReadCount());
 			c = MSG_ReadByte();
 		}
 	}
@@ -3606,7 +3625,6 @@ void CL_ConnectionlessPacket (void)
 			Validation_Apply_Ruleset();
 			Netchan_Setup(NS_CLIENT, &cls.netchan, &net_from, connectinfo.qport);
 			CL_ParseEstablished();
-			Con_DPrintf ("CL_EstablishConnection: connected to %s\n", cls.servername);
 
 			cls.netchan.isnqprotocol = true;
 			cls.protocol = CP_NETQUAKE;
@@ -3676,11 +3694,14 @@ void CL_ConnectionlessPacket (void)
 		else if (!strcmp(com_token, "tlsopened"))
 		{	//server is letting us know that its now listening for a dtls handshake.
 #ifdef HAVE_DTLS
+			dtlscred_t cred;
 			Con_Printf ("dtlsopened\n");
 			if (!CL_IsPendingServerAddress(&net_from))
 				return;
 
-			if (NET_DTLS_Create(cls.sockets, &net_from))
+			memset(&cred, 0, sizeof(cred));
+			cred.peer.name = cls.servername;
+			if (NET_DTLS_Create(cls.sockets, &net_from, &cred))
 			{
 				connectinfo.dtlsupgrade = DTLS_ACTIVE;
 				connectinfo.numadr = 1;	//fixate on this resolved address.
@@ -3792,21 +3813,6 @@ client_connect:	//fixme: make function
 #endif
 			CL_SendClientCommand(true, "new");
 		cls.state = ca_connected;
-		if (cls.netchan.remote_address.type != NA_LOOPBACK)
-		{
-			switch(cls.protocol)
-			{
-			case CP_QUAKEWORLD:	Con_DPrintf("QW ");	break;
-			case CP_NETQUAKE:	Con_Printf ("NQ ");	break;
-			case CP_QUAKE2:		Con_Printf ("Q2 ");	break;
-			case CP_QUAKE3:		Con_Printf ("Q3 ");	break;
-			default: break;
-			}
-			if (cls.netchan.remote_address.prot == NP_DTLS || cls.netchan.remote_address.prot == NP_TLS || cls.netchan.remote_address.prot == NP_WSS)
-				Con_TPrintf ("Connected (^[^2encrypted\\tip\\Any passwords will be sent securely, but may still be logged^]).\n");
-			else
-				Con_TPrintf ("Connected (^[^1plain-text\\tip\\"CON_WARNING"Do not type passwords as they can potentially be seen by network sniffers^]).\n");
-		}
 #ifdef QUAKESPYAPI
 		allowremotecmd = false; // localid required now for remote cmds
 #endif
@@ -3919,7 +3925,7 @@ void CLNQ_ConnectionlessPacket(void)
 	int length;
 	unsigned short port;
 
-	MSG_BeginReading (msg_nullnetprim);
+	MSG_BeginReading (&net_message, msg_nullnetprim);
 	length = LongSwap(MSG_ReadLong ());
 	if (!(length & NETFLAG_CTL))
 		return;	//not an nq control packet.
@@ -4016,10 +4022,15 @@ void CL_ReadPacket(void)
 				return;
 #endif
 
+#if defined(SUPPORT_ICE)
+	if (ICE_WasStun(cls.sockets))
+		return;
+#endif
+
 #ifdef NQPROT
 	if (cls.demoplayback == DPB_NETQUAKE)
 	{
-		MSG_BeginReading (cls.netchan.netprim);
+		MSG_BeginReading (&net_message, cls.netchan.netprim);
 		cls.netchan.last_received = realtime;
 		CLNQ_ParseServerMessage ();
 
@@ -4031,7 +4042,7 @@ void CL_ReadPacket(void)
 #ifdef Q2CLIENT
 	if (cls.demoplayback == DPB_QUAKE2)
 	{
-		MSG_BeginReading (cls.netchan.netprim);
+		MSG_BeginReading (&net_message, cls.netchan.netprim);
 		cls.netchan.last_received = realtime;
 		CLQ2_ParseServerMessage ();
 		return;
@@ -4091,7 +4102,7 @@ void CL_ReadPacket(void)
 		if(NQNetChan_Process(&cls.netchan))
 		{
 			MSG_ChangePrimitives(cls.netchan.netprim);
-			CL_WriteDemoMessage (&net_message, msg_readcount);
+			CL_WriteDemoMessage (&net_message, MSG_GetReadCount());
 			CLNQ_ParseServerMessage ();
 		}
 #endif
@@ -4113,14 +4124,14 @@ void CL_ReadPacket(void)
 	case CP_QUAKEWORLD:
 		if (cls.demoplayback == DPB_MVD || cls.demoplayback == DPB_EZTV)
 		{
-			MSG_BeginReading(cls.netchan.netprim);
+			MSG_BeginReading(&net_message, cls.netchan.netprim);
 			cls.netchan.last_received = realtime;
 			cls.netchan.outgoing_sequence = cls.netchan.incoming_sequence;
 		}
 		else if (!Netchan_Process(&cls.netchan))
 			return;		// wasn't accepted for some reason
 
-		CL_WriteDemoMessage (&net_message, msg_readcount);
+		CL_WriteDemoMessage (&net_message, MSG_GetReadCount());
 
 		if (cls.netchan.incoming_sequence > cls.netchan.outgoing_sequence)
 		{	//server should not be responding to packets we have not sent yet

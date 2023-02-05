@@ -594,7 +594,7 @@ void CLFTE_ReadDelta(unsigned int entnum, entity_state_t *news, entity_state_t *
 		bits |= MSG_ReadByte()<<24;
 
 	if (cl_shownet.ival >= 3)
-		Con_Printf("%3i:     Update %4i 0x%x\n", msg_readcount, entnum, bits);
+		*news = *baseline;
 
 	if (bits & UF_RESET)
 	{
@@ -1099,13 +1099,13 @@ void CLFTE_ParseEntities(void)
 		if (removeflag)
 		{
 			if (cl_shownet.ival >= 3)
-				Con_Printf("%3i:     Remove %i @ %i\n", msg_readcount, newnum, cls.netchan.incoming_sequence);
+				Con_Printf("%3i:     Remove %i @ %i\n", MSG_GetReadCount(), newnum, cls.netchan.incoming_sequence);
 
 			if (!newnum)
 			{
 				/*removal of world - means forget all entities*/
 				if (cl_shownet.ival >= 3)
-					Con_Printf("%3i:     Reset all\n", msg_readcount);
+					Con_Printf("%3i:     Reset all\n", MSG_GetReadCount());
 				newp->num_entities = 0;
 				oldp = &nullp;
 				oldp->num_entities = 0;
@@ -1292,7 +1292,7 @@ void CLQW_ParsePacketEntities (qboolean delta)
 
 		if (word & U_MOREBITS)
 		{
-			int oldpos = msg_readcount;
+			int oldpos = MSG_GetReadCount();
 			int excessive;
 			excessive = MSG_ReadByte();
 			if (excessive & U_EVENMORE)
@@ -1304,7 +1304,7 @@ void CLQW_ParsePacketEntities (qboolean delta)
 					newnum += 1024;
 			}
 
-			msg_readcount = oldpos;//undo the read...
+			MSG_ReadSkip(oldpos-MSG_GetReadCount());//undo the read...
 		}
 		oldnum = oldindex >= oldp->num_entities ? 9999 : oldp->entities[oldindex].number;
 
@@ -1421,7 +1421,7 @@ void DP5_ParseDelta(entity_state_t *s, packet_entities_t *pack)
 	unsigned int bits;
 
 	if (cl_shownet.ival >= 3)
-		Con_Printf("%3i:     Update %i", msg_readcount, s->number);
+		Con_Printf("%3i:     Update %i", MSG_GetReadCount(), s->number);
 
 	bits = MSG_ReadByte();
 	if (bits & E5_EXTEND1)

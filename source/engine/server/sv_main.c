@@ -1205,6 +1205,37 @@ static void SVC_Status (void)
 }
 
 #if 1//def NQPROT
+const char *SV_GetProtocolVersionString(void)
+{
+	char *ret = va("%i", com_protocolversion.ival);	//for compat with DP, this is basically locked at 3. our pexts allow this to be mostly graceful.
+
+	switch(svs.gametype)
+	{
+	case GT_PROGS:
+	case GT_Q1QVM:
+		if (sv_listen_qw.ival)
+			Q_strncatz(ret, "w", 64);
+#ifdef NQPROT
+		if (progstype == PROG_H2)
+			break;	//don't advertise nq protocols when they're blocked.
+		if (sv_listen_nq.ival)
+		{
+			Q_strncatz(ret, "n", 64);
+#ifdef HAVE_DTLS
+			if (*dtls_psk_user.string)
+				Q_strncatz(ret, "x", 64);
+#endif
+		}
+		if (sv_listen_dp.ival)
+			Q_strncatz(ret, "d", 64);
+#endif
+		break;
+	default:
+		break;	//these do their own thing, with their own protocols. don't be weird.
+	}
+	return ret;
+}
+
 static void SVC_GetInfo (const char *challenge, int fullstatus)
 {
 	//dpmaster support
@@ -1267,7 +1298,7 @@ static void SVC_GetInfo (const char *challenge, int fullstatus)
 		*resp = 0;
 		Info_SetValueForKey(resp, "challenge", challenge, sizeof(response) - (resp-response));	//the challenge can be important for the master protocol to prevent poisoning
 		Info_SetValueForKey(resp, "gamename", protocolname, sizeof(response) - (resp-response));//distinguishes it from other types of games
-		Info_SetValueForKey(resp, "protocol", com_protocolversion.string, sizeof(response) - (resp-response));	//should be an int.
+		Info_SetValueForKey(resp, "protocol", SV_GetProtocolVersionString(), sizeof(response) - (resp-response));
 		Info_SetValueForKey(resp, "modname", FS_GetGamedir(true), sizeof(response) - (resp-response));
 		Info_SetValueForKey(resp, "clients", va("%d", numclients), sizeof(response) - (resp-response));
 		Info_SetValueForKey(resp, "sv_maxclients", maxclients.string, sizeof(response) - (resp-response));
@@ -3994,7 +4025,7 @@ qboolean SV_ConnectionlessPacket (void)
 	char	*c;
 	char	adr[MAX_ADR_SIZE];
 
-	MSG_BeginReading (svs.netprim);
+	MSG_BeginReading (&net_message, svs.netprim);
 
 	if (net_message.cursize >= MAX_QWMSGLEN)	//add a null term in message space
 	{
@@ -4063,7 +4094,7 @@ qboolean SV_ConnectionlessPacket (void)
 #ifdef HUFFNETWORK
 				Huff_DecryptPacket(&net_message, 12);
 #endif
-				MSG_BeginReading(svs.netprim);
+				MSG_BeginReading(&net_message, svs.netprim);
 				MSG_ReadLong();
 				s = MSG_ReadStringLine();
 				Cmd_TokenizeString(s, false, false);
@@ -4102,7 +4133,7 @@ qboolean SV_ConnectionlessPacket (void)
 				else
 				{
 					//NET_DTLS_Disconnect(svs.sockets, &net_from);
-					if (NET_DTLS_Create(svs.sockets, &net_from))
+					if (NET_DTLS_Create(svs.sockets, &net_from, NULL))
 						Netchan_OutOfBandPrint(NS_SERVER, &net_from, "dtlsopened");
 				}
 			}
@@ -4191,7 +4222,7 @@ qboolean SVNQ_ConnectionlessPacket(void)
 	sizebuf_t sb;
 	int header;
 	int length;
-	int active, i;
+	int active, i, protver;
 	int mod, modver, flags;
 	unsigned int passwd;
 	char *str;
@@ -4205,7 +4236,7 @@ qboolean SVNQ_ConnectionlessPacket(void)
 	if (!sv_listen_nq.value || SSV_IsSubServer())
 		return false;
 
-	MSG_BeginReading(svs.netprim);
+	MSG_BeginReading(&net_message, svs.netprim);
 	header = LongSwap(MSG_ReadLong());
 	if (!(header & NETFLAG_CTL))
 	{
@@ -4221,6 +4252,7 @@ qboolean SVNQ_ConnectionlessPacket(void)
 			{
 				int numnops = 0;
 				int numnonnops = 0;
+				int c;
 				/*make it at least robust enough to ignore any other stringcmds*/
 				while(1)
 				{
@@ -4231,13 +4263,23 @@ qboolean SVNQ_ConnectionlessPacket(void)
 						continue;
 					case clc_stringcmd:
 						numnonnops++;
-						if (msg_readcount+17 <= net_message.cursize && !strncmp("challengeconnect ", &net_message.data[msg_readcount], 17))
+#define CCON "challengeconnect "
+						for(i = 0; ; i++)
+						{
+							if (!CCON[i])
+								c = -1;
+							else
+								c = MSG_ReadByte();
+							if (c != CCON[i])
+								break;
+						}
+						if (!CCON[i])
 						{
 							if (sv_showconnectionlessmessages.ival)
-								Con_Printf("%s: CCREQ_CONNECT_COOKIE\n", NET_AdrToString (com_token, sizeof(com_token), &net_from));
+								Con_Printf(S_COLOR_GRAY"%s: CCREQ_CONNECT_COOKIE\n", NET_AdrToString (com_token, sizeof(com_token), &net_from));
 							Cmd_TokenizeString(MSG_ReadStringLine(), false, false);
 							/*okay, so this is a reliable packet from a client, containing a 'cmd challengeconnect $challenge' response*/
-							str = va("connect %i %i %s \"\\name\\unconnected\\mod\\%s\\modver\\%s\\flags\\%s\\password\\%s\"", NQ_NETCHAN_VERSION, 0, Cmd_Argv(1), Cmd_Argv(2), Cmd_Argv(3), Cmd_Argv(4), Cmd_Argv(5));
+							str = va("connect %i %i %s \"\\name\\unconnected\\mod\\%s\\modver\\%s\\flags\\%s\\password\\%s\"", NQ_NETCHAN_VERSION, 0, Cmd_Argv(0), Cmd_Argv(1), Cmd_Argv(2), Cmd_Argv(3), Cmd_Argv(4));
 							Cmd_TokenizeString (str, false, false);
 
 							SVC_DirectConnect(sequence);
@@ -4245,7 +4287,7 @@ qboolean SVNQ_ConnectionlessPacket(void)
 							/*if there is anything else in the packet, we don't actually care. its reliable, so they'll resend*/
 							return true;
 						}
-						else
+						else if (c)	//handle any trailing stuff if we don't know what it was.
 							MSG_ReadString();
 						continue;
 					case -1:
@@ -4300,12 +4342,15 @@ qboolean SVNQ_ConnectionlessPacket(void)
 	switch(MSG_ReadByte())
 	{
 	case CCREQ_CONNECT:
+		str = MSG_ReadString();
+		protver = MSG_ReadByte();
+
 		if (sv_showconnectionlessmessages.ival)
-			Con_Printf("%s: CCREQ_CONNECT\n", NET_AdrToString (com_token, sizeof(com_token), &net_from));
+			Con_Printf(S_COLOR_GRAY"%s: CCREQ_CONNECT (\"%s\" %i)\n", NET_AdrToString (com_token, sizeof(com_token), &net_from), str, protver);
 
 		sb.maxsize = sizeof(buffer);
 		sb.data = buffer;
-		if (strcmp(MSG_ReadString(), NQ_NETCHAN_GAMENAME))
+		if (strcmp(str, NQ_NETCHAN_GAMENAME))
 		{
 			SZ_Clear(&sb);
 			MSG_WriteLong(&sb, 0);
@@ -4313,9 +4358,9 @@ qboolean SVNQ_ConnectionlessPacket(void)
 			MSG_WriteString(&sb, "Incorrect game\n");
 			*(int*)sb.data = BigLong(NETFLAG_CTL+sb.cursize);
 			NET_SendPacket(svs.sockets, sb.cursize, sb.data, &net_from);
-			return false;	//not our game.
+			return true;	//not our game.
 		}
-		if (MSG_ReadByte() != NQ_NETCHAN_VERSION)
+		if (protver != NQ_NETCHAN_VERSION && protver != NQ_NETCHAN_VERSION_QEX)
 		{
 			SZ_Clear(&sb);
 			MSG_WriteLong(&sb, 0);
@@ -4323,7 +4368,7 @@ qboolean SVNQ_ConnectionlessPacket(void)
 			MSG_WriteString(&sb, "Incorrect version\n");
 			*(int*)sb.data = BigLong(NETFLAG_CTL+sb.cursize);
 			NET_SendPacket(svs.sockets, sb.cursize, sb.data, &net_from);
-			return false;	//not our version...
+			return true;	//not our version...
 		}
 
 		banreason = SV_BannedReason (&net_from);
@@ -4335,23 +4380,28 @@ qboolean SVNQ_ConnectionlessPacket(void)
 			MSG_WriteString(&sb, *banreason?va("You are banned: %s\n", banreason):"You are banned\n");
 			*(int*)sb.data = BigLong(NETFLAG_CTL+sb.cursize);
 			NET_SendPacket(svs.sockets, sb.cursize, sb.data, &net_from);
-			return false;	//not our version...
+			return true;	//not our version...
 		}
 
+		//proquake's extensions
 		mod = MSG_ReadByte();
 		modver = MSG_ReadByte();
 		flags = MSG_ReadByte();
 		passwd = MSG_ReadLong();
+		if (msg_badread)
+			passwd = 0;
 
 		if (SV_ChallengeRecent())
 			return true;
-		else if (!strncmp(MSG_ReadString(), "getchallenge", 12) && (sv_listen_qw.ival || sv_listen_dp.ival))
+
+		Cmd_TokenizeString (MSG_ReadString(), false, false);
+		if (!strcmp(Cmd_Argv(0), "getchallenge") && (sv_listen_qw.ival || sv_listen_dp.ival))
 		{
 			/*dual-stack client, supporting either DP or QW protocols*/
 			SVC_GetChallenge (false);
 		}
 		else
-		{
+		{	//legacy pure-nq (though often DP).
 			if (progstype == PROG_H2)
 			{
 				SZ_Clear(&sb);
@@ -4360,10 +4410,26 @@ qboolean SVNQ_ConnectionlessPacket(void)
 				MSG_WriteString(&sb, "NQ clients are not supported with hexen2 gamecode\n");
 				*(int*)sb.data = BigLong(NETFLAG_CTL+sb.cursize);
 				NET_SendPacket(svs.sockets, sb.cursize, sb.data, &net_from);
-				return false;	//not our version...
+				return true;	//not our version...
 			}
-			if (sv_listen_nq.ival == 2)
+			if (NET_WasSpecialPacket(svs.sockets))
+				return true;
+#ifdef HAVE_PACKET
+			if (sv_listen_nq.ival == 2 && net_from.prot == NP_DGRAM
+#ifdef SUPPORT_ICE
+									   && net_from.type != NA_ICE
+#endif
+				)
 			{
+				if (password.string[0] &&
+					stricmp(password.string, "none") &&
+					strcmp(password.string, va("%i", passwd)) )
+				{	//make sure we don't get crippled because of being unable to specify the actual password with proquake's stuff.
+					Con_TPrintf ("%s:password failed (nq)\n", NET_AdrToString (buffer2, sizeof(buffer2), &net_from));
+					SV_RejectMessage (SCP_NETQUAKE, "server requires a password\n\n");
+					return true;
+				}
+
 				SZ_Clear(&sb);
 				MSG_WriteLong(&sb, 0);
 				MSG_WriteByte(&sb, CCREP_ACCEPT);
@@ -4387,8 +4453,9 @@ qboolean SVNQ_ConnectionlessPacket(void)
 				/*don't worry about repeating, the nop case above will recover it*/
 			}
 			else
+#endif
 			{
-				str = va("connect %i %i %i \"\\name\\unconnected\\mod\\%i\\modver\\%i\\flags\\%i\\password\\%i\"", NQ_NETCHAN_VERSION, 0, SV_NewChallenge(), mod, modver, flags, passwd);
+				str = va("connect %i %i %i \"\\name\\unconnected\\mod\\%i\\modver\\%i\\flags\\%i\\password\\%i\"", protver, 0, SV_NewChallenge(), mod, modver, flags, passwd);
 				Cmd_TokenizeString (str, false, false);
 
 				SVC_DirectConnect(0);
@@ -4397,7 +4464,7 @@ qboolean SVNQ_ConnectionlessPacket(void)
 		return true;
 	case CCREQ_SERVER_INFO:
 		if (sv_showconnectionlessmessages.ival)
-			Con_Printf("%s: CCREQ_SERVER_INFO\n", NET_AdrToString (com_token, sizeof(com_token), &net_from));
+			Con_Printf(S_COLOR_GRAY"%s: CCREQ_SERVER_INFO\n", NET_AdrToString (com_token, sizeof(com_token), &net_from));
 		if (sv_public.ival < 0)
 			return false;
 		if (SV_BannedReason (&net_from))
@@ -4429,7 +4496,7 @@ qboolean SVNQ_ConnectionlessPacket(void)
 		return true;
 	case CCREQ_PLAYER_INFO:
 		if (sv_showconnectionlessmessages.ival)
-			Con_Printf("%s: CCREQ_PLAYER_INFO\n", NET_AdrToString (com_token, sizeof(com_token), &net_from));
+			Con_Printf(S_COLOR_GRAY"%s: CCREQ_PLAYER_INFO\n", NET_AdrToString (com_token, sizeof(com_token), &net_from));
 		if (sv_public.ival < 0)
 			return false;
 		if (SV_BannedReason (&net_from))
@@ -4463,7 +4530,7 @@ qboolean SVNQ_ConnectionlessPacket(void)
 		return true;
 	case CCREQ_RULE_INFO:
 		if (sv_showconnectionlessmessages.ival)
-			Con_Printf("%s: CCREQ_RULE_INFO\n", NET_AdrToString (com_token, sizeof(com_token), &net_from));
+			Con_Printf(S_COLOR_GRAY"%s: CCREQ_RULE_INFO\n", NET_AdrToString (com_token, sizeof(com_token), &net_from));
 		if (sv_public.ival < 0)
 			return false;
 		if (SV_BannedReason (&net_from))
@@ -4624,7 +4691,7 @@ void SV_ReadPacket(void)
 
 	// read the qport out of the message so we can fix up
 	// stupid address translating routers
-	MSG_BeginReading (svs.netprim);
+	MSG_BeginReading (&net_message, svs.netprim);
 	MSG_ReadLong ();		// sequence number
 	MSG_ReadLong ();		// sequence number
 	qport = MSG_ReadShort () & 0xffff;

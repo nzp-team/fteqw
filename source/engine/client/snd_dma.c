@@ -2900,6 +2900,9 @@ static void S_UpdateSoundCard(soundcardinfo_t *sc, qboolean updateonly, channel_
 		return;
 	}
 
+	if (timeoffset != 0.0)
+		chanupdatetype |= CUR_OFFSET;
+
 	if (!ratemul)	//rate of 0
 		ratemul = 1;
 	ratemul *= snd_playbackrate.value;

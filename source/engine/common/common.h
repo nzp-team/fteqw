@@ -342,7 +342,7 @@ extern	int			msg_readcount;
 extern	qboolean	msg_badread;		// set if a read goes beyond end of message
 extern struct netprim_s msg_nullnetprim;
 
-void MSG_BeginReading (struct netprim_s prim);
+void MSG_BeginReading (sizebuf_t *sb, struct netprim_s prim);
 void MSG_ChangePrimitives(struct netprim_s prim);
 int MSG_GetReadCount(void);
 int MSG_ReadChar (void);

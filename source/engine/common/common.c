@@ -1595,6 +1595,7 @@ void MSGFTE_ReadDeltaUsercmd (const usercmd_t *from, usercmd_t *cmd)
 	*cmd = *from;
 	cmd->servertime = from->servertime+MSG_ReadUInt64();
 	cmd->fservertime = cmd->servertime/1000.0;
+	cmd->msec = 0;	//no info...
 	for (i = 0; i < 3; i++)
 	{
 		if (bits & (UC_ANGLE1<<i))
@@ -1725,17 +1726,17 @@ void MSGCL_WriteDeltaUsercmd (sizebuf_t *buf, const usercmd_t *from, const userc
 //
 // reading functions
 //
-int			msg_readcount;
 qboolean	msg_badread;
 struct netprim_s msg_nullnetprim;
+static sizebuf_t 	*msg_readmsg;
 
-void MSG_BeginReading (struct netprim_s prim)
+void MSG_BeginReading (sizebuf_t *sb, struct netprim_s prim)
 {
-	msg_readcount = 0;
+	msg_readmsg = sb;
 	msg_badread = false;
-	net_message.currentbit = 0;
-	net_message.packing = SZ_RAWBYTES;
-	net_message.prim = prim;
+	sb->currentbit = 0;
+	sb->packing = SZ_RAWBYTES;
+	sb->prim = prim;
 }
 
 void MSG_ChangePrimitives(struct netprim_s prim)
@@ -1745,7 +1746,7 @@ void MSG_ChangePrimitives(struct netprim_s prim)
 
 int MSG_GetReadCount(void)
 {
-	return msg_readcount;
+	return msg_readmsg->currentbit>>3;
 }
 
 
@@ -1757,32 +1758,38 @@ MSG_ReadRawBytes
 static int MSG_ReadRawBytes(sizebuf_t *msg, int bits)
 {
 	int bitmask = 0;
+	unsigned int readcount = msg->currentbit>>3;
+
+	if (readcount + (bits>>3) >= msg->cursize)
+	{
+		msg_badread = true;
+		msg->currentbit += bits;
+		return -1;
+	}
 
 	if (bits <= 8)
 	{
-		bitmask = (unsigned char)msg->data[msg_readcount];
-		msg_readcount++;
+		bitmask = (unsigned char)msg->data[readcount];
 		msg->currentbit += 8;
 	}
 	else if (bits <= 16)
 	{
-		bitmask = (unsigned short)(msg->data[msg_readcount]
-			+ (msg->data[msg_readcount+1] << 8));
-		msg_readcount += 2;
+		bitmask = (unsigned short)(msg->data[readcount]
+			+ (msg->data[readcount+1] << 8));
 		msg->currentbit += 16;
 	}
 	else if (bits <= 32)
 	{
-		bitmask = msg->data[msg_readcount]
-			+ (msg->data[msg_readcount+1] << 8)
-			+ (msg->data[msg_readcount+2] << 16)
-			+ (msg->data[msg_readcount+3] << 24);
-		msg_readcount += 4;
+		bitmask = msg->data[readcount]
+			+ (msg->data[readcount+1] << 8)
+			+ (msg->data[readcount+2] << 16)
+			+ (msg->data[readcount+3] << 24);
 		msg->currentbit += 32;
 	}
 
 	return bitmask;
 }
+
 
 /*
 ============
@@ -1826,10 +1833,16 @@ static int MSG_ReadHuffBits(sizebuf_t *msg, int bits)
 		bitmask |= val << (i + remaining);
 	}
 
-	msg_readcount = (msg->currentbit >> 3) + 1;
+	if (msg->currentbit > (msg->cursize<<3))
+	{
+		msg_badread = true;
+		msg->currentbit = msg->cursize<<3;
+		return -1;
+	}
 
 	return bitmask;
 }
+
 #endif
 
 int MSG_ReadBits(int bits)
@@ -1848,21 +1861,21 @@ int MSG_ReadBits(int bits)
 		extend = true;
 	}
 
-	switch(net_message.packing)
+	switch(msg_readmsg->packing)
 	{
 	default:
 	case SZ_BAD:
-		Sys_Error("MSG_ReadBits: bad net_message.packing");
+		Sys_Error("MSG_ReadBits: bad msg_readmsg->packing");
 		break;
 	case SZ_RAWBYTES:
-		bitmask = MSG_ReadRawBytes(&net_message, bits);
+		bitmask = MSG_ReadRawBytes(msg_readmsg, bits);
 		break;
 	case SZ_RAWBITS:
-		bitmask = MSG_ReadRawBits(&net_message, bits);
+		bitmask = MSG_ReadRawBits(msg_readmsg, bits);
 		break;
 #ifdef HUFFNETWORK
 	case SZ_HUFFMAN:
-		bitmask = MSG_ReadHuffBits(&net_message, bits);
+		bitmask = MSG_ReadHuffBits(msg_readmsg, bits);
 		break;
 #endif
 	}
@@ -1880,7 +1893,7 @@ int MSG_ReadBits(int bits)
 
 void MSG_ReadSkip(int bytes)
 {
-	if (net_message.packing!=SZ_RAWBYTES)
+	if (msg_readmsg->packing!=SZ_RAWBYTES)
 	{
 		while (bytes > 4)
 		{
@@ -1893,51 +1906,65 @@ void MSG_ReadSkip(int bytes)
 			bytes--;
 		}
 	}
-	if (msg_readcount+bytes > net_message.cursize)
+	msg_readmsg->currentbit += bytes<<3;
+	if (msg_readmsg->currentbit < 0)
 	{
-		msg_readcount = net_message.cursize;
+		msg_readmsg->currentbit = 0;
 		msg_badread = true;
 		return;
 	}
-	msg_readcount += bytes;
+	if (msg_readmsg->currentbit > msg_readmsg->cursize<<3)
+	{
+		msg_readmsg->currentbit = msg_readmsg->cursize<<3;
+		msg_badread = true;
+		return;
+	}
 }
+
 
 
 // returns -1 and sets msg_badread if no more characters are available
 int MSG_ReadChar (void)
 {
 	int	c;
+	unsigned int msg_readcount;
 
-	if (net_message.packing!=SZ_RAWBYTES)
-		return (signed char)MSG_ReadBits(8);
+	if (msg_readmsg->packing!=SZ_RAWBYTES)
+		return MSG_ReadBits(-8);
 
-	if (msg_readcount+1 > net_message.cursize)
+	msg_readcount = msg_readmsg->currentbit>>3;
+	if (msg_readcount+1 > msg_readmsg->cursize)
 	{
 		msg_badread = true;
 		return -1;
 	}
 
-	c = (signed char)net_message.data[msg_readcount];
+	c = (signed char)msg_readmsg->data[msg_readcount];
 	msg_readcount++;
+	msg_readmsg->currentbit = msg_readcount<<3;
 
 	return c;
 }
 
+
 int MSG_ReadByte (void)
 {
 	unsigned char	c;
+	unsigned int msg_readcount;
 
-	if (net_message.packing!=SZ_RAWBYTES)
-		return (unsigned char)MSG_ReadBits(8);
+	if (msg_readmsg->packing!=SZ_RAWBYTES)
+		return MSG_ReadBits(8);
 
-	if (msg_readcount+1 > net_message.cursize)
+	msg_readcount = msg_readmsg->currentbit>>3;
+	if (msg_readcount+1 > msg_readmsg->cursize)
 	{
 		msg_badread = true;
 		return -1;
 	}
 
-	c = (unsigned char)net_message.data[msg_readcount];
+	c = (unsigned char)msg_readmsg->data[msg_readcount];
 	msg_readcount++;
+	msg_readmsg->currentbit = msg_readcount<<3;
 
 	return c;
 }
@@ -1945,20 +1972,23 @@ int MSG_ReadByte (void)
 int MSG_ReadShort (void)
 {
 	int	c;
+	unsigned int msg_readcount;
 
-	if (net_message.packing!=SZ_RAWBYTES)
+	if (msg_readmsg->packing!=SZ_RAWBYTES)
 		return (short)MSG_ReadBits(16);
 
-	if (msg_readcount+2 > net_message.cursize)
+	msg_readcount = msg_readmsg->currentbit>>3;
+	if (msg_readcount+2 > msg_readmsg->cursize)
 	{
 		msg_badread = true;
 		return -1;
 	}
 
-	c = (short)(net_message.data[msg_readcount]
-	+ (net_message.data[msg_readcount+1]<<8));
+	c = (short)(msg_readmsg->data[msg_readcount]
+	+ (msg_readmsg->data[msg_readcount+1]<<8));
 
 	msg_readcount += 2;
+	msg_readmsg->currentbit = msg_readcount<<3;
 
 	return c;
 }
@@ -1966,25 +1996,29 @@ int MSG_ReadShort (void)
 int MSG_ReadLong (void)
 {
 	int	c;
+	unsigned int msg_readcount;
 
-	if (net_message.packing!=SZ_RAWBYTES)
+	if (msg_readmsg->packing!=SZ_RAWBYTES)
 		return (int)MSG_ReadBits(32);
 
-	if (msg_readcount+4 > net_message.cursize)
+	msg_readcount = msg_readmsg->currentbit>>3;
+	if (msg_readcount+4 > msg_readmsg->cursize)
 	{
 		msg_badread = true;
 		return -1;
 	}
 
-	c = net_message.data[msg_readcount]
-	+ (net_message.data[msg_readcount+1]<<8)
-	+ (net_message.data[msg_readcount+2]<<16)
-	+ (net_message.data[msg_readcount+3]<<24);
+	c = msg_readmsg->data[msg_readcount]
+	+ (msg_readmsg->data[msg_readcount+1]<<8)
+	+ (msg_readmsg->data[msg_readcount+2]<<16)
+	+ (msg_readmsg->data[msg_readcount+3]<<24);
 
 	msg_readcount += 4;
+	msg_readmsg->currentbit = msg_readcount<<3;
 
 	return c;
 }
+
 quint64_t MSG_ReadUInt64 (void)
 {	//0* 10*,*, 110*,*,* etc, up to 0xff followed by 8 continuation bytes
 	qbyte l=0x80, v, b = 0;
@@ -2017,30 +2051,34 @@ float MSG_ReadFloat (void)
 		float	f;
 		int	l;
 	} dat;
+	unsigned int msg_readcount;
 
-	if (net_message.packing!=SZ_RAWBYTES)
+	if (msg_readmsg->packing!=SZ_RAWBYTES)
 	{
 		dat.l = MSG_ReadBits(32);
 		return dat.f;
 	}
 
-	if (msg_readcount+4 > net_message.cursize)
+	msg_readcount = msg_readmsg->currentbit>>3;
+	if (msg_readcount+4 > msg_readmsg->cursize)
 	{
 		msg_badread = true;
 		return -1;
 	}
 
-	dat.b[0] =	net_message.data[msg_readcount];
-	dat.b[1] =	net_message.data[msg_readcount+1];
-	dat.b[2] =	net_message.data[msg_readcount+2];
-	dat.b[3] =	net_message.data[msg_readcount+3];
+	dat.b[0] =	msg_readmsg->data[msg_readcount];
+	dat.b[1] =	msg_readmsg->data[msg_readcount+1];
+	dat.b[2] =	msg_readmsg->data[msg_readcount+2];
+	dat.b[3] =	msg_readmsg->data[msg_readcount+3];
 	msg_readcount += 4;
+	msg_readmsg->currentbit = msg_readcount<<3;
 
 	if (bigendian)
 		dat.l = LittleLong (dat.l);
 
 	return dat.f;
 }
+
 double MSG_ReadDouble (void)
 {
 	union
@@ -2048,6 +2086,7 @@ double MSG_ReadDouble (void)
 		quint64_t l;
 		double	f;
 	} dat;
+	unsigned int msg_readcount = msg_readmsg->currentbit>>3;
 
 	if (msg_readcount+8 > net_message.cursize)
 	{
@@ -2067,6 +2106,7 @@ double MSG_ReadDouble (void)
 
 	return dat.f;
 }
+
 
 char *MSG_ReadStringBuffer (char *out, size_t outsize)
 {
@@ -2131,7 +2171,7 @@ char *MSG_ReadStringLine (void)
 float MSG_ReadCoord (void)
 {
 	coorddata c = {{0}};
-	unsigned char coordtype = net_message.prim.coordtype;
+	unsigned char coordtype = msg_readmsg->prim.coordtype;
 	if (coordtype == COORDTYPE_UNDEFINED)
 	{
 		static float throttle;
@@ -2143,6 +2183,7 @@ float MSG_ReadCoord (void)
 	MSG_ReadData(c.b, coordtype&COORDTYPE_SIZE_MASK);
 	return MSG_FromCoord(c, coordtype);
 }
+
 float MSG_ReadCoordFloat (void)
 {
 	coorddata c = {{0}};
@@ -2211,7 +2252,7 @@ float MSG_ReadAngle16 (void)
 }
 float MSG_ReadAngle (void)
 {
-	int sz = net_message.prim.anglesize;
+	int sz = msg_readmsg->prim.anglesize;
 	if (!sz)
 	{
 		static float throttle;
@@ -2306,7 +2347,7 @@ void MSGQ2_ReadDeltaUsercmd (const usercmd_t *from, usercmd_t *move)
 
 	bits = MSG_ReadByte ();
 
-	if (net_message.prim.flags & NPQ2_R1Q2_UCMD)
+	if (msg_readmsg->prim.flags & NPQ2_R1Q2_UCMD)
 		buttons = MSG_ReadByte();
 
 // read current angles
@@ -2353,18 +2394,17 @@ void MSGQ2_ReadDeltaUsercmd (const usercmd_t *from, usercmd_t *move)
 // read buttons
 	if (bits & Q2CM_BUTTONS)
 	{
-		if (net_message.prim.flags & NPQ2_R1Q2_UCMD)
+		if (msg_readmsg->prim.flags & NPQ2_R1Q2_UCMD)
 			move->buttons = buttons & (1|2|128);	//only use the bits that are actually buttons, so gamecode can't get excited despite being crippled by this.
 		else
 			move->buttons = MSG_ReadByte ();
 	}
-	move->buttons_compat = move->buttons & 0xff;
 
 	if (bits & Q2CM_IMPULSE)
 		move->impulse = MSG_ReadByte ();
 
 // read time to run command
-	move->msec_compat = move->msec = MSG_ReadByte ();
+	move->msec = MSG_ReadByte ();
 
 	move->lightlevel = MSG_ReadByte ();
 }

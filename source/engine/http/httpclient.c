@@ -520,7 +520,7 @@ static qboolean HTTP_DL_Work(struct dl_download *dl)
 {
 	struct http_dl_ctx_s *con = dl->ctx;
 	char buffer[256];
-	char Location[4096];
+	char Location[256];
 	char mimetype[256];
 	char *nl;
 	char *msg;
@@ -697,19 +697,13 @@ static qboolean HTTP_DL_Work(struct dl_download *dl)
 				else if (!strnicmp(msg, "Content-Type:", 13))
 				{
 					*nl = '\0';
-					//don't worry too much about truncation. its not like we can really do much with fancy mime types anyway.
 					COM_TrimString(msg+13, mimetype, sizeof(mimetype));
 					*nl = '\n';
 				}
 				else if (!strnicmp(msg, "Location: ", 10))
 				{
 					*nl = '\0';
-					if (!COM_TrimString(msg+10, Location, sizeof(Location)))
-					{
-						Con_Printf("HTTP Redirect: location too long\n");
-						dl->status = DL_FAILED;
-						return false;
-					}
+					COM_TrimString(msg+10, Location, sizeof(Location));
 					*nl = '\n';
 				}
 				else if (!strnicmp(msg, "Content-Encoding: ", 18))
@@ -755,20 +749,11 @@ static qboolean HTTP_DL_Work(struct dl_download *dl)
 				nl = strchr(msg, '\n');
 				if (nl)
 					*nl = '\0';
-				COM_TrimString(msg, trimmed, sizeof(trimmed));
-				Con_Printf("%s: %s %s (%s)\n", dl->url, buffer, trimmed, Location);
+				Con_Printf("%s: %s %s (%s)\n", dl->url, buffer, COM_TrimString(msg, trimmed, sizeof(trimmed)), Location);
 				if (!*Location)
-				{
 					Con_Printf("Server redirected to null location\n");
-					return false;
-				}
 				else
 				{
-					if (dl->redircount++ > 10)
-					{
-						Con_Printf("HTTP: Recursive redirects\n");
-						return false;
-					}
 					HTTP_Cleanup(dl);
 					if (*Location == '/')
 					{
@@ -1095,13 +1080,8 @@ void HTTPDL_Establish(struct dl_download *dl)
 		//fixme: support more than one address possibility?
 		//https uses a different default port
 		if (NET_StringToAdr2(con->server, https?443:80, &adr, 1, NULL))
-			con->sock = TCP_OpenStream(&adr, *dl->redir?dl->redir:dl->url);
+			con->sock = TCP_OpenStream(&adr);
 		con->stream = FS_WrapTCPSocket(con->sock, true, con->server);
-		if (!con->stream)
-		{
-			dl->status = DL_FAILED;
-			return;
-		}
 	}
 #ifdef HAVE_SSL
 	if (https)

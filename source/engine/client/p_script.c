@@ -4007,7 +4007,7 @@ static void PScript_EmitSkyEffectTris(model_t *mod, msurface_t 	*fa, int ptype)
 		v2 = v3;
 	}
 }
-static void P_AddRainParticles(model_t *mod, vec3_t axis[3], vec3_t eorg, float contribution)
+static void P_AddRainParticles(model_t *mod, vec3_t axis[3], vec3_t eorg, int visframe, float contribution)
 {
 	float x;
 	float y;
@@ -4018,9 +4018,6 @@ static void P_AddRainParticles(model_t *mod, vec3_t axis[3], vec3_t eorg, float 
 	skytris_t *st;
 	size_t nc,oc;
 	float ot;
-	int area;
-	int cluster;
-	unsigned int contentbits;
 
 	if (mod->engineflags & MDLF_RECALCULATERAIN)
 	{
@@ -4076,6 +4073,12 @@ static void P_AddRainParticles(model_t *mod, vec3_t axis[3], vec3_t eorg, float 
 
 	for (st = mod->skytris; st; st = st->next)
 	{
+		if (st->face->visframe != visframe)
+		{
+			st->nexttime = mod->skytime;
+			continue;
+		}
+
 		if ((unsigned int)st->ptype >= (unsigned int)numparticletypes)
 			continue;
 		type = &part_type[st->ptype];
@@ -4107,15 +4110,6 @@ static void P_AddRainParticles(model_t *mod, vec3_t axis[3], vec3_t eorg, float 
 			if (VectorLength(vdist) > (1024+512)*frandom())
 				continue;
 
-			if (cl.worldmodel->funcs.InfoForPoint)
-			{
-				cl.worldmodel->funcs.InfoForPoint(cl.worldmodel, worg, &area, &cluster, &contentbits);
-				if (contentbits & FTECONTENTS_SOLID)
-					continue;
-				if (r_refdef.scenevis && !(r_refdef.scenevis[cluster>>3] & (1<<(cluster&7))))
-					continue;
-			}
-
 			if (st->face->flags & SURF_PLANEBACK)
 				VectorScale(st->face->plane->normal, -1, vdist);
 			else
@@ -4126,8 +4120,10 @@ static void P_AddRainParticles(model_t *mod, vec3_t axis[3], vec3_t eorg, float 
 			wnorm[2] = DotProduct(vdist, axis[2]);
 
 			VectorMA(worg, 0.5, wnorm, worg);
-
-			P_RunParticleEffectType(worg, wnorm, 1, st->ptype);
+			if (!(cl.worldmodel->funcs.PointContents(cl.worldmodel, NULL, worg) & FTECONTENTS_SOLID))	//should be paranoia, at least for the world.
+			{
+				P_RunParticleEffectType(worg, wnorm, 1, st->ptype);
+			}
 		}
 	}
 }
@@ -6090,7 +6086,7 @@ static int PScript_ParticleTrail (vec3_t startpos, vec3_t end, int type, float t
 		// issues with entities in action during particle reconfiguration 
 		// but that shouldn't be happening too often
 		trailstate_t* ts = P_FetchTrailstate(tk);
-		return fallback->ParticleTrail(startpos, end, type - FALLBACKBIAS, timeinterval, dlkey, axis, ts?&(ts->fallbackkey):NULL);
+		return fallback->ParticleTrail(startpos, end, type - FALLBACKBIAS, timeinterval, dlkey, axis, &(ts->fallbackkey));
 	}
 
 	if (type < 0 || type >= numparticletypes)
@@ -7717,7 +7713,7 @@ static void PScript_DrawParticles (void)
 		entity_t *ent;
 		int i;
 		
-		P_AddRainParticles(cl.worldmodel, r_worldentity.axis, r_worldentity.origin, pframetime);
+		P_AddRainParticles(cl.worldmodel, r_worldentity.axis, r_worldentity.origin, r_framecount, pframetime);
 
 		for (i = 0; i < cl_numvisedicts ; i++)
 		{
@@ -7727,7 +7723,7 @@ static void PScript_DrawParticles (void)
 
 			//this timer, as well as the per-tri timer, are unable to deal with certain rates+sizes. it would be good to fix that...
 			//it would also be nice to do mdls too...
-			P_AddRainParticles(ent->model, ent->axis, ent->origin, pframetime);
+			P_AddRainParticles(ent->model, ent->axis, ent->origin, 0, pframetime);
 		}
 	}
 

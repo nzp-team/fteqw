@@ -107,7 +107,7 @@ static int logprintf(const char *format, ...)
 #endif
 	va_end (argptr);
 
-	fprintf(stderr, "%s", string);
+	printf("%s", string);
 //	fputs(string, stderr);
 	if (logfile)
 		fputs(string, logfile);

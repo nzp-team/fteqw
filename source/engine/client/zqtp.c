@@ -3872,7 +3872,7 @@ void CL_Say (qboolean team, char *extra)
 
 #ifdef Q3CLIENT
 	if (cls.protocol == CP_QUAKE3)
-		q3->cl.SendClientCommand("%s %s%s", team ? "say_team" : "say", extra?extra:"", sendtext);
+		CLQ3_SendClientCommand("%s %s%s", team ? "say_team" : "say", extra?extra:"", sendtext);
 	else
 #endif
 	{
@@ -3882,7 +3882,7 @@ void CL_Say (qboolean team, char *extra)
 		//messagemode always adds quotes. the console command never did.
 		//the server is expected to use Cmd_Args and to strip first+last chars if the first is a quote. this is annoying and clumsy for mods to parse.
 #ifdef HAVE_LEGACY
-		if (!dpcompat_console.ival && !cls.qex)
+		if (!dpcompat_console.ival)
 			CL_SendSeatClientCommand(true, split, "%s \"%s%s\"", team ? "say_team" : "say", extra?extra:"", sendtext);
 		else
 #endif

@@ -98,42 +98,6 @@ void QDECL Plug_Key_SetKeyBind(int bindmap, int keycode, int modifier, const cha
 	Key_SetBinding (keycode, modifier, newbinding, RESTRICT_LOCAL);
 }
 
-static unsigned int IN_GetKeyDest(void)
-{
-	return key_dest_mask;
-}
-
-qboolean QDECL Plug_Input_IsKeyDown(int key)
-{
-	extern qboolean keydown[K_MAX];
-	if (key >= 0 && key < K_MAX)
-		return !!keydown[key];
-	return false;
-}
-void QDECL Plug_Input_ClearKeyStates(void)
-{
-	Key_ClearStates();
-}
-void QDECL Plug_Input_SetSensitivityScale(float scale)
-{
-	in_sensitivityscale = scale;
-}
-unsigned int QDECL Plug_Input_GetMoveCount(void)
-{
-	return cl.movesequence;
-}
-usercmd_t *QDECL Plug_Input_GetMoveEntry(unsigned int move)
-{
-	if (move == cl.movesequence)
-		return NULL;	//the partial
-	else if (move >= cl.movesequence)
-		return NULL;	//too new
-	else if (cl.outframes[move&UPDATE_MASK].cmd_sequence != move)
-		return NULL;	//too old or otherwise missing
-	else
-		return &cl.outframes[move&UPDATE_MASK].cmd[0];
-}
-
 /*
 
 static void QDECL Plug_SCR_CenterPrint(int seat, const char *text)
@@ -145,37 +109,112 @@ static void QDECL Plug_SCR_CenterPrint(int seat, const char *text)
 
 
 
+typedef struct {
+	//Make SURE that the engine has resolved all cvar pointers into globals before this happens.
+	plugin_t *plugin;
+	char name[64];
+	int type;	//cache, wad, shader, raw
+	char *script;
+	mpic_t *pic;
+} pluginimagearray_t;
+size_t pluginimagearraylen;
+pluginimagearray_t *pluginimagearray;
+
 #include "shader.h"
 
-static qboolean Plug_Draw_GetScreenSize(float *vsize, unsigned int *psize)
+static void Plug_Draw_UnloadImage(qhandle_t image)
 {
-	if (qrenderer<=0)
-		return false;
-	if (vsize)
-		vsize[0] = vid.width, vsize[1] = vid.height;
-	if (psize)
-		psize[0] = vid.pixelwidth, psize[1] = vid.pixelheight;
-	return true;
+	size_t i = image-1;
+	if (i < 0 || i >= pluginimagearraylen)
+		return;
+	if (pluginimagearray[i].plugin == currentplug)
+	{
+		pluginimagearray[i].plugin = 0;
+		if (pluginimagearray[i].pic)
+			R_UnloadShader(pluginimagearray[i].pic);
+		pluginimagearray[i].pic = NULL;
+		pluginimagearray[i].name[0] = '\0';
+	}
+}
+static void Plug_FreePlugImages(plugin_t *plug)
+{
+	size_t i;
+	for (i = 0; i < pluginimagearraylen; i++)
+	{
+		if (pluginimagearray[i].plugin == plug)
+		{
+			pluginimagearray[i].plugin = 0;
+			if (pluginimagearray[i].pic)
+				R_UnloadShader(pluginimagearray[i].pic);
+			pluginimagearray[i].pic = NULL;
+			pluginimagearray[i].name[0] = '\0';
+		}
+	}
+}
+
+//called before shaders get flushed, to avoid issues later.
+void Plug_FreeAllImages(void)
+{
+	size_t i;
+	for (i = 0; i < pluginimagearraylen; i++)
+	{
+		if (pluginimagearray[i].pic)
+		{
+			R_UnloadShader(pluginimagearray[i].pic);
+			pluginimagearray[i].pic = NULL;
+		}
+	}
 }
 
 static qhandle_t Plug_Draw_LoadImage(const char *name, int type, const char *script)
 {
-	shader_t *pic;
+	int i;
+
+	mpic_t *pic;
+
+	if (!*name)
+		return 0;
+
+	for (i = 0; i < pluginimagearraylen; i++)
+	{
+		if (!pluginimagearray[i].plugin)
+			break;
+		if (pluginimagearray[i].plugin == currentplug)
+		{
+			if (!strcmp(name, pluginimagearray[i].name))
+				break;
+		}
+	}
+	if (i == pluginimagearraylen)
+	{
+		pluginimagearraylen++;
+		pluginimagearray = BZ_Realloc(pluginimagearray, pluginimagearraylen*sizeof(pluginimagearray_t));
+		pluginimagearray[i].pic = NULL;
+	}
+
+	if (pluginimagearray[i].pic)
+		return i+1;	//already loaded.
+
 	if (qrenderer != QR_NONE)
 	{
 		if (type == 3)
 			pic = NULL;
 		else if (type == 2)
 			pic = R_RegisterShader(name, SUF_NONE, script);
+		else if (type)
+			pic = R2D_SafePicFromWad(name);
 		else
 			pic = R2D_SafeCachePic(name);
 	}
 	else
 		pic = NULL;
 
-	if (pic)
-		return pic->id+1;
-	return 0;
+	Q_strncpyz(pluginimagearray[i].name, name, sizeof(pluginimagearray[i].name));
+	pluginimagearray[i].type = type;
+	pluginimagearray[i].pic = pic;
+	pluginimagearray[i].plugin = currentplug;
+	pluginimagearray[i].script = script?Z_StrDup(script):NULL;
+	return i + 1;
 }
 
 static qhandle_t QDECL Plug_Draw_LoadImageData(const char *name, const char *mimetype, void *codeddata, size_t datalength)
@@ -188,6 +227,8 @@ static qhandle_t QDECL Plug_Draw_LoadImageData(const char *name, const char *mim
 		
 	if ((rgbdata = ReadRawImageFile(codeddata, datalength, &width, &height, &format, false, name)))
 	{
+//		name = va("%s", name);
+		
 		t = Image_FindTexture(name, NULL, IF_PREMULTIPLYALPHA|IF_NOMIPMAP|IF_UIPIC|IF_CLAMP);
 		if (!TEXVALID(t))
 			t = Image_CreateTexture(name, NULL, IF_PREMULTIPLYALPHA|IF_NOMIPMAP|IF_UIPIC|IF_CLAMP);
@@ -205,54 +246,93 @@ static qhandle_t QDECL Plug_Draw_LoadImageShader(const char *name, const char *s
 {
 	return Plug_Draw_LoadImage(name, 2, script);
 }
-static qhandle_t QDECL Plug_Draw_LoadImagePic(const char *name)
+static qhandle_t QDECL Plug_Draw_LoadImagePic(const char *name, qboolean type)
 {
-	return Plug_Draw_LoadImage(name, 0, NULL);
-}
-static shader_t *Plug_Draw_ShaderFromId(qhandle_t id)
-{
-	if (--id >= r_numshaders)
-		return NULL;
-	return r_shaders[id];
-}
-static void Plug_Draw_UnloadImage(qhandle_t id)
-{
-	R_UnloadShader(Plug_Draw_ShaderFromId(id));
+	if (type != 0 && type != 1)
+		return 0;
+	return Plug_Draw_LoadImage(name, type, NULL);
 }
 
+void Plug_DrawReloadImages(void)
+{
+	int i;
+	for (i = 0; i < pluginimagearraylen; i++)
+	{
+		if (!pluginimagearray[i].plugin)
+		{
+			pluginimagearray[i].pic = NULL;
+			continue;
+		}
+
+		pluginimagearray[i].pic = R2D_SafePicFromWad(pluginimagearray[i].name);
+		//pluginimagearray[i].pic = R2D_SafeCachePic(pluginimagearray[i].name);
+		//pluginimagearray[i].pic = NULL;
+	}
+}
+
+//int R2D_ImageSize (qhandle_t image, float *w, float *h)
 static int QDECL Plug_Draw_ImageSize(qhandle_t image, float *w, float *h)
 {
 	int iw, ih, ret;
+	mpic_t *pic;
+	int i;
+	
+	*w = 0;
+	*h = 0;
+	if (qrenderer == QR_NONE)
+		return 0;
 
-	if (image > 0 && image <= r_numshaders)
+	i = image;
+	if (i <= 0 || i > pluginimagearraylen)
+		return -1;	// you fool
+	i = i - 1;
+	if (pluginimagearray[i].plugin != currentplug)
+		return -1;
+
+	if (pluginimagearray[i].pic)
+		pic = pluginimagearray[i].pic;
+	else if (pluginimagearray[i].type == 1)
+		return 0;	//wasn't loaded.
+	else
 	{
-		ret = R_GetShaderSizes(r_shaders[image-1], &iw, &ih, true);
-		if (w)
-			*w = iw;
-		if (h)
-			*h = ih;
-		return ret;
+		pic = R2D_SafeCachePic(pluginimagearray[i].name);
+		if (!pic)
+			return -1;
 	}
-	return -1;
+
+	ret = R_GetShaderSizes(pic, &iw, &ih, true);
+	*w = iw;
+	*h = ih;
+	return ret;
 }
 
 static int QDECL Plug_Draw_Image(float x, float y, float w, float h, float s1, float t1, float s2, float t2, qhandle_t image)
 {
-	if (image > 0 && image <= r_numshaders)
+	mpic_t *pic;
+	int i;
+	if (qrenderer == QR_NONE)
+		return 0;
+
+	i = image;
+	if (i <= 0 || i > pluginimagearraylen)
+		return -1;	// you fool
+	i = i - 1;
+	if (pluginimagearray[i].plugin != currentplug)
+		return -1;
+
+	if (pluginimagearray[i].pic)
+		pic = pluginimagearray[i].pic;
+	else if (pluginimagearray[i].type == 1)
+		return 0;	//wasn't loaded.
+	else
 	{
-		R2D_Image(x, y, w, h, s1, t1, s2, t2, r_shaders[image-1]);
-		return 1;
+		pic = R2D_SafeCachePic(pluginimagearray[i].name);
+		if (!pic)
+			return -1;
 	}
-	return 0;
-}
-static int QDECL Plug_Draw_Image2dQuad(const vec2_t *points, const vec2_t *texcoords, const vec4_t *colours, qhandle_t image)
-{
-	if (image > 0 && image <= r_numshaders)
-	{
-		R2D_Image2dQuad(points, texcoords, colours, r_shaders[image-1]);
-		return 1;
-	}
-	return 0;
+
+	R2D_Image(x, y, w, h, s1, t1, s2, t2, pic);
+	return 1;
 }
 //x1,y1,x2,y2
 static void QDECL Plug_Draw_Line(float x1, float y1, float x2, float y2)
@@ -369,169 +449,13 @@ static void QDECL Plug_Draw_Colour4f(float r, float g, float b, float a)
 	R2D_ImageColours(r,g,b,a);
 }
 
-static void QDECL Plug_Draw_RedrawScreen(void)
-{
-	SCR_UpdateScreen();
-}
 
-#ifdef HAVE_MEDIA_DECODER
-static void QDECL Plug_Media_SetState(cin_t *cin, int state)
-{
-	Media_SetState(cin, state);
-}
-static int QDECL Plug_Media_GetState(cin_t *cin)
-{
-	return Media_GetState(cin);
-}
-#endif
 
-static qhandle_t Plug_Scene_ModelToId(model_t *mod)
-{
-	if (!mod)
-		return 0;
-	return (mod-mod_known)+1;
-}
-static model_t *Plug_Scene_ModelFromId(qhandle_t id)
-{
-	extern int mod_numknown;
-	if ((unsigned)(--id) >= mod_numknown)
-		return NULL;
-	return mod_known+id;
-}
-static qhandle_t Plug_Scene_ShaderForSkin(qhandle_t modelid, int surfaceidx, int skinnum, float time)
-{
-	shader_t *s = Mod_ShaderForSkin(Plug_Scene_ModelFromId(modelid), surfaceidx, skinnum, time, NULL);
-	return s->id+1;
-}
-static void QDECL Plug_Scene_Clear(void)
-{
-	CL_ClearEntityLists();
-	rtlights_first = RTL_FIRST;
-}
-static unsigned int Plug_Scene_AddPolydata(struct shader_s *s, unsigned int beflags, size_t numverts, size_t numidx, vecV_t **vertcoord, vec2_t **texcoord, vec4_t **colour, index_t **indexes)
-{
-	unsigned int ret;
-	scenetris_t *t;
 
-	/*reuse the previous trigroup if its the same shader*/
-	if (cl_numstris && cl_stris[cl_numstris-1].shader == s && cl_stris[cl_numstris-1].flags == beflags)
-		t = &cl_stris[cl_numstris-1];
-	else
-	{
-		if (cl_numstris == cl_maxstris)
-		{
-			cl_maxstris += 8;
-			cl_stris = BZ_Realloc(cl_stris, sizeof(*cl_stris)*cl_maxstris);
-		}
-		t = &cl_stris[cl_numstris++];
-		t->shader = s;
-		t->flags = beflags;
-		t->numidx = 0;
-		t->numvert = 0;
-		t->firstidx = cl_numstrisidx;
-		t->firstvert = cl_numstrisvert;
-	}
-	ret = cl_numstrisvert - t->firstvert;
 
-	if (cl_maxstrisvert < cl_numstrisvert+numverts)
-		cl_stris_ExpandVerts(cl_numstrisvert+numverts + 64);
-	if (cl_maxstrisidx < cl_numstrisidx+numidx)
-	{
-		cl_maxstrisidx = cl_numstrisidx+numidx + 64;
-		cl_strisidx = BZ_Realloc(cl_strisidx, sizeof(*cl_strisidx)*cl_maxstrisidx);
-	}
 
-	*vertcoord = cl_strisvertv+cl_numstrisvert;
-	*texcoord = cl_strisvertt+cl_numstrisvert;
-	*colour = cl_strisvertc+cl_numstrisvert;
-	*indexes = cl_strisidx+cl_numstrisidx;
 
-	t->numvert += numverts;
-	t->numidx += numidx;
-	cl_numstrisvert += numverts;
-	cl_numstrisidx += numidx;
 
-	return ret;
-}
-
-void R_DrawNameTags(void);
-static void Plug_Scene_RenderScene(plugrefdef_t *in, size_t areabytes, const qbyte *areadata)
-{
-	size_t i;
-	extern cvar_t r_torch;
-	if (R2D_Flush)
-		R2D_Flush();
-
-	VectorCopy(in->viewaxisorg[0], r_refdef.viewaxis[0]);
-	VectorCopy(in->viewaxisorg[1], r_refdef.viewaxis[1]);
-	VectorCopy(in->viewaxisorg[2], r_refdef.viewaxis[2]);
-	VectorCopy(in->viewaxisorg[3], r_refdef.vieworg);
-
-	VectorSet(r_refdef.weaponmatrix[0], 1,0,0);
-	VectorSet(r_refdef.weaponmatrix[1], 0,1,0);
-	VectorSet(r_refdef.weaponmatrix[2], 0,0,1);
-	VectorSet(r_refdef.weaponmatrix[3], 0,0,0);
-
-	VectorSet(r_refdef.weaponmatrix_bob[0], 1,0,0);
-	VectorSet(r_refdef.weaponmatrix_bob[1], 0,1,0);
-	VectorSet(r_refdef.weaponmatrix_bob[2], 0,0,1);
-	VectorSet(r_refdef.weaponmatrix_bob[3], 0,0,0);
-
-	VectorAngles(r_refdef.viewaxis[0], r_refdef.viewaxis[2], r_refdef.viewangles, false);	//do we actually still need this?
-	r_refdef.flags = in->flags;
-	r_refdef.fov_x = in->fov[0];
-	r_refdef.fov_y = in->fov[1];
-	r_refdef.fovv_x = in->fov_viewmodel[0];
-	r_refdef.fovv_y = in->fov_viewmodel[1];
-	r_refdef.vrect.x = in->rect.x;
-	r_refdef.vrect.y = in->rect.y;
-	r_refdef.vrect.width = in->rect.w;
-	r_refdef.vrect.height = in->rect.h;
-	r_refdef.time = in->time;
-	r_refdef.useperspective = true;
-	r_refdef.mindist = bound(0.1, gl_mindist.value, 4);
-	r_refdef.maxdist = gl_maxdist.value;
-	r_refdef.playerview = &cl.playerview[0];
-
-	if (in->flags & RDF_SKYROOMENABLED)
-	{
-		r_refdef.skyroom_enabled = true;
-		VectorCopy(in->skyroom_org, r_refdef.skyroom_pos);
-	}
-	else
-		r_refdef.skyroom_enabled = false;
-
-	if (r_refdef.vrect.y < 0)
-	{	//evil hack to work around player model ui bug.
-		//if the y coord is off screen, reduce the height to keep things centred, and reduce the fov to compensate.
-		r_refdef.vrect.height += r_refdef.vrect.y*2;
-		r_refdef.fov_y = in->fov[1] * r_refdef.vrect.height / in->rect.h;
-		r_refdef.fovv_y = in->fov_viewmodel[1] * r_refdef.vrect.height / in->rect.h;
-		r_refdef.vrect.y = 0;
-	}
-
-	memset(&r_refdef.globalfog, 0, sizeof(r_refdef.globalfog));
-
-	if (r_torch.ival)
-	{
-		dlight_t *dl;
-		dl = CL_NewDlight(0, r_refdef.vieworg, 300, r_torch.ival, 0.5, 0.5, 0.2);
-		dl->flags |= LFLAG_SHADOWMAP|LFLAG_FLASHBLEND;
-		dl->fov = 60;
-		VectorCopy(r_refdef.viewaxis[0], dl->axis[0]);
-		VectorCopy(r_refdef.viewaxis[1], dl->axis[1]);
-		VectorCopy(r_refdef.viewaxis[2], dl->axis[2]);
-	}
-
-	r_refdef.areabitsknown = areabytes>0;
-	for (i = 0; i < sizeof(r_refdef.areabits)/sizeof(int) && i < areabytes/sizeof(int); i++)
-		((int*)r_refdef.areabits)[i] = ((int*)areadata)[i] ^ ~0;
-	R_PushDlights();
-	R_RenderView();
-	R_DrawNameTags();
-	r_refdef.playerview = NULL;
-	r_refdef.time = 0;
-}
 
 static void QDECL Plug_LocalSound(const char *soundname, int channel, float volume)
 {
@@ -540,13 +464,6 @@ static void QDECL Plug_LocalSound(const char *soundname, int channel, float volu
 }
 
 
-static void QDECL Plug_CL_SetLoadscreenState(qboolean state)
-{
-	if (state)
-		SCR_BeginLoadingPlaque();
-	else
-		SCR_EndLoadingPlaque();
-}
 
 static int QDECL Plug_CL_GetStats(int pnum, unsigned int *stats, int maxstats)
 {
@@ -627,7 +544,7 @@ static size_t QDECL Plug_GetLocalPlayerNumbers(size_t first, size_t count, int *
 	return count;
 }
 
-static void QDECL Plug_GetServerInfoRaw(char *outptr, size_t outlen)
+static void QDECL Plug_GetServerInfo(char *outptr, size_t outlen)
 {
 	extern float demtime;
 
@@ -664,106 +581,10 @@ static void QDECL Plug_GetServerInfoRaw(char *outptr, size_t outlen)
 #endif
 		Q_strncatz(outptr, va("\\matchstart\\%f", cl.matchgametimestart), outlen);
 }
-static size_t QDECL Plug_GetServerInfoBlob(const char *key, void *outptr, size_t outsize)
-{
-	char tmp[32];
-	size_t blobsize;
-	const char *blob = InfoBuf_BlobForKey(&cl.serverinfo, key, &blobsize, NULL);
-	if (!blob)
-	{	//inescapable hacks
-		if (!strcmp(key, "matchstart"))
-		{
-			float matchstart = cl.matchgametimestart;
-#ifdef QUAKEHUD
-			if (cl.playerview[0].statsf[STAT_MATCHSTARTTIME])
-				matchstart = cl.playerview[0].statsf[STAT_MATCHSTARTTIME]/1000;
-#endif
-			snprintf(tmp, sizeof(tmp), "%f", matchstart), blob=tmp;
-		}
-		else if (!strcmp(key, "demotime"))
-		{
-			extern float demtime;
-			snprintf(tmp, sizeof(tmp), "%f", demtime-cls.demostarttime), blob=tmp;
-		}
-		else if (!strcmp(key, "demotype"))
-		{
-			switch(cls.demoplayback)
-			{
-			case DPB_NONE:
-				break;
-			case DPB_MVD:
-			case DPB_EZTV:
-				blob = "mvd";
-				break;
-			case DPB_QUAKEWORLD:
-				blob = "qw";
-				break;
-#ifdef NQPROT
-			case DPB_NETQUAKE:
-				blob = "nq";
-				break;
-#endif
-#ifdef Q2CLIENT
-			case DPB_QUAKE2:
-				blob = "q2";
-				break;
-#endif
-			}
-		}
-		else if (!strcmp(key, "intermission"))
-			snprintf(tmp, sizeof(tmp), "%i", cl.intermissionmode), blob=tmp;
-		if (blob)
-			blobsize = strlen(blob);
-	}
-	if (outptr)
-	{
-		if (blobsize > outsize)
-			return 0;	//error
-		memcpy(outptr, blob, blobsize);
-		return blobsize;
-	}
-	else
-		return blobsize;
-}
 
 static void QDECL Plug_SetUserInfo(int seat, const char *key, const char *value)
 {
 	CL_SetInfo(seat, key, value);
-}
-static void QDECL Plug_SetUserInfoBlob(int seat, const char *key, const void *value, size_t size)
-{
-	CL_SetInfoBlob(seat, key, value, size);
-}
-
-static size_t QDECL Plug_GetUserInfoBlob(int seat, const char *key, void *outptr, size_t outsize)
-{
-	size_t blobsize;
-	const char *blob;
-	if (seat >= countof(cls.userinfo))
-		blob = NULL, blobsize = 0;
-	else
-		blob = InfoBuf_BlobForKey(&cls.userinfo[seat], key, &blobsize, NULL);
-	if (outptr)
-	{
-		if (blobsize > outsize)
-			return 0;	//error
-		memcpy(outptr, blob, blobsize);
-		return blobsize;
-	}
-	else
-		return blobsize;
-}
-
-void QDECL Plug_CL_ClearState(void)
-{
-	CL_ClearState(true);
-}
-void QDECL Plug_CL_UpdateGameTime(double servertime)
-{
-	cl.oldgametime = cl.gametime;
-	cl.oldgametimemark = cl.gametimemark;
-	cl.gametime = servertime;
-	cl.gametimemark = realtime;
 }
 
 static qboolean QDECL Plug_GetLastInputFrame(int seat, usercmd_t *outcmd)
@@ -1230,27 +1051,11 @@ static void QDECL Plug_S_RawAudio(int sourceid, void *data, int speed, int sampl
 {
 	S_RawAudio(sourceid, data, speed, samples, channels, width, volume);
 }
-static void QDECL S_Spacialize(unsigned int seat, int entnum, vec3_t origin, vec3_t axis[3], int reverb, vec3_t velocity)
-{
-	if (seat >= countof(cl.playerview))
-		return;
-	cl.playerview[seat].audio.defaulted = false;
-	cl.playerview[seat].audio.entnum = entnum;
-	VectorCopy(origin, cl.playerview[seat].audio.origin);
-	VectorCopy(axis[0], cl.playerview[seat].audio.forward);
-	VectorCopy(axis[1], cl.playerview[seat].audio.right);
-	VectorCopy(axis[2], cl.playerview[seat].audio.up);
-	cl.playerview[seat].audio.reverbtype = reverb;
-	VectorCopy(velocity, cl.playerview[seat].audio.velocity);
-}
-static sfx_t *QDECL Plug_S_PrecacheSound(const char *sndname)
-{
-	return S_PrecacheSound(sndname);
-}
 
 static void Plug_Client_Close(plugin_t *plug)
 {
 	menu_t *m = Menu_FindContext(currentplug);
+	Plug_FreePlugImages(plug);
 
 	if (m)
 		Menu_Unlink(m, true);
@@ -1260,6 +1065,13 @@ static void Plug_Client_Close(plugin_t *plug)
 		if (cls.protocol == CP_PLUGIN)
 			cls.protocol = CP_UNKNOWN;
 	}
+}
+
+static void Plug_Client_Shutdown(void)
+{
+	BZ_Free(pluginimagearray);
+	pluginimagearray = NULL;
+	pluginimagearraylen = 0;
 }
 
 

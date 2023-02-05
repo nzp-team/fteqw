@@ -234,7 +234,7 @@ qboolean SetupMenuColour (union menuoption_s *option,struct emenu_s *menu, int k
 	//but we give the top free reign.
 	//unless they hold shift, in which case it switches around
 	//this allows for whatever you want
-	if (key == K_ENTER || key == K_KP_ENTER || key == K_GP_DIAMOND_CONFIRM || key == K_RIGHTARROW || key == K_KP_RIGHTARROW || key == K_MOUSE1 || key == K_TOUCHTAP || key == K_GP_DPAD_RIGHT)
+	if (key == K_ENTER || key == K_KP_ENTER || key == K_GP_START || key == K_RIGHTARROW || key == K_KP_RIGHTARROW || key == K_MOUSE1 || key == K_GP_DPAD_RIGHT)
 	{
 		if ((keydown[K_LSHIFT] || keydown[K_RSHIFT]) ^ (ptr == &info->topcolour))
 		{
@@ -321,13 +321,13 @@ qboolean MSetupQ2_ChangeSkin (struct menucustom_s *option,struct emenu_s *menu, 
 	setupmenu_t *info = menu->data;
 	q2skinsearch_t *s = Z_Malloc(sizeof(*s));
 	COM_EnumerateFiles(va("players/%s/*_i.*", info->modeledit->values[info->modeledit->selectedoption]), q2skin_enumerate, s);
-	if (key == K_ENTER || key == K_KP_ENTER || key == K_RIGHTARROW || key == K_KP_RIGHTARROW || key == K_GP_DPAD_RIGHT || key == K_GP_DIAMOND_CONFIRM)
+	if (key == K_ENTER || key == K_KP_ENTER || key == K_GP_START || key == K_RIGHTARROW || key == K_KP_RIGHTARROW || key == K_GP_DPAD_RIGHT)
 	{
 		s->match ++;
 		if (s->match>=s->entries)
 			s->match=0;
 	}
-	else if (key == K_LEFTARROW || key == K_KP_LEFTARROW || key == K_GP_DPAD_LEFT || key == K_GP_DIAMOND_ALTCONFIRM)
+	else if (key == K_LEFTARROW || key == K_KP_LEFTARROW || key == K_GP_DPAD_LEFT)
 	{
 		s->match --;
 		if (s->match<=0)
@@ -546,7 +546,7 @@ typedef struct {
 	menucombo_t *skill;
 	menucombo_t *timelimit;
 	menucombo_t *fraglimit;
-	menucombo_t *mapname;
+	menuedit_t *mapnameedit;
 	menucheck_t *rundedicated;
 
 	int topcolour;
@@ -569,8 +569,7 @@ static const char *numplayeroptions[] = {
 qboolean MultiBeginGame (union menuoption_s *option,struct emenu_s *menu, int key)
 {
 	newmultimenu_t *info = menu->data;
-	char quoted[1024];
-	if (key != K_ENTER && key != K_KP_ENTER && key != K_GP_DIAMOND_CONFIRM && key != K_MOUSE1 && key != K_TOUCHTAP)
+	if (key != K_ENTER && key != K_KP_ENTER && key != K_GP_START && key != K_MOUSE1)
 		return false;
 
 	if (cls.state)
@@ -580,7 +579,7 @@ qboolean MultiBeginGame (union menuoption_s *option,struct emenu_s *menu, int ke
 	Cbuf_AddText(va("maxclients \"%s\"\n", numplayeroptions[info->numplayers->selectedoption]), RESTRICT_LOCAL);
 	if (info->rundedicated->value)
 		Cbuf_AddText("setrenderer dedicated\n", RESTRICT_LOCAL);
-	Cbuf_AddText(va("hostname %s\n", COM_QuotedString(info->hostnameedit->text, quoted, sizeof(quoted), false)), RESTRICT_LOCAL);
+	Cbuf_AddText(va("hostname \"%s\"\n", info->hostnameedit->text), RESTRICT_LOCAL);
 	Cbuf_AddText(va("deathmatch %i\n", info->deathmatch->selectedoption), RESTRICT_LOCAL);
 	if (!info->deathmatch->selectedoption)
 		Cbuf_AddText("coop 1\n", RESTRICT_LOCAL);
@@ -590,32 +589,8 @@ qboolean MultiBeginGame (union menuoption_s *option,struct emenu_s *menu, int ke
 	Cbuf_AddText(va("skill %i\n", info->skill->selectedoption), RESTRICT_LOCAL);
 	Cbuf_AddText(va("timelimit %i\n", info->timelimit->selectedoption*5), RESTRICT_LOCAL);
 	Cbuf_AddText(va("fraglimit %i\n", info->fraglimit->selectedoption*10), RESTRICT_LOCAL);
-
-	if (info->publicgame->selectedoption-1 == 2)
-	{
-		const char *hostname = info->hostnameedit->text;
-		const char *shn;
-		for (shn = hostname; *shn; shn++)
-		{
-			if (*shn >= 'a' && *shn <= 'z')
-				continue;
-			if (*shn >= 'A' && *shn <= 'Z')
-				continue;
-			if (*shn >= '0' && *shn <= '9')
-				continue;
-			if (*shn == '-' || *shn <= '_')
-				continue;
-			break;
-		}
-		if (*shn || !*hostname || !strcasecmp(hostname, "player") || !strcasecmp(hostname, "unnamed"))	//not simple enough...
-			Cbuf_AddText(va("sv_public \"/\"\n"), RESTRICT_LOCAL);
-		else
-			Cbuf_AddText(va("sv_public \"/%s\"\n", info->hostnameedit->text), RESTRICT_LOCAL);
-	}
-	else
-		Cbuf_AddText(va("sv_public %i\n", info->publicgame->selectedoption-1), RESTRICT_LOCAL);
-
-	Cbuf_AddText(va("map \"%s\"\n", info->mapname->options[info->mapname->selectedoption]), RESTRICT_LOCAL);
+	Cbuf_AddText(va("sv_public %i\n", info->publicgame->selectedoption-1), RESTRICT_LOCAL);
+	Cbuf_AddText(va("map \"%s\"\n", info->mapnameedit->text), RESTRICT_LOCAL);
 
 	if (info->rundedicated->value)
 	{
@@ -626,36 +601,6 @@ qboolean MultiBeginGame (union menuoption_s *option,struct emenu_s *menu, int ke
 
 	return true;
 }
-
-struct mapopts_s
-{
-	size_t max, count;
-	const char **maps;
-};
-static int QDECL M_Menu_GameOptions_AddMap(const char *fname, qofs_t fsize, time_t mtime, void *parm, searchpathfuncs_t *spath)
-{
-	struct mapopts_s *ctx = parm;
-	size_t i;
-	char *ext;
-	if (Q_strncasecmp(fname, "maps/", 5))
-		return true; //o.O
-	fname += 5;
-	if (*fname == 'b' && *fname == '_')
-		return true;	//stoopid ammo boxes.
-	ext = strrchr(fname, '.');
-	if (ext && !strcmp(ext, ".bsp"))
-		*ext = 0;
-
-	for (i = 0; i < ctx->count; i++)
-		if (!Q_strcasecmp(ctx->maps[i], fname))
-			return true; //don't do dupes.
-	if (ctx->count+1 >= ctx->max)
-		Z_ReallocElements((void**)&ctx->maps, &ctx->max, ctx->count + 64, sizeof(char*));
-	ctx->maps[ctx->count++] = Z_StrDup(fname);
-	return true;
-}
-
-
 void M_Menu_GameOptions_f (void)
 {
 	static const char *deathmatchoptions[] = {
@@ -672,16 +617,6 @@ void M_Menu_GameOptions_f (void)
 		"no self+team fire",	//don't hurt same-team (with bugs in coop)
 		"friendly fire",	//scoreboard shows teams, gamecode doesn't care
 		"no team fire (qw-only)",	//like 1, except you still hurt yourself.
-		NULL
-	};
-	static const char *teamplayoptions_rogue[] = {
-		"off",				//no teams at all
-		"no self+team fire",	//don't hurt same-team (with bugs in coop)
-		"friendly fire",	//scoreboard shows teams, gamecode doesn't care
-		"tag",
-		"Capture The Flag",
-		"One Flag CTF",
-		"Three Team CTF",
 		NULL
 	};
 	static const char *skilloptions[] = {
@@ -722,7 +657,7 @@ void M_Menu_GameOptions_f (void)
 		NULL
 	};
 	static const char *publicoptions[] = {
-		"Splitscreen Only",
+		"Disabled",
 		"Private/LAN",
 		"Public (Manual)",
 		"Public (Holepunch)",
@@ -734,7 +669,6 @@ void M_Menu_GameOptions_f (void)
 	int y = 40;
 	int mgt;
 	int players;
-	struct mapopts_s mapopts = {0};
 
 	menu = M_CreateMenu(sizeof(newmultimenu_t));
 	info = menu->data;
@@ -774,23 +708,17 @@ void M_Menu_GameOptions_f (void)
 	info->numplayers	= MC_AddCombo	(menu, 64, 160, y,			"Max players", (const char **)numplayeroptions,	players);y+=8;
 
 	info->deathmatch	= MC_AddCombo	(menu, 64, 160, y,			"Deathmatch", (const char **)deathmatchoptions,	deathmatch.value);y+=8;
-	info->teamplay		= MC_AddCombo	(menu, 64, 160, y,			"Teamplay", (!strcasecmp(FS_GetGamedir(true), "rogue")?(const char **)teamplayoptions_rogue:(const char **)teamplayoptions),		teamplay.value);y+=8;
+	info->teamplay		= MC_AddCombo	(menu, 64, 160, y,			"Teamplay", (const char **)teamplayoptions,		teamplay.value);y+=8;
 	info->skill			= MC_AddCombo	(menu, 64, 160, y,			"Skill", (const char **)skilloptions,			skill.value);y+=8;
 	info->rundedicated	= MC_AddCheckBox(menu, 64, 160, y,			"dedicated", NULL, 0);y+=8;
 	y+=8;
 	info->timelimit		= MC_AddCombo	(menu, 64, 160, y,			"Time Limit", (const char **)timelimitoptions,		timelimit.value/5);y+=8;
 	info->fraglimit		= MC_AddCombo	(menu, 64, 160, y,			"Frag Limit", (const char **)fraglimitoptions,		fraglimit.value/10);y+=8;
 	y+=8;
-
-	M_Menu_GameOptions_AddMap((mgt == MGT_QUAKE2)?"maps/base1":"maps/start", 0, 0, &mapopts, NULL);
-	COM_EnumerateFiles("maps/*.bsp",	M_Menu_GameOptions_AddMap, &mapopts);
-	COM_EnumerateFiles("maps/*.bsp.gz",	M_Menu_GameOptions_AddMap, &mapopts);
-	COM_EnumerateFiles("maps/*.bsp.xz",	M_Menu_GameOptions_AddMap, &mapopts);
-	COM_EnumerateFiles("maps/*.map",	M_Menu_GameOptions_AddMap, &mapopts);
-	COM_EnumerateFiles("maps/*.map.gz",	M_Menu_GameOptions_AddMap, &mapopts);
-	COM_EnumerateFiles("maps/*.cm",		M_Menu_GameOptions_AddMap, &mapopts);
-	COM_EnumerateFiles("maps/*.hmp",	M_Menu_GameOptions_AddMap, &mapopts);
-	info->mapname		= MC_AddCombo	(menu, 64, 160, y,			"Map", (const char **)mapopts.maps,		0);y+=8;
+	if (mgt == MGT_QUAKE2)
+		info->mapnameedit	= MC_AddEdit	(menu, 64, 160, y,			"map", "base1");
+	else
+		info->mapnameedit	= MC_AddEdit	(menu, 64, 160, y,			"map", "start");
 	y += 16;
 
 	menu->cursoritem = (menuoption_t*)MC_AddWhiteText(menu, 54, 0, menu->selecteditem->common.posy, NULL, false);

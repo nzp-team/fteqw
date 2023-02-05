@@ -270,6 +270,8 @@ FTE_DEPRECATED extern glvert_t glv;
 //#define	SKYSIZE			(1 << SKYSHIFT)
 //#define SKYMASK			(SKYSIZE - 1)
 
+#define BACKFACE_EPSILON	0.01
+
 
 void R_TimeRefresh_f (void);
 
@@ -280,6 +282,8 @@ void R_TimeRefresh_f (void);
 extern	entity_t	r_worldentity;
 extern	vec3_t		r_entorigin;
 extern	entity_t	*currententity;
+extern	int			r_visframecount;	// ??? what difs?
+extern	int			r_framecount;		//number of scenes drawn (specifically, number of times the world is frustum culled)
 
 extern qboolean		r_loadbumpmapping;
 
@@ -297,7 +301,7 @@ extern	vec3_t	r_origin;
 extern	refdef_t	r_refdef;
 extern	unsigned int r_viewcontents;
 extern	int r_viewarea;
-extern	int		r_viewcluster, r_viewcluster2;
+extern	int		r_viewcluster, r_viewcluster2, r_oldviewcluster, r_oldviewcluster2;	//q2
 extern	texture_t	*r_notexture_mip;
 
 extern	texid_t	netgraphtexture;	// netgraph texture
@@ -368,6 +372,9 @@ void R_DrawGAliasShadowVolume(entity_t *e, vec3_t lightpos, float radius);
 #ifdef GLQUAKE
 //misc model formats
 void R_DrawHLModel(entity_t	*curent);
+
+//typedef float m3by3_t[3][3];
+//int GetTag(model_t *mod, char *tagname, int frame, float **org, m3by3_t **ang);
 #endif
 
 //

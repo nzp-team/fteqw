@@ -208,9 +208,6 @@
 #ifdef AVAIL_JPEGLIB
 -DLINK_JPEG
 #endif
-#if defined(PLUGINS) && (defined(Q3SERVER) || defined(Q3CLIENT))
--DLINK_QUAKE3	//ask the makefile to bake the quake3 plugin into the engine itself.
-#endif
 
 //-DNO_OPUS
 //-DNO_SPEEX	//disable static speex
@@ -222,10 +219,6 @@
 
 //enable some staticaly linked libraries
 -DLINK_FREETYPE		//international text requires international fonts.
-
-#if defined(USE_INTERNAL_ODE) && !defined(ODE_DYNAMIC)
--DLINK_ODE
-#endif
 
 //-Os		//optimise for size instead of speed. less cpu cache needed means that its sometimes faster anyway.
 #endif

@@ -15,9 +15,15 @@ int com_language;
 char sys_language[64] = "";
 static char langpath[MAX_OSPATH] = "";
 struct language_s languages[MAX_LANGUAGES];
+static struct po_s *com_translations;
 
 static void QDECL TL_LanguageChanged(struct cvar_s *var, char *oldvalue)
 {
+	if (com_translations)
+	{
+		PO_Close(com_translations);
+		com_translations = NULL;
+	}
 	com_language = TL_FindLanguage(var->string);
 }
 
@@ -40,9 +46,6 @@ void TL_Shutdown(void)
 		languages[j].name = NULL;
 		PO_Close(languages[j].po);
 		languages[j].po = NULL;
-
-		PO_Close(languages[j].po_qex);
-		languages[j].po_qex = NULL;
 	}
 }
 
@@ -72,10 +75,10 @@ static int TL_LoadLanguage(char *lang)
 		//keep truncating until we can find a name that works
 		u = strrchr(lang, '_');
 		if (u)
-		{
 			*u = 0;
-			return TL_LoadLanguage(lang);
-		}
+		else
+			lang = "";
+		return TL_LoadLanguage(lang);
 	}
 	languages[j].name = strdup(lang);
 	languages[j].po = NULL;
@@ -500,7 +503,7 @@ const char *PO_GetText(struct po_s *po, const char *msg)
 }
 
 
-static void PO_Merge_Rerelease(struct po_s *po, const char *langname, const char *fmt)
+static void PO_Merge_Rerelease(struct po_s *po, const char *fmt)
 {
 	//FOO <plat,plat> = "CString"
 	char line[32768];
@@ -509,22 +512,22 @@ static void PO_Merge_Rerelease(struct po_s *po, const char *langname, const char
 	char *s;
 	vfsfile_t *file = NULL;
 
-	if (!file && *langname)	//use system locale names
-		file = FS_OpenVFS(va(fmt, langname), "rb", FS_GAME);
+	if (!file && *language.string)	//use system locale names
+		file = FS_OpenVFS(va(fmt, language.string), "rb", FS_GAME);
 	if (!file)	//make a guess
 	{
 		s = NULL;
-		if (langname[0] && langname[1] && (!langname[2] || langname[2] == '-' || langname[2] == '_'))
+		if (language.string[0] && language.string[1] && (!language.string[2] || language.string[2] == '-' || language.string[2] == '_'))
 		{	//try to map the user's formal locale to the rerelease's arbitrary names (at least from the perspective of anyone who doesn't speak english).
-			if (!strncmp(langname, "fr", 2))
+			if (!strncmp(language.string, "fr", 2))
 				s = "french";
-			else if (!strncmp(langname, "de", 2))
+			else if (!strncmp(language.string, "de", 2))
 				s = "german";
-			else if (!strncmp(langname, "it", 2))
+			else if (!strncmp(language.string, "it", 2))
 				s = "italian";
-			else if (!strncmp(langname, "ru", 2))
+			else if (!strncmp(language.string, "ru", 2))
 				s = "russian";
-			else if (!strncmp(langname, "es", 2))
+			else if (!strncmp(language.string, "es", 2))
 				s = "spanish";
 		}
 		if (s)
@@ -550,18 +553,18 @@ static void PO_Merge_Rerelease(struct po_s *po, const char *langname, const char
 	}
 }
 
-const char *TL_Translate(int language, const char *src)
+const char *TL_Translate(const char *src)
 {
 	if (*src == '$')
 	{
-		if (!languages[language].po_qex)
+		if (!com_translations)
 		{
 			char lang[64], *h;
 			vfsfile_t *f = NULL;
-			languages[language].po_qex = PO_Create();
-			PO_Merge_Rerelease(languages[language].po_qex, languages[language].name, "localization/loc_%s.txt");
+			com_translations = PO_Create();
+			PO_Merge_Rerelease(com_translations, "localization/loc_%s.txt");
 
-			Q_strncpyz(lang, languages[language].name, sizeof(lang));
+			Q_strncpyz(lang, language.string, sizeof(lang));
 			while ((h = strchr(lang, '-')))
 				*h = '_';	//standardise it
 			if (*lang)
@@ -576,20 +579,20 @@ const char *TL_Translate(int language, const char *src)
 				}
 			}
 			if (f)
-				PO_Merge(languages[language].po_qex, f);
+				PO_Merge(com_translations, f);
 		}
-		src = PO_GetText(languages[language].po_qex, src);
+		src = PO_GetText(com_translations, src);
 	}
 	return src;
 }
-void TL_Reformat(int language, char *out, size_t outsize, size_t numargs, const char **arg)
+void TL_Reformat(char *out, size_t outsize, size_t numargs, const char **arg)
 {
 	const char *fmt;
 	const char *a;
 	size_t alen;
 
 	fmt = (numargs>0&&arg[0])?arg[0]:"";
-	fmt = TL_Translate(language, fmt);
+	fmt = TL_Translate(fmt);
 
 	outsize--;
 	while (outsize > 0)
@@ -620,7 +623,7 @@ void TL_Reformat(int language, char *out, size_t outsize, size_t numargs, const 
 			if (index >= numargs || !arg[index])
 				a = "";
 			else
-				a = TL_Translate(language, arg[index]);
+				a = TL_Translate(arg[index]);
 
 			alen = strlen(a);
 			if (alen > outsize)

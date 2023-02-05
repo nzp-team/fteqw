@@ -40,8 +40,6 @@
 #include "sv_sql.h"
 #endif
 
-#define S_COLOR_SUBSERVER S_COLOR_MAGENTA
-
 typedef struct pubsubserver_s
 {
 	vfsfile_t *stream;
@@ -130,7 +128,7 @@ static int MSV_SubServerRead(pubsubserver_t *ps)
 			net_message.cursize = len-2;
 			memmove(ps->inbuffer, ps->inbuffer+len, ps->inbuffersize - len);
 			ps->inbuffersize -= len;
-			MSG_BeginReading (&net_message, msg_nullnetprim);
+			MSG_BeginReading (msg_nullnetprim);
 
 			return len;
 		}
@@ -612,7 +610,7 @@ void MSV_Status(void)
 	clusterplayer_t *pl;
 	for (s = subservers; s; s = s->next)
 	{
-		Con_Printf("^["S_COLOR_SUBSERVER"%i: %s\\ssv\\%u^]", s->id, s->name, s->id);
+		Con_Printf("^[%i: %s\\ssv\\%u^]", s->id, s->name, s->id);
 		if (s->addrv4.type != NA_INVALID)
 			Con_Printf(" %s", NET_AdrToString(bufmem, sizeof(bufmem), &s->addrv4));
 		if (s->addrv6.type != NA_INVALID)
@@ -852,12 +850,12 @@ static void MSV_PrintFromSubServer(pubsubserver_t *s, const char *newtext)
 	while((nl = strchr(s->printtext, '\n')))
 	{	//FIXME: handle overflows.
 		*nl++ = 0;
-		Con_Printf("^["S_COLOR_SUBSERVER"%i(%s)\\ssv\\%u^]: %s\n", s->id, s->name, s->id, s->printtext);
+		Con_Printf("^[^6%i(%s)\\ssv\\%u^]: %s\n", s->id, s->name, s->id, s->printtext);
 		memmove(s->printtext, nl, strlen(nl)+1);
 	}
 	if (strlen(s->printtext) > sizeof(s->printtext)/2)
 	{
-		Con_Printf("^["S_COLOR_SUBSERVER"%i(%s)\\ssv\\%u^]: %s\n", s->id, s->name, s->id, s->printtext);
+		Con_Printf("^[^6%i(%s)\\ssv\\%u^]: %s\n", s->id, s->name, s->id, s->printtext);
 		*s->printtext = 0;
 	}
 }
@@ -1125,9 +1123,9 @@ void MSV_ReadFromSubServer(pubsubserver_t *s)
 			}
 			MSV_SubConsole_Update(s);
 			if (s->started)
-				Con_DPrintf("^["S_COLOR_SUBSERVER"[%i:%s: map changed]\\ssv\\%u\\tip\\Click for server's console^]\n", s->id, s->name, s->id);
+				Con_DPrintf("^[^6[%i:%s: map changed]\\ssv\\%u\\tip\\Click for server's console^]\n", s->id, s->name, s->id);
 			else
-				Con_Printf("^["S_COLOR_SUBSERVER"[%i:%s: new node initialised]\\ssv\\%u\\tip\\Click for server's console^]\n", s->id, s->name, s->id);
+				Con_Printf("^[^6[%i:%s: new node initialised]\\ssv\\%u\\tip\\Click for server's console^]\n", s->id, s->name, s->id);
 			s->started = true;
 		}
 		break;
@@ -1187,7 +1185,7 @@ void MSV_ReadFromSubServer(pubsubserver_t *s)
 		}
 		break;
 	}
-	if (MSG_GetReadCount() != net_message.cursize || msg_badread)
+	if (msg_readcount != net_message.cursize || msg_badread)
 		Sys_Error("Master: Readcount isn't right (%i)\n", net_message.data[0]);
 }
 
@@ -1233,7 +1231,7 @@ void MSV_PollSlaves(void)
 				memmove(inbuffer, inbuffer+size, inbuffersize-size);
 				inbuffersize -= size;
 
-				MSG_BeginReading (&net_message, msg_nullnetprim);
+				MSG_BeginReading (msg_nullnetprim);
 				SSV_ReadFromControlServer();
 			}
 			else
@@ -1241,15 +1239,8 @@ void MSV_PollSlaves(void)
 		}
 		if (error)
 		{
-			error = isClusterSlave;
 			SSV_SetupControlPipe(NULL);
 			inbuffersize = 0;
-
-			if (error)
-			{
-				SV_FinalMessage("Cluster shut down\n");
-				Cmd_ExecuteString("quit\n", RESTRICT_LOCAL);
-			}
 		}
 	}
 	else if (msv_loop_to_ss)
@@ -1259,7 +1250,7 @@ void MSV_PollSlaves(void)
 		{
 			VFS_READ(msv_loop_to_ss, net_message.data, size);
 			net_message.cursize = size-2;
-			MSG_BeginReading (&net_message, msg_nullnetprim);
+			MSG_BeginReading (msg_nullnetprim);
 			SSV_ReadFromControlServer();
 		}
 	}
@@ -1525,7 +1516,7 @@ void SSV_ReadFromControlServer(void)
 		break;
 	}
 
-	if (MSG_GetReadCount() != net_message.cursize || msg_badread)
+	if (msg_readcount != net_message.cursize || msg_badread)
 		Sys_Error("Subserver: Readcount isn't right (%i)\n", net_message.data[0]);
 }
 

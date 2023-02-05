@@ -346,11 +346,10 @@ extern sounddriver pAHI_InitCard;
 
 typedef enum
 {
-	CUR_SPACIALISEONLY	= 0,			//for ticking over, respacialising, etc
-	CUR_UPDATE			= (1u<<1),		//flags/rate changed without changing the sound itself
+	CUR_SPACIALISEONLY	= 0,	//for ticking over, respacialising, etc
+	CUR_UPDATE			= (1u<<1),			//flags/rate/offset changed without changing the sound itself
 	CUR_SOUNDCHANGE		= (1u<<2),		//the audio file changed too. reset everything.
-	CUR_OFFSET			= (1u<<3),
-	CUR_EVERYTHING		= CUR_UPDATE|CUR_SOUNDCHANGE|CUR_OFFSET
+	CUR_EVERYTHING		= CUR_UPDATE|CUR_SOUNDCHANGE
 } chanupdatereason_t;
 
 struct soundcardinfo_s { //windows has one defined AFTER directsound

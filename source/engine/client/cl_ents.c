@@ -172,11 +172,11 @@ void CL_CloneDlight(dlight_t *dl, dlight_t *src)
 	dl->customstyle = src->customstyle?Z_StrDup(src->customstyle):NULL;
 	Z_Free(customstyle);
 }
-static void CL_ClearDlight(dlight_t *dl, int key, qboolean reused)
+static void CL_ClearDlight(dlight_t *dl, int key)
 {
 	void *sm = dl->worldshadowmesh;
 	unsigned int oq = dl->coronaocclusionquery;
-	unsigned int oqr = reused?dl->coronaocclusionresult:false;
+	unsigned int oqr = (dl->key == key)?dl->coronaocclusionresult:false;
 	Z_Free(dl->customstyle);
 	memset (dl, 0, sizeof(*dl));
 	dl->coronaocclusionquery = oq;
@@ -224,7 +224,7 @@ dlight_t *CL_AllocSlight(void)
 	}
 	dl = &cl_dlights[i];
 
-	CL_ClearDlight(dl, 0, false);
+	CL_ClearDlight(dl, 0);
 	dl->flags = LFLAG_REALTIMEMODE;
 	dl->corona = 0;
 	return dl;
@@ -249,7 +249,7 @@ dlight_t *CL_AllocDlight (int key)
 		{
 			if (dl->key == key)
 			{
-				CL_ClearDlight(dl, key, true);
+				CL_ClearDlight(dl, key);
 				return dl;
 			}
 		}
@@ -270,47 +270,9 @@ dlight_t *CL_AllocDlight (int key)
 	if (rtlights_first > dl - cl_dlights)
 		rtlights_first = dl - cl_dlights;
 
-	CL_ClearDlight(dl, key, false);
+	CL_ClearDlight(dl, key);
 	return dl;
 }
-
-dlight_t *CL_AllocDlightOrg (int keyidx, vec3_t keyorg)
-{
-	int		i;
-	dlight_t	*dl;
-
-// first look for an exact key match
-	dl = cl_dlights+rtlights_first;
-	for (i=rtlights_first ; i<RTL_FIRST ; i++, dl++)
-	{
-		if (dl->key == keyidx && VectorCompare(dl->origin, keyorg))
-		{
-			CL_ClearDlight(dl, keyidx, true);
-			VectorCopy(keyorg, dl->origin);
-			return dl;
-		}
-	}
-
-	//default to the first
-	dl = &cl_dlights[rtlights_first?rtlights_first-1:0];
-	//try and find one that is free
-	for (i=RTL_FIRST; i > rtlights_first && i > 0; )
-	{
-		i--;
-		if (!cl_dlights[i].radius)
-		{
-			dl = &cl_dlights[i];
-			break;
-		}
-	}
-	if (rtlights_first > dl - cl_dlights)
-		rtlights_first = dl - cl_dlights;
-
-	CL_ClearDlight(dl, keyidx, false);
-	VectorCopy(keyorg, dl->origin);
-	return dl;
-}
-
 
 /*
 ===============
@@ -598,8 +560,7 @@ void FlushEntityPacket (void)
 
 	memset (&olde, 0, sizeof(olde));
 
-	if ((cl.validsequence&UPDATE_MASK) == (cls.netchan.incoming_sequence&UPDATE_MASK))
-		cl.validsequence = 0;		// last-known-good sequence is becoming invalid.
+	cl.validsequence = 0;		// can't render a frame
 	cl.inframes[cls.netchan.incoming_sequence&UPDATE_MASK].invalid = true;
 
 	// read it all, but ignore it
@@ -631,11 +592,9 @@ void CLFTE_ReadDelta(unsigned int entnum, entity_state_t *news, entity_state_t *
 		bits |= MSG_ReadByte()<<16;
 	if (bits & UF_EXTEND3)
 		bits |= MSG_ReadByte()<<24;
-	if (bits & UF_EXTEND4)
-		Host_EndGame("ent update bit %#x\n", UF_EXTEND4);
 
 	if (cl_shownet.ival >= 3)
-		Con_Printf("%3i:     Update %4i 0x%x\n", MSG_GetReadCount(), entnum, bits);
+		Con_Printf("%3i:     Update %4i 0x%x\n", msg_readcount, entnum, bits);
 
 	if (bits & UF_RESET)
 	{
@@ -656,15 +615,10 @@ void CLFTE_ReadDelta(unsigned int entnum, entity_state_t *news, entity_state_t *
 	
 	if (bits & UF_FRAME)
 	{
-		if (cls.fteprotocolextensions2 & PEXT2_LERPTIME)
-			news->frame = MSG_ReadULEB128();
+		if (bits & UF_16BIT)
+			news->frame = MSG_ReadShort();
 		else
-		{
-			if (bits & UF_16BIT_LERPTIME)
-				news->frame = MSG_ReadShort();
-			else
-				news->frame = MSG_ReadByte();
-		}
+			news->frame = MSG_ReadByte();
 	}
 
 	if (cls.ezprotocolextensions1 & EZPEXT1_FLOATENTCOORDS)
@@ -710,24 +664,12 @@ void CLFTE_ReadDelta(unsigned int entnum, entity_state_t *news, entity_state_t *
 			news->angles[1] = MSG_ReadAngle();
 	}
 
-	if (cls.fteprotocolextensions2 & PEXT2_LERPTIME)
-	{
-		if (bits & UF_16BIT_LERPTIME)
-			news->lerpend = cl.gametime + MSG_ReadULEB128()*(1/1000.0);	//most things will animate at 100ms, so this will usually fit a single byte, without capping out.
-		if (bits & UF_EFFECTS)
-			news->effects = MSG_ReadULEB128();
-		if (bits & UF_EFFECTS2_OLD)
-			Host_EndGame("Received unexpected (redefined) bit %#x\n", UF_EFFECTS2_OLD);
-	}
-	else
-	{
-		if ((bits & (UF_EFFECTS | UF_EFFECTS2_OLD)) == (UF_EFFECTS | UF_EFFECTS2_OLD))
-			news->effects = MSG_ReadLong();
-		else if (bits & UF_EFFECTS2_OLD)
-			news->effects = (unsigned short)MSG_ReadShort();
-		else if (bits & UF_EFFECTS)
-			news->effects = MSG_ReadByte();
-	}
+	if ((bits & (UF_EFFECTS | UF_EFFECTS2)) == (UF_EFFECTS | UF_EFFECTS2))
+		news->effects = MSG_ReadLong();
+	else if (bits & UF_EFFECTS2)
+		news->effects = (unsigned short)MSG_ReadShort();
+	else if (bits & UF_EFFECTS)
+		news->effects = MSG_ReadByte();
 
 	news->u.q1.movement[0] = 0;
 	news->u.q1.movement[1] = 0;
@@ -812,35 +754,20 @@ void CLFTE_ReadDelta(unsigned int entnum, entity_state_t *news, entity_state_t *
 
 	if (bits & UF_MODEL)
 	{
-		if (cls.fteprotocolextensions2 & PEXT2_LERPTIME)
-			news->modelindex = MSG_ReadULEB128();
+		if (bits & UF_16BIT)
+			news->modelindex = MSG_ReadShort();
 		else
-		{
-			if (bits & UF_16BIT_LERPTIME)
-				news->modelindex = MSG_ReadShort();
-			else
-				news->modelindex = MSG_ReadByte();
-		}
+			news->modelindex = MSG_ReadByte();
 	}
 	if (bits & UF_SKIN)
 	{
-		if (cls.fteprotocolextensions2 & PEXT2_LERPTIME)
-			news->skinnum = MSG_ReadULEB128()-64;	//biased for content overrides
+		if (bits & UF_16BIT)
+			news->skinnum = MSG_ReadShort();
 		else
-		{
-			if (bits & UF_16BIT_LERPTIME)
-				news->skinnum = MSG_ReadShort();
-			else
-				news->skinnum = MSG_ReadByte();
-		}
+			news->skinnum = MSG_ReadByte();
 	}
 	if (bits & UF_COLORMAP)
-	{
-		if (cls.fteprotocolextensions2 & PEXT2_LERPTIME)
-			news->colormap = MSG_ReadULEB128();
-		else
-			news->colormap = MSG_ReadByte();
-	}
+		news->colormap = MSG_ReadByte();
 
 	if (bits & UF_SOLID)
 	{
@@ -867,12 +794,7 @@ void CLFTE_ReadDelta(unsigned int entnum, entity_state_t *news, entity_state_t *
 	}
 
 	if (bits & UF_FLAGS)
-	{
-		if (cls.fteprotocolextensions2 & PEXT2_LERPTIME)
-			news->dpflags = MSG_ReadULEB128();
-		else
-			news->dpflags = MSG_ReadByte();
-	}
+		news->dpflags = MSG_ReadByte();
 
 	if (bits & UF_ALPHA)
 		news->trans = MSG_ReadByte();
@@ -895,16 +817,8 @@ void CLFTE_ReadDelta(unsigned int entnum, entity_state_t *news, entity_state_t *
 			news->bonecount = 0;	//oo, it went away.
 		if (fl & 0x40)
 		{
-			if (cls.fteprotocolextensions2 & PEXT2_LERPTIME)
-			{
-				news->basebone = MSG_ReadULEB128();
-				news->baseframe = MSG_ReadULEB128();
-			}
-			else
-			{
-				news->basebone = MSG_ReadByte();
-				news->baseframe = MSG_ReadShort();
-			}
+			news->basebone = MSG_ReadByte();
+			news->baseframe = MSG_ReadShort();
 		}
 		else
 		{
@@ -933,14 +847,9 @@ void CLFTE_ReadDelta(unsigned int entnum, entity_state_t *news, entity_state_t *
 	if (bits & UF_TAGINFO)
 	{
 		news->tagentity = MSGCL_ReadEntity();
-		if (cls.fteprotocolextensions2 & PEXT2_LERPTIME)
-			news->tagindex = MSG_ReadULEB128()-1;	//biased for q3-like portals.
-		else
-		{
-			news->tagindex = MSG_ReadByte();
-			if (news->tagindex == 0xff)
-				news->tagindex = ~0;
-		}
+		news->tagindex = MSG_ReadByte();
+		if (news->tagindex == 0xff)
+			news->tagindex = ~0;
 	}
 	if (bits & UF_LIGHT)
 	{
@@ -948,32 +857,20 @@ void CLFTE_ReadDelta(unsigned int entnum, entity_state_t *news, entity_state_t *
 		news->light[1] = MSG_ReadShort();
 		news->light[2] = MSG_ReadShort();
 		news->light[3] = MSG_ReadShort();
-		if (cls.fteprotocolextensions2 & PEXT2_LERPTIME)
-			news->lightstyle = MSG_ReadULEB128();
-		else
-			news->lightstyle = MSG_ReadByte();
+		news->lightstyle = MSG_ReadByte();
 		news->lightpflags = MSG_ReadByte();
 	}
 	if (bits & UF_TRAILEFFECT)
 	{
-		if (cls.fteprotocolextensions2 & PEXT2_LERPTIME)
-		{
-			news->u.q1.traileffectnum = MSG_ReadULEB128();
-			news->u.q1.emiteffectnum = MSG_ReadULEB128();
-		}
-		else
-		{
-			unsigned short s;
-			s = MSG_ReadShort();
-			news->u.q1.traileffectnum = s & 0x3fff;
-			if (s & 0x8000)
-				news->u.q1.emiteffectnum = MSG_ReadShort() & 0x3fff;
-			else
-				news->u.q1.emiteffectnum = 0;
-		}
-
+		unsigned short s;
+		s = MSG_ReadShort();
+		news->u.q1.traileffectnum = s & 0x3fff;
 		if (news->u.q1.traileffectnum >= countof(cl.particle_ssprecache))
 			news->u.q1.traileffectnum = 0;
+		if (s & 0x8000)
+			news->u.q1.emiteffectnum = MSG_ReadShort() & 0x3fff;
+		else
+			news->u.q1.emiteffectnum = 0;
 		if (news->u.q1.emiteffectnum >= countof(cl.particle_ssprecache))
 			news->u.q1.emiteffectnum = 0;
 	}
@@ -996,24 +893,23 @@ void CLFTE_ReadDelta(unsigned int entnum, entity_state_t *news, entity_state_t *
 		news->fatness = MSG_ReadByte();
 	if (bits & UF_MODELINDEX2)
 	{
-		if (cls.fteprotocolextensions2 & PEXT2_LERPTIME)
-			news->modelindex2 = MSG_ReadULEB128();
+		if (bits & UF_16BIT)
+			news->modelindex2 = MSG_ReadShort();
 		else
-		{
-			if (bits & UF_16BIT_LERPTIME)
-				news->modelindex2 = MSG_ReadShort();
-			else
-				news->modelindex2 = MSG_ReadByte();
-		}
+			news->modelindex2 = MSG_ReadByte();
 	}
 	if (bits & UF_GRAVITYDIR)
 	{
 		news->u.q1.gravitydir[0] = MSG_ReadByte();
 		news->u.q1.gravitydir[1] = MSG_ReadByte();
 	}
+	if (bits & UF_UNUSED2)
+	{
+		Host_EndGame("UF_UNUSED2 bit\n");
+	}
 	if (bits & UF_UNUSED1)
 	{
-		Host_EndGame("ent update bit %#x\n", UF_UNUSED1);
+		Host_EndGame("UF_UNUSED1 bit\n");
 	}
 }
 
@@ -1203,13 +1099,13 @@ void CLFTE_ParseEntities(void)
 		if (removeflag)
 		{
 			if (cl_shownet.ival >= 3)
-				Con_Printf("%3i:     Remove %i @ %i\n", MSG_GetReadCount(), newnum, cls.netchan.incoming_sequence);
+				Con_Printf("%3i:     Remove %i @ %i\n", msg_readcount, newnum, cls.netchan.incoming_sequence);
 
 			if (!newnum)
 			{
 				/*removal of world - means forget all entities*/
 				if (cl_shownet.ival >= 3)
-					Con_Printf("%3i:     Reset all\n", MSG_GetReadCount());
+					Con_Printf("%3i:     Reset all\n", msg_readcount);
 				newp->num_entities = 0;
 				oldp = &nullp;
 				oldp->num_entities = 0;
@@ -1317,18 +1213,36 @@ void CLQW_ParsePacketEntities (qboolean delta)
 		from = MSG_ReadByte ();
 
 //		Con_Printf("%i %i from %i\n", cls.netchan.outgoing_sequence, cls.netchan.incoming_sequence, from);
+
+		oldpacket = cl.inframes[newpacket].delta_sequence;
 		if (cls.demoplayback == DPB_MVD || cls.demoplayback == DPB_EZTV)
 			from = oldpacket = cls.netchan.incoming_sequence - 1;
-		oldpacket = cl.inframes[from & UPDATE_MASK].frameid;
 
-		if (cl.inframes[from&UPDATE_MASK].invalid ||	//old frame is unusable
-			cls.netchan.outgoing_sequence - oldpacket >= UPDATE_BACKUP - 1)	// we must have lost the sequence its trying to delta from (or just too old).
-		{
+		if (cls.netchan.outgoing_sequence - cls.netchan.incoming_sequence >= UPDATE_BACKUP - 1) {
+			// there are no valid frames left, so drop it
 			FlushEntityPacket ();
+			cl.validsequence = 0;
 			return;
 		}
 
-		oldp = &cl.inframes[from & UPDATE_MASK].packet_entities;
+		if ((from & UPDATE_MASK) != (oldpacket & UPDATE_MASK)) {
+			Con_DPrintf ("WARNING: from mismatch\n");
+//			FlushEntityPacket ();
+//			cl.validsequence = 0;
+//			return;
+		}
+
+		if (cls.netchan.outgoing_sequence - oldpacket >= UPDATE_BACKUP - 1)
+		{
+			// we can't use this, it is too old
+			FlushEntityPacket ();
+			// don't clear cl.validsequence, so that frames can still be rendered;
+			// it is possible that a fresh packet will be received before
+			// (outgoing_sequence - incoming_sequence) exceeds UPDATE_BACKUP - 1
+			return;
+		}
+
+		oldp = &cl.inframes[oldpacket & UPDATE_MASK].packet_entities;
 		full = false;
 	}
 	else
@@ -1378,7 +1292,7 @@ void CLQW_ParsePacketEntities (qboolean delta)
 
 		if (word & U_MOREBITS)
 		{
-			int oldpos = MSG_GetReadCount();
+			int oldpos = msg_readcount;
 			int excessive;
 			excessive = MSG_ReadByte();
 			if (excessive & U_EVENMORE)
@@ -1390,7 +1304,7 @@ void CLQW_ParsePacketEntities (qboolean delta)
 					newnum += 1024;
 			}
 
-			MSG_ReadSkip(oldpos-MSG_GetReadCount());//undo the read...
+			msg_readcount = oldpos;//undo the read...
 		}
 		oldnum = oldindex >= oldp->num_entities ? 9999 : oldp->entities[oldindex].number;
 
@@ -1411,7 +1325,7 @@ void CLQW_ParsePacketEntities (qboolean delta)
 				newp->entities = BZ_Realloc(newp->entities, sizeof(entity_state_t)*newp->max_entities);
 			}
 			if (oldindex >= oldp->max_entities)
-				Host_EndGame("Old packet entity too big\n");
+					Host_EndGame("Old packet entity too big\n");
 			newp->entities[newindex] = oldp->entities[oldindex];
 			newindex++;
 			oldindex++;
@@ -1507,7 +1421,7 @@ void DP5_ParseDelta(entity_state_t *s, packet_entities_t *pack)
 	unsigned int bits;
 
 	if (cl_shownet.ival >= 3)
-		Con_Printf("%3i:     Update %i", MSG_GetReadCount(), s->number);
+		Con_Printf("%3i:     Update %i", msg_readcount, s->number);
 
 	bits = MSG_ReadByte();
 	if (bits & E5_EXTEND1)
@@ -1860,7 +1774,6 @@ void CLNQ_ParseEntity(unsigned int bits)
 	packet_entities_t	*pack;
 
 	qboolean isnehahra = CPNQ_IS_BJP||(cls.protocol_nq == CPNQ_NEHAHRA);
-	qboolean floatcoords;
 
 	if (cls.signon == 4 - 1)
 	{	// first update is the final signon stage
@@ -1924,8 +1837,6 @@ void CLNQ_ParseEntity(unsigned int bits)
 
 	state->dpflags = 0;
 
-	floatcoords = cls.qex && (bits & QE_U_FLOATCOORDS);
-
 	if (bits & NQU_MODEL)
 	{
 		if (CPNQ_IS_BJP)
@@ -1944,34 +1855,20 @@ void CLNQ_ParseEntity(unsigned int bits)
 		state->skinnum = MSG_ReadByte();
 
 	if (bits & NQU_EFFECTS)
-	{
-		i = MSG_ReadByte();
-		if (cls.qex)
-		{
-			unsigned fixed = i & ~(REEF_QUADLIGHT|REEF_PENTLIGHT|REEF_CANDLELIGHT);
-			if (i & REEF_QUADLIGHT)
-				fixed |= EF_BLUE;
-			if (i & REEF_PENTLIGHT)
-				fixed |= EF_RED;
-			if (i & REEF_CANDLELIGHT)
-				fixed |= 0;	//tiny light
-			i = fixed;
-		}
-		state->effects = i;
-	}
+		state->effects = MSG_ReadByte();
 
 	if (bits & NQU_ORIGIN1)
-		state->origin[0] = floatcoords?MSG_ReadFloat():MSG_ReadCoord ();
+		state->origin[0] = MSG_ReadCoord ();
 	if (bits & NQU_ANGLE1)
 		state->angles[0] = MSG_ReadAngle();
 
 	if (bits & NQU_ORIGIN2)
-		state->origin[1] = floatcoords?MSG_ReadFloat():MSG_ReadCoord ();
+		state->origin[1] = MSG_ReadCoord ();
 	if (bits & NQU_ANGLE2)
 		state->angles[1] = MSG_ReadAngle();
 
 	if (bits & NQU_ORIGIN3)
-		state->origin[2] = floatcoords?MSG_ReadFloat():MSG_ReadCoord ();
+		state->origin[2] = MSG_ReadCoord ();
 	if (bits & NQU_ANGLE3)
 		state->angles[2] = MSG_ReadAngle();
 
@@ -2009,21 +1906,7 @@ void CLNQ_ParseEntity(unsigned int bits)
 			state->modelindex = (state->modelindex & 0xff) | (MSG_ReadByte() << 8);
 
 		if (bits & FITZU_LERPFINISH)
-			state->lerpend = cl.gametime + MSG_ReadByte()/255.0f;
-
-		if (cls.qex)
-		{
-			if (bits & QE_U_SOLIDTYPE)	/*state->solidsize =*/ MSG_ReadByte();		//needed for correct prediction
-			if (bits & QE_U_ENTFLAGS)	/*state->entflags = */ MSG_ReadULEB128();	//for onground/etc state
-			if (bits & QE_U_HEALTH)		/*state->health =*/ MSG_ReadSignedQEX();	//health... not really sure why, I suppose it changes player physics (they should have sent movetype instead though).
-			if (bits & QE_U_UNKNOWN26)	/*unknown =*/MSG_ReadByte();
-			if (bits & QE_U_UNUSED27)	Con_Printf(CON_WARNING"QE_U_UNUSED27: %u\n", MSG_ReadByte());
-
-			if (bits & QE_U_UNUSED28)	Con_Printf(CON_WARNING"QE_U_UNUSED28: %u\n", MSG_ReadByte());
-			if (bits & QE_U_UNUSED29)	Con_Printf(CON_WARNING"QE_U_UNUSED29: %u\n", MSG_ReadByte());
-			if (bits & QE_U_UNUSED30)	Con_Printf(CON_WARNING"QE_U_UNUSED30: %u\n", MSG_ReadByte());
-			if (bits & QE_U_UNUSED31)	Con_Printf(CON_WARNING"QE_U_UNUSED31: %u\n", MSG_ReadByte());
-		}
+			MSG_ReadByte();
 	}
 	else
 	{	//dp tends to leak stuff, so parse as quakedp if the normal protocol doesn't define it as something better.
@@ -3375,7 +3258,7 @@ static void CL_LerpNetFrameState(framestate_t *fs, lerpents_t *le)
 	fs->g[0].endbone = le->basebone;
 }
 
-static void CL_UpdateNetFrameLerpState(qboolean force, int curframe, int curbaseframe, int curbasebone, lerpents_t *le, float lerpend)
+static void CL_UpdateNetFrameLerpState(qboolean force, int curframe, int curbaseframe, int curbasebone, lerpents_t *le)
 {
 	int fst, frame;
 	if (curbasebone != le->basebone)
@@ -3392,10 +3275,7 @@ static void CL_UpdateNetFrameLerpState(qboolean force, int curframe, int curbase
 		frame = (fst==FST_BASE)?curbaseframe:curframe;
 		if (force || frame != le->newframe[fst])
 		{
-			if (lerpend)
-				le->framelerpdeltatime[fst] = bound(0, lerpend - cl.servertime, cl_lerp_maxinterval.value);	//clamp to 10 tics per second
-			else
-				le->framelerpdeltatime[fst] = bound(0, cl.servertime - le->newframestarttime[fst], cl_lerp_maxinterval.value);	//clamp to 10 tics per second
+			le->framelerpdeltatime[fst] = bound(0, cl.servertime - le->newframestarttime[fst], cl_lerp_maxinterval.value);	//clamp to 10 tics per second
 
 			if (!force)
 			{
@@ -3684,7 +3564,7 @@ static void CL_TransitionPacketEntities(int newsequence, packet_entities_t *newp
 					le->isnew = true;
 					VectorCopy(le->origin, le->lastorigin);
 				}
-				CL_UpdateNetFrameLerpState(sold == snew, snew->frame, snew->baseframe, snew->basebone, le, snew->lerpend);
+				CL_UpdateNetFrameLerpState(sold == snew, snew->frame, snew->baseframe, snew->basebone, le);
 
 
 				from = sold;	//eww
@@ -3754,10 +3634,7 @@ static void CL_TransitionPacketEntities(int newsequence, packet_entities_t *newp
 			VectorCopy(snew__origin, le->neworigin);
 			VectorCopy(snew->angles, le->newangle);
 
-			if (snew->lerpend)
-				le->orglerpdeltatime = bound(0.001, snew->lerpend - newpack->servertime, cl_lerp_maxinterval.value);
-			else
-				le->orglerpdeltatime = newpack->servertime - oldpack->servertime;
+			le->orglerpdeltatime = newpack->servertime - oldpack->servertime;
 			le->orglerpstarttime = oldpack->servertime;
 
 			le->isnew = true;
@@ -3785,8 +3662,6 @@ static void CL_TransitionPacketEntities(int newsequence, packet_entities_t *newp
 					VectorCopy(snew->angles, le->newangle);
 				}
 
-				if (snew->lerpend)
-					le->orglerpdeltatime = bound(0.001, snew->lerpend - le->orglerpstarttime, cl_lerp_maxinterval.value);
 				lfrac = (servertime - le->orglerpstarttime) / le->orglerpdeltatime;
 				lfrac = bound(0, lfrac, 1);
 				if (r_nolerp.ival)
@@ -3824,8 +3699,6 @@ static void CL_TransitionPacketEntities(int newsequence, packet_entities_t *newp
 					le->orglerpstarttime = servertime;
 				}
 
-				if (snew->lerpend)
-					le->orglerpdeltatime = bound(0.001, snew->lerpend - le->orglerpstarttime, cl_lerp_maxinterval.value);
 				lfrac = (servertime - le->orglerpstarttime) / le->orglerpdeltatime;
 				lfrac = bound(0, lfrac, 1);
 
@@ -3856,7 +3729,7 @@ static void CL_TransitionPacketEntities(int newsequence, packet_entities_t *newp
 		}
 #endif
 
-		CL_UpdateNetFrameLerpState(isnew, snew->frame, snew->baseframe, snew->basebone, le, snew->lerpend);
+		CL_UpdateNetFrameLerpState(isnew, snew->frame, snew->baseframe, snew->basebone, le);
 	}
 }
 
@@ -4166,14 +4039,12 @@ void CL_LinkPacketEntities (void)
 			if (state->effects & EF_BRIGHTLIGHT)
 			{
 				radius = max(radius,r_brightlight_colour.vec4[3]);
-				if (!(state->effects & (EF_RED|EF_GREEN|EF_BLUE)))
-					VectorAdd(colour, r_brightlight_colour.vec4, colour);
+				VectorAdd(colour, r_brightlight_colour.vec4, colour);
 			}
 			if (state->effects & EF_DIMLIGHT)
 			{
 				radius = max(radius,r_dimlight_colour.vec4[3]);
-				if (!(state->effects & (EF_RED|EF_GREEN|EF_BLUE)))
-					VectorAdd(colour, r_dimlight_colour.vec4, colour);
+				VectorAdd(colour, r_dimlight_colour.vec4, colour);
 			}
 			if (state->effects & EF_BLUE)
 			{
@@ -4301,7 +4172,7 @@ void CL_LinkPacketEntities (void)
 		if (cl.model_precache_vwep[0] && state->modelindex2 < MAX_VWEP_MODELS)
 		{
 			if (state->modelindex == cl_playerindex && cl.model_precache_vwep[0]->loadstate == MLS_LOADED &&
-				state->modelindex2 && cl.model_precache_vwep[state->modelindex2] && cl.model_precache_vwep[state->modelindex2]->loadstate == MLS_LOADED)
+				cl.model_precache_vwep[state->modelindex2] && cl.model_precache_vwep[state->modelindex2]->loadstate == MLS_LOADED)
 			{
 				model = cl.model_precache_vwep[0];
 				model2 = cl.model_precache_vwep[state->modelindex2];
@@ -4436,7 +4307,10 @@ void CL_LinkPacketEntities (void)
 			ent->shaderRGBAf[1] = (state->colormod[1]*8.0f)/256;
 			ent->shaderRGBAf[2] = (state->colormod[2]*8.0f)/256;
 		}
-		VectorScale(state->glowmod, 8.0/256.0, ent->glowmod);
+		if (state->colormod[0] == 32 && state->colormod[1] == 32 && state->colormod[2] == 32)
+			VectorSet(ent->glowmod, 1, 1, 1);
+		else
+			VectorScale(state->glowmod, 1/255.0, ent->glowmod);
 
 #ifdef PEXT_FATNESS
 		//set trans
@@ -5359,7 +5233,7 @@ void CL_LinkPlayers (void)
 			continue;	// not present this frame
 		}
 
-		CL_UpdateNetFrameLerpState(false, state->frame, 0, 0, &cl.lerpplayers[j], 0);
+		CL_UpdateNetFrameLerpState(false, state->frame, 0, 0, &cl.lerpplayers[j]);
 		cl.lerpplayers[j].sequence = cl.lerpentssequence;
 
 #ifdef CSQC_DAT
@@ -5400,14 +5274,12 @@ void CL_LinkPlayers (void)
 			if (state->effects & EF_BRIGHTLIGHT)
 			{
 				radius = max(radius,r_brightlight_colour.vec4[3]);
-				if (!(state->effects & (EF_RED|EF_GREEN|EF_BLUE)))
-					VectorAdd(colour, r_brightlight_colour.vec4, colour);
+				VectorAdd(colour, r_brightlight_colour.vec4, colour);
 			}
 			if (state->effects & EF_DIMLIGHT)
 			{
 				radius = max(radius,r_dimlight_colour.vec4[3]);
-				if (!(state->effects & (EF_RED|EF_GREEN|EF_BLUE)))
-					VectorAdd(colour, r_dimlight_colour.vec4, colour);
+				VectorAdd(colour, r_dimlight_colour.vec4, colour);
 			}
 			if (state->effects & EF_BLUE)
 			{

@@ -59,6 +59,8 @@ static csqctreadstate_t *csqcthreads;
 qboolean csqc_resortfrags;
 world_t csqc_world;
 
+float csqc_starttime;	//reset on each csqc reload to restore lost precision of cltime on each map restart.
+
 int	csqc_playerseat;	//can be negative.
 static playerview_t *csqc_playerview;
 qboolean csqc_dp_lastwas3d;	//to emulate DP correctly, we need to track whether drawpic/drawfill or clearscene was called last. blame 515.
@@ -226,11 +228,6 @@ static void CSQC_FindGlobals(qboolean nofuncs)
 #define ensurevector(name)	if (!csqcg.name) csqcg.name = junk._vector;
 #define ensureentity(name)	if (!csqcg.name) csqcg.name = &junk.edict;
 
-#define ensureprivfloat(name)	if (!csqcg.name) {static pvec_t f; csqcg.name = &f;}
-#define ensureprivint(name)		if (!csqcg.name) {static pint_t i; csqcg.name = &i;}
-#define ensureprivvector(name)	if (!csqcg.name) {static pvec3_t v; csqcg.name = v;}
-#define ensurepriventity(name)	if (!csqcg.name) {static pint_t e; csqcg.name = &e;}
-
 	if (csqc_nogameaccess)
 	{
 		csqcg.CSQC_UpdateView = 0;	//would fail
@@ -310,17 +307,11 @@ static void CSQC_FindGlobals(qboolean nofuncs)
 	ensurefloat(trace_networkentity);
 	ensureentity(trace_ent);
 
-	ensureprivfloat(clientcommandframe);
-	ensureprivfloat(input_timelength);
-	ensureprivvector(input_angles);
-	ensureprivvector(input_movevalues);
-	ensureprivfloat(input_buttons);
-//	ensureprivfloat(input_impulse);
 
 	if (csqcg.time)
 		*csqcg.time = cl.servertime;
 	if (csqcg.cltime)
-		*csqcg.cltime = realtime-cl.mapstarttime;
+		*csqcg.cltime = realtime-csqc_starttime;
 
 	if (!csqcg.global_gravitydir)
 		csqcg.global_gravitydir = defaultgravity;
@@ -1096,29 +1087,6 @@ static void QCBUILTIN PF_R_AddEntity(pubprogfuncs_t *prinst, struct globalvars_s
 		V_AddAxisEntity(&ent);
 	}
 }
-
-static void QCBUILTIN PF_R_AddEntityLighting(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
-{
-	csqcedict_t *in = (void*)G_EDICT(prinst, OFS_PARM0);
-	entity_t ent;
-	if (ED_ISFREE(in) || in->entnum == 0)
-	{
-		csqc_deprecated("Tried drawing a free/removed/world entity\n");
-		return;
-	}
-
-	if (CopyCSQCEdictToEntity(in, &ent))
-	{
-		ent.light_known = true;
-		VectorCopy(G_VECTOR(OFS_PARM1), ent.light_dir);
-		VectorCopy(G_VECTOR(OFS_PARM2), ent.light_avg);
-		VectorCopy(G_VECTOR(OFS_PARM3), ent.light_range);
-
-		CLQ1_AddShadow(&ent);
-		V_AddAxisEntity(&ent);
-	}
-}
-
 static void QCBUILTIN PF_R_RemoveEntity(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	csqcedict_t *in = (void*)G_EDICT(prinst, OFS_PARM0);
@@ -1992,7 +1960,7 @@ float csqc_proj_matrix[16];
 float csqc_proj_matrix_inverse[16];
 float csqc_proj_frustum[2];
 void V_ApplyAFov(playerview_t *pv);
-static void cs_buildmatricies(void)
+void buildmatricies(void)
 {
 	float modelview[16];
 	float proj[16];
@@ -2035,7 +2003,7 @@ static void cs_buildmatricies(void)
 static void QCBUILTIN PF_cs_project (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	if (csqc_rebuildmatricies)
-		cs_buildmatricies();
+		buildmatricies();
 
 
 	{
@@ -2081,7 +2049,7 @@ static void QCBUILTIN PF_cs_project (pubprogfuncs_t *prinst, struct globalvars_s
 static void QCBUILTIN PF_cs_unproject (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	if (csqc_rebuildmatricies)
-		cs_buildmatricies();
+		buildmatricies();
 
 	{
 		float *in = G_VECTOR(OFS_PARM0);
@@ -2401,36 +2369,7 @@ uploadfmt_t PR_TranslateTextureFormat(int qcformat)
 	case 13: return PTI_RG8;
 	case 14: return PTI_RGB32F;
 
-	default:
-		qcformat = -qcformat;
-		if (qcformat < PTI_MAX)
-			return qcformat;
-		return PTI_INVALID;
-	}
-}
-int PR_UnTranslateTextureFormat(uploadfmt_t pixelformat)
-{
-	switch(pixelformat)
-	{
-	case PTI_RGBA8:		return 1;
-	case PTI_RGBA16F:	return 2;
-	case PTI_RGBA32F:	return 3;
-
-	case PTI_DEPTH16:	return 4;
-	case PTI_DEPTH24:	return 5;
-	case PTI_DEPTH32:	return 6;
-
-	case PTI_R8:		return 7;
-	case PTI_R16F:		return 8;
-	case PTI_R32F:		return 9;
-
-	case PTI_A2BGR10:	return 10;
-	case PTI_RGB565:	return 11;
-	case PTI_RGBA4444:	return 12;
-	case PTI_RG8:		return 13;
-	case PTI_RGB32F:	return 14;
-
-	default:return -pixelformat;
+	default:return PTI_INVALID;
 	}
 }
 void QCBUILTIN PF_R_SetViewFlag(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
@@ -2771,7 +2710,7 @@ static void QCBUILTIN PF_R_RenderScene(pubprogfuncs_t *prinst, struct globalvars
 		csqc_worldchanged = false;
 		cl.worldmodel = r_worldentity.model = csqc_world.worldmodel;
 		FS_LoadMapPackFile(cl.worldmodel->name, cl.worldmodel->archive);
-		Surf_NewMap(csqc_world.worldmodel);
+		Surf_NewMap();
 		CL_UpdateWindowTitle();
 
 		World_RBE_Shutdown(&csqc_world);
@@ -3293,30 +3232,6 @@ static void QCBUILTIN PF_cs_getmodelindex (pubprogfuncs_t *prinst, struct global
 
 	G_FLOAT(OFS_RETURN) = PF_cs_PrecacheModel_Internal(prinst, s, queryonly);
 }
-static void QCBUILTIN PF_cs_getsoundindex (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
-{
-	const char	*s = PR_GetStringOfs(prinst, OFS_PARM0);
-	qboolean queryonly = (prinst->callargc >= 2)?G_FLOAT(OFS_PARM1):false;
-	int i;
-
-	G_FLOAT(OFS_RETURN) = 0;
-	//look for the server's names first...
-	for (i = 1; i < MAX_PRECACHE_SOUNDS; i++)
-	{
-		if (!*cl.sound_name[i])
-			break;
-		if (!strcmp(cl.sound_name[i], s))
-		{
-			G_FLOAT(OFS_RETURN) = i;
-			return;
-		}
-	}
-
-	//FIXME: we don't track clientside sound precaches (the sound system has its own, but can be flushed at any time forgetting/reordering them)
-	//can still make sure its cached though.
-	if (!queryonly)
-		S_PrecacheSound(s);
-}
 static void QCBUILTIN PF_cs_precachefile(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	const char *filename = PR_GetStringOfs(prinst, OFS_PARM0);
@@ -3335,22 +3250,10 @@ static void QCBUILTIN PF_cs_ModelnameForIndex(pubprogfuncs_t *prinst, struct glo
 {
 	int modelindex = G_FLOAT(OFS_PARM0);
 
-	if (modelindex < 0 && (-modelindex) < MAX_CSMODELS)
+	if (modelindex < 0)
 		G_INT(OFS_RETURN) = (int)PR_SetString(prinst, cl.model_csqcname[-modelindex]);
-	else if (modelindex >= 0 && modelindex < MAX_PRECACHE_MODELS)
+	else
 		G_INT(OFS_RETURN) = (int)PR_SetString(prinst, cl.model_name[modelindex]);
-	else
-		G_INT(OFS_RETURN) = 0;
-}
-static void QCBUILTIN PF_cs_SoundnameForIndex(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
-{
-	int soundindex = G_FLOAT(OFS_PARM0);
-
-	//FIXME: no private indexes. still useful for sending sound names from the ssqc via indexes.
-	if (soundindex >= 0 && soundindex < MAX_PRECACHE_SOUNDS)
-		G_INT(OFS_RETURN) = (int)PR_SetString(prinst, cl.sound_name[soundindex]);
-	else
-		G_INT(OFS_RETURN) = 0;
 }
 
 static void QCBUILTIN PF_cs_spriteframe(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
@@ -3572,21 +3475,11 @@ static void QCBUILTIN PF_ReadInt64(pubprogfuncs_t *prinst, struct globalvars_s *
 {
 	if (!csqc_mayread)
 	{
-		CSQC_Abort("PF_ReadInt64 is not valid at this time");
+		CSQC_Abort("PF_ReadInt is not valid at this time");
 		G_INT(OFS_RETURN) = -1;
 		return;
 	}
 	G_INT64(OFS_RETURN) = MSG_ReadInt64();
-}
-static void QCBUILTIN PF_ReadUInt64(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
-{
-	if (!csqc_mayread)
-	{
-		CSQC_Abort("PF_ReadUInt64 is not valid at this time");
-		G_INT(OFS_RETURN) = -1;
-		return;
-	}
-	G_INT64(OFS_RETURN) = MSG_ReadUInt64();
 }
 
 static void QCBUILTIN PF_ReadString(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
@@ -4268,24 +4161,16 @@ static void QCBUILTIN PF_cs_runplayerphysics (pubprogfuncs_t *prinst, struct glo
 	pmove.cmd.sidemove = csqcg.input_movevalues[1];
 	pmove.cmd.upmove = csqcg.input_movevalues[2];
 	pmove.cmd.buttons = *csqcg.input_buttons;
-	pmove.onladder = false;
 	pmove.safeorigin_known = false;
 	pmove.capsule = false;	//FIXME
 
-	movevars.bunnyspeedcap = cl.bunnyspeedcap;
 	movevars.coordtype = cls.netchan.message.prim.coordtype;
-	if (csqc_playerseat >= 0 && cl.playerview[csqc_playerseat].playernum+1 == ent->xv->entnum)
-	{
-		movevars.entgravity = cl.playerview[csqc_playerseat].entgravity;
-		movevars.maxspeed = cl.playerview[csqc_playerseat].maxspeed;
-	}
-	else
-	{
-		movevars.entgravity = 1;
-		movevars.maxspeed = cl.playerview[0].maxspeed;
-	}
 	if (ent->xv->gravity)
 		movevars.entgravity = ent->xv->gravity;
+	else if (csqc_playerseat >= 0 && cl.playerview[csqc_playerseat].playernum+1 == ent->xv->entnum)
+		movevars.entgravity = cl.playerview[csqc_playerseat].entgravity;
+	else
+		movevars.entgravity = 1;
 
 	if (ent->xv->entnum)
 		pmove.skipent = ent->xv->entnum;
@@ -4308,12 +4193,11 @@ static void QCBUILTIN PF_cs_runplayerphysics (pubprogfuncs_t *prinst, struct glo
 	}
 	pmove.jump_held = (int)ent->xv->pmove_flags & PMF_JUMP_HELD;
 	pmove.waterjumptime = 0;
-	pmove.onground = !!((int)ent->v->flags & FL_ONGROUND);
+	pmove.onground = (int)ent->v->flags & FL_ONGROUND;
 	VectorCopy(ent->v->origin, pmove.origin);
 	VectorCopy(ent->v->velocity, pmove.velocity);
 	VectorCopy(ent->v->maxs, pmove.player_maxs);
 	VectorCopy(ent->v->mins, pmove.player_mins);
-	VectorCopy(ent->xv->gravitydir, pmove.gravitydir);
 
 	CL_SetSolidEntities();
 
@@ -4555,17 +4439,17 @@ static const char *PF_cs_getplayerkey_internal (unsigned int pnum, const char *k
 		ret = buffer;
 		sprintf(ret, "%i", cl.players[pnum].pl);
 	}
-	else if (!strcmp(keyname, "activetime"))
+	else if (!strcmp(keyname, "activetime"))	//packet loss
 	{
 		ret = buffer;
 		sprintf(ret, "%f", realtime - cl.players[pnum].realentertime);
 	}
-//	else if (!strcmp(keyname, "entertime"))
+//	else if (!strcmp(keyname, "entertime"))	//packet loss
 //	{
 //		ret = buffer;
 //		sprintf(ret, "%i", (int)cl.players[pnum].entertime);
 //	}
-	else if (!strcmp(keyname, "topcolor_rgb"))
+	else if (!strcmp(keyname, "topcolor_rgb"))	//packet loss
 	{
 		unsigned int col = cl.players[pnum].dtopcolor;
 		ret = buffer;
@@ -4577,7 +4461,7 @@ static const char *PF_cs_getplayerkey_internal (unsigned int pnum, const char *k
 		else
 			sprintf(ret, "'%g %g %g'", ((col&0xff0000)>>16)/255.0, ((col&0x00ff00)>>8)/255.0, ((col&0x0000ff)>>0)/255.0);
 	}
-	else if (!strcmp(keyname, "bottomcolor_rgb"))
+	else if (!strcmp(keyname, "bottomcolor_rgb"))	//packet loss
 	{
 		unsigned int col = cl.players[pnum].dbottomcolor;
 		ret = buffer;
@@ -5686,10 +5570,9 @@ static void CS_ConsoleCommand_f(void)
 }
 static void QCBUILTIN PF_cs_registercommand (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
-	const char *str = PR_GetStringOfs(prinst, OFS_PARM0);
-	const char *desc = (prinst->callargc>1)?PR_GetStringOfs(prinst, OFS_PARM1):NULL;
+	const char *str = PF_VarString(prinst, 0, pr_globals);
 	if (!Cmd_Exists(str))
-		Cmd_AddCommandD(str, CS_ConsoleCommand_f, desc);
+		Cmd_AddCommand(str, CS_ConsoleCommand_f);
 }
 
 static void QCBUILTIN PF_cs_setlistener (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
@@ -7073,7 +6956,6 @@ static struct {
 
 //200
 	{"getmodelindex",			PF_cs_getmodelindex,	200},
-	{"getsoundindex",			PF_cs_getsoundindex,	0},
 	{"externcall",				PF_externcall,	201},
 	{"addprogs",				PF_cs_addprogs,	202},
 	{"externvalue",				PF_externvalue,	203},
@@ -7149,19 +7031,6 @@ static struct {
 	{"sqlversion",				PF_NoCSQC,			257},	// #257 string(float serveridx) sqlversion (FTE_SQL)
 	{"sqlreadfloat",			PF_NoCSQC,			258},	// #258 float(float serveridx, float queryidx, float row, float column) sqlreadfloat (FTE_SQL)
 
-	{"json_parse",				PF_json_parse,				0},
-	{"json_free",				PF_memfree,					0},
-	{"json_get_value_type",		PF_json_get_value_type,		0},
-	{"json_get_integer",		PF_json_get_integer,		0},
-	{"json_get_float",			PF_json_get_float,			0},
-	{"json_get_string",			PF_json_get_string,			0},
-	{"json_find_object_child",	PF_json_find_object_child,	0},
-	{"json_get_length",			PF_json_get_length,			0},
-	{"json_get_child_at_index",	PF_json_get_child_at_index,	0},
-	{"json_get_name",			PF_json_get_name,			0},
-
-	{"js_run_script",			PF_js_run_script,	0},
-
 	{"stoi",					PF_stoi,			259},
 	{"itos",					PF_itos,			260},
 	{"stoh",					PF_stoh,			261},
@@ -7185,9 +7054,8 @@ static struct {
 //	{"skel_postmul_bones",		PF_skel_postmul_bones,	0},//void(float skel, float startbone, float endbone, vector org) skel_mul_bone = #273; // (FTE_CSQC_SKELETONOBJECTS) (reads v_forward etc)
 	{"skel_copybones",			PF_skel_copybones,		274},//void(float skeldst, float skelsrc, float startbone, float entbone) skel_copybones = #274; // (FTE_CSQC_SKELETONOBJECTS)
 	{"skel_delete",				PF_skel_delete,			275},//void(float skel) skel_delete = #275; // (FTE_CSQC_SKELETONOBJECTS)
-	{"frameforname",			PF_frameforname,		276},//float(float modidx, string framename) frameforname = #276 (FTE_CSQC_SKELETONOBJECTS)
-	{"frameduration",			PF_frameduration,		277},//float(float modidx, float framenum) frameduration = #277 (FTE_CSQC_SKELETONOBJECTS)
-	{"frameforaction",			PF_frameforaction,		0},//float(float modidx, int actionid) frameforaction = #0
+	{"frameforname",			PF_frameforname,		276},//void(float modidx, string framename) frameforname = #276 (FTE_CSQC_SKELETONOBJECTS)
+	{"frameduration",			PF_frameduration,		277},//void(float modidx, float framenum) frameduration = #277 (FTE_CSQC_SKELETONOBJECTS)
 	{"processmodelevents",		PF_processmodelevents,	0},
 	{"getnextmodelevent",		PF_getnextmodelevent,	0},
 	{"getmodeleventidx",		PF_getmodeleventidx,	0},
@@ -7239,8 +7107,6 @@ static struct {
 	{"clearscene",				PF_R_ClearScene,	300},				// #300 void() clearscene (EXT_CSQC)
 	{"addentities",				PF_R_AddEntityMask,	301},				// #301 void(float mask) addentities (EXT_CSQC)
 	{"addentity",				PF_R_AddEntity,		302},					// #302 void(entity ent) addentity (EXT_CSQC)
-	{"addentity_lighting",		PF_R_AddEntityLighting,		0},
-
 	{"removeentity",			PF_R_RemoveEntity,	0},
 	{"setproperty",				PF_R_SetViewFlag,	303},				// #303 float(float property, ...) setproperty (EXT_CSQC)
 	{"renderscene",				PF_R_RenderScene,	304},				// #304 void() renderscene (EXT_CSQC)
@@ -7297,7 +7163,6 @@ static struct {
 	{"getplayerstat",			PF_cs_getplayerstat,			0},		// #0 __variant(float playernum, float statnum, float stattype) getplayerstat
 	{"setmodelindex",			PF_cs_SetModelIndex,			333},	// #333 void(entity e, float mdlindex) setmodelindex (EXT_CSQC)
 	{"modelnameforindex",		PF_cs_ModelnameForIndex,		334},	// #334 string(float mdlindex) modelnameforindex (EXT_CSQC)
-	{"soundnameforindex",		PF_cs_SoundnameForIndex,		0},
 
 	{"particleeffectnum",		PF_cs_particleeffectnum,		335},	// #335 float(string effectname) particleeffectnum (EXT_CSQC)
 	{"trailparticles",			PF_cs_trailparticles,			336},	// #336 void(float effectnum, entity ent, vector start, vector end) trailparticles (EXT_CSQC),
@@ -7365,7 +7230,6 @@ static struct {
 	{"readdouble",				PF_ReadDouble,					0},		// #367 __double() readdouble (EXT_CSQC)
 	{"readint",					PF_ReadInt,						0},		// #0 int() readint
 	{"readint64",				PF_ReadInt64,					0},		// #0 __int64() readint64
-	{"readuint64",				PF_ReadUInt64,					0},		// #0 __uint64() readuint64
 	{"readentitynum",			PF_ReadEntityNum,				368},	// #368 float() readentitynum (EXT_CSQC)
 
 //	{"readserverentitystate",	PF_ReadServerEntityState,		369},	// #369 void(float flags, float simtime) readserverentitystate (EXT_CSQC_1)
@@ -7390,8 +7254,6 @@ static struct {
 	{"memsetval",				PF_memsetval,				389},
 	{"memptradd",				PF_memptradd,				390},
 	{"memstrsize",				PF_memstrsize,				0},
-	{"base64encode",			PF_base64encode,			0},
-	{"base64decode",			PF_base64decode,			0},
 
 	{"con_getset",				PF_SubConGetSet,			391},
 	{"con_printf",				PF_SubConPrintf,			392},
@@ -8394,7 +8256,7 @@ qboolean CSQC_Init (qboolean anycsqc, const char *csprogsname, unsigned int chec
 		int csaddonnum = -1;
 		in_sensitivityscale = 1;
 		csqcmapentitydataloaded = true;
-		cl.mapstarttime = realtime;
+		csqc_starttime = realtime;
 		csqcprogs = InitProgs(&csqcprogparms);
 		csqc_world.progs = csqcprogs;
 		csqc_world.usesolidcorpse = true;
@@ -8956,7 +8818,7 @@ qboolean CSQC_DrawView(void)
 	if (!csqcg.CSQC_UpdateView || !csqcprogs)
 		return false;
 
-	if (cls.state < ca_active && !CSQC_UnconnectedOkay(false) && !CSQC_UseGamecodeLoadingScreen())
+	if (cls.state < ca_active && !CSQC_UnconnectedOkay(false))
 		return false;
 
 	r_secondaryview = 0;
@@ -9011,7 +8873,18 @@ qboolean CSQC_DrawView(void)
 	host_frametime = clframetime;
 
 	if (csqcg.frametime)
-		*csqcg.frametime = cl.paused?0:bound(0, cl.time - cl.lasttime, 0.1);
+	{
+		if (1)//csqc_isdarkplaces)
+		{
+			if (cl.paused)
+				*csqcg.frametime = 0;	//apparently people can't cope with microstutter when they're using this as a test to see if the game is paused.
+			else
+				*csqcg.frametime = bound(0, cl.time - cl.lasttime, 0.1);
+		}
+		else
+			*csqcg.frametime = host_frametime;
+	}
+
 	if (csqcg.clframetime)
 		*csqcg.clframetime = host_frametime;
 
@@ -9030,7 +8903,7 @@ qboolean CSQC_DrawView(void)
 		CL_PredictMove ();
 
 	if (csqcg.cltime)
-		*csqcg.cltime = realtime-cl.mapstarttime;
+		*csqcg.cltime = realtime-csqc_starttime;
 	if (csqcg.time)
 		*csqcg.time = cl.servertime;
 	if (csqcg.clientcommandframe)
@@ -9070,8 +8943,6 @@ qboolean CSQC_DrawView(void)
 #endif
 
 	{
-		extern qboolean	scr_drawloading;
-		extern int		loading_stage;
 		void *pr_globals = PR_globals(csqcprogs, PR_CURRENT);
 		if (csqc_isdarkplaces)
 		{	//fucked for compatibility.
@@ -9085,7 +8956,7 @@ qboolean CSQC_DrawView(void)
 		}
 		G_FLOAT(OFS_PARM2) = !Key_Dest_Has(kdm_menu|kdm_cwindows) && !r_refdef.eyeoffset[0] && !r_refdef.eyeoffset[1];
 
-		if (csqcg.CSQC_UpdateViewLoading && ((cls.state && cls.state < ca_active) || scr_drawloading || loading_stage))
+		if (csqcg.CSQC_UpdateViewLoading && cls.state && cls.state < ca_active)
 			PR_ExecuteProgram(csqcprogs, csqcg.CSQC_UpdateViewLoading);
 		else
 			PR_ExecuteProgram(csqcprogs, csqcg.CSQC_UpdateView);
@@ -9121,7 +8992,7 @@ qboolean CSQC_DrawHud(playerview_t *pv)
 		if (csqcg.frametime)
 			*csqcg.frametime = host_frametime;
 		if (csqcg.cltime)
-			*csqcg.cltime = realtime-cl.mapstarttime;
+			*csqcg.cltime = realtime-csqc_starttime;
 
 		G_FLOAT(OFS_PARM0+0) = r_refdef.grect.width;
 		G_FLOAT(OFS_PARM0+1) = r_refdef.grect.height;
@@ -9165,7 +9036,7 @@ qboolean CSQC_DrawScores(playerview_t *pv)
 		if (csqcg.frametime)
 			*csqcg.frametime = host_frametime;
 		if (csqcg.cltime)
-			*csqcg.cltime = realtime-cl.mapstarttime;
+			*csqcg.cltime = realtime-csqc_starttime;
 
 		G_FLOAT(OFS_PARM0+0) = r_refdef.grect.width;
 		G_FLOAT(OFS_PARM0+1) = r_refdef.grect.height;
@@ -9388,20 +9259,20 @@ void CSQC_ServerInfoChanged(void)
 
 qboolean CSQC_ParseTempEntity(void)
 {
-	int obit;
+	int orc;
 	void *pr_globals;
 	if (!csqcprogs || !csqcg.CSQC_Parse_TempEntity)
 		return false;
 
 	pr_globals = PR_globals(csqcprogs, PR_CURRENT);
 	csqc_mayread = true;
-	obit = net_message.currentbit;
+	orc = msg_readcount;
 	PR_ExecuteProgram (csqcprogs, csqcg.CSQC_Parse_TempEntity);
 	csqc_mayread = false;
 	if (G_FLOAT(OFS_RETURN))
 		return true;
 	//failed. reset the read position.
-	net_message.currentbit = obit;
+	msg_readcount = orc;
 	msg_badread = false;
 	return false;
 }
@@ -9413,7 +9284,7 @@ qboolean CSQC_ParseGamePacket(int seat, qboolean sized)
 	if (sized)
 	{
 		int len = (unsigned short)MSG_ReadShort();
-		int start = MSG_GetReadCount(), end;
+		int start = msg_readcount;
 
 		if (!csqcprogs || !parsefnc)
 		{
@@ -9425,11 +9296,10 @@ qboolean CSQC_ParseGamePacket(int seat, qboolean sized)
 		CSQC_ChangeLocalPlayer(seat);
 		PR_ExecuteProgram (csqcprogs, parsefnc);
 
-		end = MSG_GetReadCount();
-		if (end != start + len)
+		if (msg_readcount != start + len)
 		{
-			Con_Printf("Gamecode misread a gamecode packet (%i bytes too much)\n", end - (start+len));
-			MSG_ReadSkip(start + len - end);	//unread or skip.
+			Con_Printf("Gamecode misread a gamecode packet (%i bytes too much)\n", msg_readcount - (start+len));
+			msg_readcount = start + len;
 		}
 	}
 	else
@@ -9437,10 +9307,7 @@ qboolean CSQC_ParseGamePacket(int seat, qboolean sized)
 		if (!csqcprogs || !parsefnc)
 		{
 			int next = MSG_ReadByte();
-			if (!csqcprogs)
-				Host_EndGame("This server requires CSQC support, but \"csprogsvers/%x.dat\" wasn't loaded.\n", csprogs_checksum);
-			else
-				Host_EndGame("Loaded CSQC module is unable to parse events (lead byte %i).\n", next);
+			Host_EndGame("CSQC not running or is unable to parse events (lead byte %i).\n", next);
 			return false;
 		}
 		csqc_mayread = true;
@@ -9622,7 +9489,7 @@ void CSQC_Input_Frame(int seat, usercmd_t *cmd)
 	if (csqcg.time)
 		*csqcg.time = cl.servertime;
 	if (csqcg.cltime)
-		*csqcg.cltime = realtime-cl.mapstarttime;
+		*csqcg.cltime = realtime-csqc_starttime;
 
 	if (csqcg.clientcommandframe)
 		*csqcg.clientcommandframe = cl.movesequence;
@@ -9736,7 +9603,7 @@ void CSQC_ParseEntities(qboolean sized)
 	if (csqcg.time)		//estimated server time
 		*csqcg.time = cl.servertime;
 	if (csqcg.cltime)	//smooth client time.
-		*csqcg.cltime = realtime-cl.mapstarttime;
+		*csqcg.cltime = realtime-csqc_starttime;
 
 	if (csqcg.servertime)
 		*csqcg.servertime = cl.gametime;
@@ -9801,7 +9668,7 @@ void CSQC_ParseEntities(qboolean sized)
 			if (sized)
 			{
 				packetsize = MSG_ReadShort();
-				packetstart = MSG_GetReadCount();
+				packetstart = msg_readcount;
 			}
 			else
 			{
@@ -9847,14 +9714,13 @@ void CSQC_ParseEntities(qboolean sized)
 
 			if (sized)
 			{
-				unsigned int readcount = MSG_GetReadCount();
-				if (readcount != packetstart+packetsize)
+				if (msg_readcount != packetstart+packetsize)
 				{
-					if (readcount > packetstart+packetsize)
-						Con_Printf("CSQC overread entity %i. Size %i, read %i", entnum, packetsize, readcount - packetstart);
+					if (msg_readcount > packetstart+packetsize)
+						Con_Printf("CSQC overread entity %i. Size %i, read %i", entnum, packetsize, msg_readcount - packetstart);
 					else
-						Con_Printf("CSQC underread entity %i. Size %i, read %i", entnum, packetsize, readcount - packetstart);
-					Con_Printf(", first byte is %i(%x)\n", net_message.data[readcount], net_message.data[readcount]);
+						Con_Printf("CSQC underread entity %i. Size %i, read %i", entnum, packetsize, msg_readcount - packetstart);
+					Con_Printf(", first byte is %i(%x)\n", net_message.data[msg_readcount], net_message.data[msg_readcount]);
 #ifndef CLIENTONLY
 					if (sv.state)
 					{
@@ -9862,7 +9728,7 @@ void CSQC_ParseEntities(qboolean sized)
 					}
 #endif
 				}
-				MSG_ReadSkip(packetstart+packetsize - readcount);	//unread or skip.
+				msg_readcount = packetstart+packetsize;	//leetism.
 			}
 		}
 	}

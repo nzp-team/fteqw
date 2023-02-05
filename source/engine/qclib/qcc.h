@@ -394,7 +394,6 @@ typedef struct QCC_type_s
 
 	struct accessor_s *accessors;
 
-	struct QCC_function_s *scope;	//stoopid scoped typedefs...
 	struct QCC_type_s *ptrto;	//(cache) this points to a type that is a pointer back to this type. yeah, weird.
 	struct QCC_type_s *fldto;	//(cache) this points to a type that is a pointer back to this type. yeah, weird.
 } QCC_type_t;
@@ -508,7 +507,7 @@ extern int QCC_packid;
 extern	const unsigned int		type_size[];
 //extern	QCC_def_t	*def_for_type[9];
 
-extern	QCC_type_t	*type_void, *type_string, *type_float, *type_double, *type_vector, *type_entity, *type_field, *type_function, *type_floatfunction, *type_pointer, *type_floatpointer, *type_intpointer, *type_bint, *type_bfloat, *type_integer, *type_uint, *type_int64, *type_uint64, *type_invalid, *type_variant, *type_floatfield;
+extern	QCC_type_t	*type_void, *type_string, *type_float, *type_double, *type_vector, *type_entity, *type_field, *type_function, *type_floatfunction, *type_pointer, *type_floatpointer, *type_intpointer, *type_bint, *type_bfloat, *type_integer, *type_uint, *type_int64, *type_uint64, *type_variant, *type_floatfield;
 extern char *basictypenames[];
 
 struct QCC_function_s
@@ -594,13 +593,6 @@ extern	int				pr_token_line;
 extern	int				pr_token_line_last;
 extern	QCC_type_t		*pr_immediate_type;
 extern	QCC_eval_t		pr_immediate;
-
-extern int verbose;
-#define VERBOSE_WARNINGSONLY -1
-#define VERBOSE_PROGRESS 0
-#define VERBOSE_STANDARD 1
-#define VERBOSE_DEBUG 2
-#define VERBOSE_DEBUGSTATEMENTS 3	//figuring out the files can be expensive.
 
 extern pbool keyword_asm;
 extern pbool keyword_break;
@@ -819,7 +811,7 @@ enum {
 	WARN_BADPRAGMA,
 	WARN_NOTUTF8,
 	WARN_HANGINGSLASHR,
-	WARN_MEMBERNOTDEFINED,
+	WARN_NOTDEFINED,
 	WARN_NOTCONSTANT,
 	WARN_SWITCHTYPEMISMATCH,
 	WARN_CONFLICTINGUNIONMEMBER,
@@ -1095,7 +1087,8 @@ void QCC_PR_EmitArrayGetFunction(QCC_def_t *defscope, QCC_def_t *thearray, char 
 void QCC_PR_EmitArraySetFunction(QCC_def_t *defscope, QCC_def_t *thearray, char *arrayname);
 void QCC_PR_EmitClassFromFunction(QCC_def_t *defscope, QCC_type_t *basetype);
 
-void QCC_PR_ParseDefs (const char *classname, pbool fatal);
+void QCC_PR_ParseDefs (char *classname, pbool fatal);
+void QCC_PR_ParseTypedef(void);
 QCC_def_t *QCC_PR_DummyDef(QCC_type_t *type, const char *name, QCC_function_t *scope, int arraysize, QCC_def_t *rootsymbol, unsigned int ofs, int referable, unsigned int flags);
 void QCC_PR_ParseInitializerDef(QCC_def_t *def, unsigned int flags);
 void QCC_PR_FinaliseFunctions(void);

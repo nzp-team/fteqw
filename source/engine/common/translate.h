@@ -12,7 +12,6 @@ struct language_s
 {
 	char *name;
 	struct po_s *po;
-	struct po_s *po_qex;
 };
 extern struct language_s languages[MAX_LANGUAGES];
 extern int com_language;

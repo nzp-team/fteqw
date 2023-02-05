@@ -2900,9 +2900,6 @@ static void S_UpdateSoundCard(soundcardinfo_t *sc, qboolean updateonly, channel_
 		return;
 	}
 
-	if (timeoffset != 0.0)
-		chanupdatetype |= CUR_OFFSET;
-
 	if (!ratemul)	//rate of 0
 		ratemul = 1;
 	ratemul *= snd_playbackrate.value;
@@ -2916,7 +2913,6 @@ static void S_UpdateSoundCard(soundcardinfo_t *sc, qboolean updateonly, channel_
 // spatialize
 	if (target_chan->sfx != sfx)
 		chanupdatetype |= CUR_SOUNDCHANGE;
-
 	memset (target_chan, 0, sizeof(*target_chan));
 	if (!origin)
 	{
@@ -3682,8 +3678,8 @@ static void S_Q2_AddEntitySounds(soundcardinfo_t *sc)
 	else
 #endif
 #ifdef VM_CG
-	if (cls.protocol == CP_QUAKE3 && q3)
-		count = q3->cg.GatherLoopingSounds(positions, entnums, sounds, countof(sounds));
+	if (cls.protocol == CP_QUAKE3)
+		count = CG_GatherLoopingSounds(positions, entnums, sounds, countof(sounds));
 	else
 #endif
 		return;

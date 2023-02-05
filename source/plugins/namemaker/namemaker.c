@@ -37,10 +37,10 @@ static void LoadPics(void)
 	char buffer[256];
 
 //main bar (add cvars later)
-	con_chars = drawfuncs->LoadImage("gfx/conchars.lmp");
+	con_chars = drawfuncs->LoadImage("gfx/conchars.lmp", false);
 	cvarfuncs->GetString("cl_cursor", buffer, sizeof(buffer));
 	if (*buffer)
-		pic_cursor = drawfuncs->LoadImage(buffer);
+		pic_cursor = drawfuncs->LoadImage(buffer, false);
 	else
 		pic_cursor = 0;
 }
@@ -171,11 +171,18 @@ static qboolean QDECL Plug_MenuEvent(int eventtype, int param, int unicode, floa
 	return 0;
 }
 
-static void Plug_NameMaker_f(void)
+static qboolean Plug_ExecuteCommand(qboolean isinsecure)
 {
-	inputfuncs->SetMenuFocus(true, NULL, 0, 0, 0); //grab input focus
-	cvarfuncs->GetString("name", (char*)namebuffer, sizeof(namebuffer));
-	insertpos = strlen(namebuffer);
+	char cmd[256];
+	cmdfuncs->Argv(0, cmd, sizeof(cmd));
+	if (!strcmp("namemaker", cmd))
+	{
+		inputfuncs->SetMenuFocus(true, NULL, 0, 0, 0); //grab input focus
+		cvarfuncs->GetString("name", (char*)namebuffer, sizeof(namebuffer));
+		insertpos = strlen(namebuffer);
+		return 1;
+	}
+	return 0;
 }
 
 qboolean Plug_Init(void)
@@ -185,6 +192,7 @@ qboolean Plug_Init(void)
 	if (drawfuncs && inputfuncs &&
 //		plugfuncs->ExportFunction("SbarBase", UI_StatusBar) &&
 //		plugfuncs->ExportFunction("SbarOverlay", UI_ScoreBoard) &&
+		plugfuncs->ExportFunction("ExecuteCommand", Plug_ExecuteCommand) &&
 		plugfuncs->ExportFunction("MenuEvent", Plug_MenuEvent))
 	{
 
@@ -205,7 +213,7 @@ qboolean Plug_Init(void)
 		K_PAGEDOWN		= inputfuncs->GetKeyCode("pgdn", NULL);
 		K_BACKSPACE		= inputfuncs->GetKeyCode("backspace", NULL);
 
-		cmdfuncs->AddCommand("namemaker", Plug_NameMaker_f, "Provides a simple way to select from quake's glyphs.");
+		cmdfuncs->AddCommand("namemaker");
 
 		LoadPics();
 

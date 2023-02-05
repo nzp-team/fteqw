@@ -291,7 +291,6 @@ qboolean R_DrawSkyroom(shader_t *skyshader)
 {
 	float vmat[16];
 	refdef_t oldrefdef;
-	int oldarea = r_viewarea, oldcluster[2] = {r_viewcluster,r_viewcluster2};
 //	extern cvar_t r_ignoreentpvs; //legacy value is 1...
 
 	if (r_viewcluster == -1)
@@ -314,7 +313,6 @@ qboolean R_DrawSkyroom(shader_t *skyshader)
 	r_refdef.flags &= ~RDF_SKIPSKY;
 	r_refdef.forcedvis = NULL;
 	r_refdef.areabitsknown = false;	//recalculate areas clientside.
-	r_refdef.sceneareas = NULL;
 
 	if (cl.fog[FOGTYPE_SKYROOM].density)
 	{
@@ -354,9 +352,6 @@ qboolean R_DrawSkyroom(shader_t *skyshader)
 	Surf_SetupFrame();
 	Surf_DrawWorld ();
 
-	r_viewarea = oldarea;
-	r_viewcluster = oldcluster[0];
-	r_viewcluster2 = oldcluster[1];
 	r_refdef = oldrefdef;
 
 	/*broken stuff*/

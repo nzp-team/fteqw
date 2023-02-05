@@ -348,10 +348,8 @@ static void SV_Master_SingleHeartbeat(net_masterlist_t *master)
 				//we default to FTE-Quake when running quake so at least that part is fair.
 				//however, I made QSS also look for FTE-Quake servers too, so that's messy with listen_nq 0, but that's true if listen_dp is set.
 				//so we want to be quite permissive here, at least with custom builds that will default to these cvars set to 0.
-				//Note that Darkplaces clients are supposed to be able to use the qw protocol, so it should be okay to heartbeat as Darkplaces-Quake here even when not doing any nq protocols.
-				//either way, custom protocols tend to require ftemaster/dpmaster so we want to heartbeat regardless.
 #if defined(NQPROT) && !defined(QUAKETC)
-				if (sv_listen_dp.value || sv_listen_nq.value || strcasecmp(com_protocolname.string, "FTE-Quake"))
+				if (sv_listen_dp.value || sv_listen_nq.value)
 #endif
 				{
 					//darkplaces here refers to the master server protocol, rather than the game protocol
@@ -612,8 +610,6 @@ static void SV_Master_Add(int type, char *stringadr)
 	{
 		if (net_masterlist[i].protocol != type)
 			continue;
-		if (net_masterlist[i].cv.flags & CVAR_NOSAVE)
-			continue;	//ignore our extras
 		if (!*net_masterlist[i].cv.string)
 			break;
 	}
@@ -629,19 +625,6 @@ static void SV_Master_Add(int type, char *stringadr)
 	svs.last_heartbeat = -99999;
 }
 
-static void SV_Master_ClearType(int type)
-{
-	int i;
-	for (i = 0; net_masterlist[i].cv.name; i++)
-	{
-		if (net_masterlist[i].protocol == type)
-		{
-			if (net_masterlist[i].cv.flags & CVAR_NOSAVE)
-				continue;	//ignore our extras
-			Cvar_Set(&net_masterlist[i].cv, "");
-		}
-	}
-}
 static void SV_Master_ClearAll(void)
 {
 	int i;
@@ -663,22 +646,17 @@ static void SV_SetMaster_f (void)
 {
 	int		i;
 
+	SV_Master_ClearAll();
+
 	if (!strcmp(Cmd_Argv(1), "none"))
 	{
-		Cvar_Set(&sv_public, "0");	//go private.
-
-		SV_Master_ClearAll();
 		if (cl_warncmd.ival)
 			Con_Printf ("Entering no-master mode\n");
 		return;
 	}
 	if (!strcmp(Cmd_Argv(1), "clear"))
-	{
-		SV_Master_ClearType(MP_QUAKEWORLD);
 		return;
-	}
 
-	Cvar_Set(&sv_public, "1");	//go public.
 	if (!strcmp(Cmd_Argv(1), "default"))
 	{
 		for (i = 0; net_masterlist[i].cv.name; i++)
@@ -686,7 +664,8 @@ static void SV_SetMaster_f (void)
 		return;
 	}
 
-	SV_Master_ClearType(MP_QUAKEWORLD);
+	Cvar_Set(&sv_public, "1");	//go public.
+
 	for (i=1 ; i<Cmd_Argc() ; i++)
 	{
 		SV_Master_Add(MP_QUAKEWORLD, Cmd_Argv(i));
@@ -944,7 +923,7 @@ static void Master_HideServer(serverinfo_t *server)
 		{
 			for (j = i; j < numvisibleservers-1; j++)
 				visibleservers[j] = visibleservers[j+1];
-			numvisibleservers--;
+			visibleservers--;
 		}
 		else
 			 i++;
@@ -1041,6 +1020,8 @@ char	*Master_ServerToString (char *s, int len, serverinfo_t *a)
 static int Master_BaseGame(serverinfo_t *a)
 {
 	int prot = a->special&SS_PROTOCOLMASK;
+	if (prot == SS_DARKPLACES && (a->special&SS_FTESERVER))
+		prot = SS_QUAKEWORLD;
 	return prot;
 }
 
@@ -1354,13 +1335,13 @@ int Master_NumSorted(void)
 }
 
 
-float Master_ReadKeyFloat(serverinfo_t *server, unsigned int keynum)
+float Master_ReadKeyFloat(serverinfo_t *server, hostcachekey_t keynum)
 {
 	if (!server)
 		return -1;
 	else if (keynum < SLKEY_CUSTOM)
 	{
-		switch((hostcachekey_t)keynum)
+		switch(keynum)
 		{
 		case SLKEY_PING:
 			return server->ping;
@@ -1416,7 +1397,7 @@ void Master_DecodeColour(vec3_t ret, int col)
 		VectorSet(ret, ((col&0xff0000)>>16)/255.0, ((col&0x00ff00)>>8)/255.0, ((col&0x0000ff)>>0)/255.0);
 }
 
-char *Master_ReadKeyString(serverinfo_t *server, unsigned int keynum)
+char *Master_ReadKeyString(serverinfo_t *server, hostcachekey_t keynum)
 {
 	static char adr[MAX_ADR_SIZE];
 
@@ -1459,7 +1440,7 @@ char *Master_ReadKeyString(serverinfo_t *server, unsigned int keynum)
 	}
 	else
 	{
-		switch((hostcachekey_t)keynum)
+		switch(keynum)
 		{
 		case SLKEY_MAP:
 			return server->map;
@@ -2225,10 +2206,10 @@ void Master_CheckPollSockets(void)
 			int c;
 			char *s;
 
-			MSG_BeginReading (&net_message, msg_nullnetprim);
+			MSG_BeginReading (msg_nullnetprim);
 			MSG_ReadLong ();        // skip the -1
 
-			c = net_message.currentbit;
+			c = msg_readcount;
 			s = MSG_ReadStringLine();	//peek for q2 messages.
 #ifdef Q2CLIENT
 			if (!strcmp(s, "print"))
@@ -2244,61 +2225,62 @@ void Master_CheckPollSockets(void)
 #ifdef HAVE_IPV6
 			if (!strncmp(s, "server6", 7))	//parse a bit more...
 			{
-				net_message.currentbit = (c+7)<<3;
+				msg_readcount = c+7;
 				CL_MasterListParse(NA_IPV6, SS_QUAKE2, false);
 				continue;
 			}
 #endif
 			if (!strncmp(s, "servers", 7))	//parse a bit more...
 			{
-				net_message.currentbit = (c+7)<<3;
+				msg_readcount = c+7;
 				CL_MasterListParse(NA_IP, SS_QUAKE2, false);
 				continue;
 			}
 #endif
-			//q3/dpm server responses
+#ifdef Q3CLIENT
 			if (!strcmp(s, "statusResponse"))
-			{	//originally q3, but oh well.
-				CL_ReadServerInfo(MSG_ReadString(), MP_DPMASTER, false);
+			{
+				CL_ReadServerInfo(MSG_ReadString(), MP_QUAKE3, false);
 				continue;
 			}
-			if (!strcmp(s, "infoResponse"))	//parse a bit more...
-			{	//originally q3, but oh well.
-				CL_ReadServerInfo(MSG_ReadString(), MP_DPMASTER, false);
-				continue;
-			}
-			//q3/dpm master responses
+#endif
+
 #ifdef HAVE_IPV6
 			if (!strncmp(s, "getserversResponse6", 19) && (s[19] == '\\' || s[19] == '/'))	//parse a bit more...
 			{
-				net_message.currentbit = (c+19-1)<<3;
-				CL_MasterListParse(NA_IPV6, SS_GETINFO, true);
+				msg_readcount = c+19-1;
+				CL_MasterListParse(NA_IPV6, SS_DARKPLACES, true);
 				continue;
 			}
 #endif
 			if (!strncmp(s, "getserversExtResponse", 21) && (s[21] == '\\' || s[21] == '/'))	//parse a bit more...
 			{
-				net_message.currentbit = (c+21-1)<<3;
-				CL_MasterListParse(NA_IP, SS_GETINFO, true);
+				msg_readcount = c+21-1;
+				CL_MasterListParse(NA_IP, SS_DARKPLACES, true);
 				continue;
 			}
 			if (!strncmp(s, "getserversResponse", 18) && (s[18] == '\\' || s[18] == '/'))	//parse a bit more...
 			{
-				net_message.currentbit = (c+18-1)<<3;
-				CL_MasterListParse(NA_IP, SS_GETINFO, true);
+				msg_readcount = c+18-1;
+				CL_MasterListParse(NA_IP, SS_DARKPLACES, true);
+				continue;
+			}
+			if (!strcmp(s, "infoResponse"))	//parse a bit more...
+			{
+				CL_ReadServerInfo(MSG_ReadString(), MP_DPMASTER, false);
 				continue;
 			}
 
 #ifdef HAVE_IPV6
 			if (!strncmp(s, "qw_slist6\\", 10))	//parse a bit more...
 			{
-				net_message.currentbit = (c+9-1)<<3;
+				msg_readcount = c+9-1;
 				CL_MasterListParse(NA_IPV6, SS_QUAKEWORLD, false);
 				continue;
 			}
 #endif
 
-			net_message.currentbit = c;
+			msg_readcount = c;
 
 			c = MSG_ReadByte ();
 
@@ -2324,7 +2306,7 @@ void Master_CheckPollSockets(void)
 			int control;
 			int ccrep;
 
-			MSG_BeginReading (&net_message, msg_nullnetprim);
+			MSG_BeginReading (msg_nullnetprim);
 			control = BigLong(*((int *)net_message.data));
 			MSG_ReadLong();
 			if (control == -1)
@@ -2494,7 +2476,7 @@ void SListOptionChanged(serverinfo_t *newserver)
 #if defined(NQPROT)
 		selectedserver.lastplayer = 0;
 		*selectedserver.lastrule = 0;
-		if ((newserver->special&(SS_PROTOCOLMASK|SS_GETINFO)) == SS_NETQUAKE)
+		if ((newserver->special&SS_PROTOCOLMASK) == SS_NETQUAKE)
 		{	//start spamming the server to get all of its details. silly protocols.
 			SZ_Clear(&net_message);
 			net_message.packing = SZ_RAWBYTES;
@@ -2645,7 +2627,7 @@ static void MasterInfo_ProcessHTTP(struct dl_download *dl)
 			if (protocoltype == MP_QUAKEWORLD)
 				info->special |= SS_QUAKEWORLD;
 			else if (protocoltype == MP_DPMASTER)
-				info->special |= SS_GETINFO;
+				info->special |= SS_DARKPLACES;
 #if defined(Q2CLIENT) || defined(Q2SERVER)
 			else if (protocoltype == MP_QUAKE2)
 				info->special |= SS_QUAKE2;
@@ -2924,17 +2906,16 @@ void Master_QueryServer(serverinfo_t *server)
 		return;	//don't even try. we have no direct route.
 	server->refreshtime = Sys_DoubleTime();
 
-	if (server->special & SS_GETINFO)
+	switch(server->special & SS_PROTOCOLMASK)
 	{
+	case SS_QUAKE3:
+		Q_snprintfz(data, sizeof(data), "%c%c%c%cgetstatus", 255, 255, 255, 255);
+		break;
+	case SS_DARKPLACES:
 		if (server->moreinfo)
 			Q_snprintfz(data, sizeof(data), "%c%c%c%cgetstatus", 255, 255, 255, 255);
 		else
 			Q_snprintfz(data, sizeof(data), "%c%c%c%cgetinfo", 255, 255, 255, 255);
-	}
-	else switch(server->special & SS_PROTOCOLMASK)
-	{
-	case SS_QUAKE3:
-		Q_snprintfz(data, sizeof(data), "%c%c%c%cgetstatus", 255, 255, 255, 255);
 		break;
 #ifdef NQPROT
 	case SS_NETQUAKE:
@@ -3028,13 +3009,14 @@ qboolean CL_QueryServers(void)
 		while(server)
 		{
 			qboolean enabled;
-			switch(Master_BaseGame(server))
+			switch(server->special & SS_PROTOCOLMASK)
 			{
 			case SS_UNKNOWN: enabled = true; break;
 			case SS_QUAKE3: enabled = sb_enablequake3; break;
 			case SS_QUAKE2: enabled = sb_enablequake2; break;
 			case SS_NETQUAKE: enabled = sb_enablenetquake; break;
 			case SS_QUAKEWORLD: enabled = sb_enablequakeworld; break;
+			case SS_DARKPLACES: enabled = sb_enabledarkplaces; break;
 			default: enabled = false; break;
 			}
 			if (enabled)
@@ -3056,13 +3038,14 @@ qboolean CL_QueryServers(void)
 			while (server)
 			{
 				qboolean enabled;
-				switch(Master_BaseGame(server))
+				switch(server->special & SS_PROTOCOLMASK)
 				{
 				case SS_UNKNOWN: enabled = true; break;
 				case SS_QUAKE3: enabled = sb_enablequake3; break;
 				case SS_QUAKE2: enabled = sb_enablequake2; break;
 				case SS_NETQUAKE: enabled = sb_enablenetquake; break;
 				case SS_QUAKEWORLD: enabled = sb_enablequakeworld; break;
+				case SS_DARKPLACES: enabled = sb_enabledarkplaces; break;
 				default: enabled = false; break;
 				}
 				if (enabled)
@@ -3239,54 +3222,38 @@ static int CL_ReadServerInfo(char *msg, enum masterprotocol_e prototype, qboolea
 	if (!*name)
 		name = Info_ValueForKey(msg, "sv_hostname");
 	Q_strncpyz(info->name, name, sizeof(info->name));
-	info->special = info->special & (SS_FAVORITE | SS_KEEPINFO | SS_LOCAL | SS_GETINFO);	//favorite+local is never cleared
+	info->special = info->special & (SS_FAVORITE | SS_KEEPINFO | SS_LOCAL);	//favorite+local is never cleared
 	if (!strcmp(DISTRIBUTION, Info_ValueForKey(msg, "*distrib")))	//outdated
 		info->special |= SS_FTESERVER;
 	else if (!strncmp(DISTRIBUTION, Info_ValueForKey(msg, "*version"), strlen(DISTRIBUTION)))
 		info->special |= SS_FTESERVER;
 
-	info->protocol = strtoul(Info_ValueForKey(msg, "protocol"), &token, 0);
+	info->protocol = atoi(Info_ValueForKey(msg, "protocol"));
+	info->special &= ~SS_PROTOCOLMASK;
 	if (info->protocol)
 	{
 		switch(info->protocol)
 		{
-		case PROTOCOL_VERSION_QW:	info->special |= SS_QUAKEWORLD;	break;
+		case PROTOCOL_VERSION_QW:	info->special = SS_QUAKEWORLD;	break;
 #ifdef NQPROT
-		case PROTOCOL_VERSION_NQ:	info->special |= SS_NETQUAKE;	break;
-		case PROTOCOL_VERSION_H2:	info->special |= SS_NETQUAKE;	break;	//erk
-		case PROTOCOL_VERSION_NEHD:	info->special |= SS_NETQUAKE;	break;
-		case PROTOCOL_VERSION_FITZ:	info->special |= SS_NETQUAKE;	break;
-		case PROTOCOL_VERSION_RMQ:	info->special |= SS_NETQUAKE;	break;
-		case PROTOCOL_VERSION_DP5:	info->special |= SS_NETQUAKE;	break;	//dp actually says 3... but hey, that's dp being WEIRD.
-		case PROTOCOL_VERSION_DP6:	info->special |= SS_NETQUAKE;	break;
-		case PROTOCOL_VERSION_DP7:	info->special |= SS_NETQUAKE;	break;
-		case NQ_NETCHAN_VERSION_QEX:info->special |= SS_QEPROT;		break;
-		case NQ_NETCHAN_VERSION:
+		case PROTOCOL_VERSION_NQ:	info->special = SS_NETQUAKE;	break;
+		case PROTOCOL_VERSION_H2:	info->special = SS_NETQUAKE;	break;	//erk
+		case PROTOCOL_VERSION_NEHD:	info->special = SS_NETQUAKE;	break;
+		case PROTOCOL_VERSION_FITZ:	info->special = SS_NETQUAKE;	break;
+		case PROTOCOL_VERSION_RMQ:	info->special = SS_NETQUAKE;	break;
+		case PROTOCOL_VERSION_DP5:	info->special = SS_DARKPLACES;	break;	//dp actually says 3... but hey, that's dp being WEIRD.
+		case PROTOCOL_VERSION_DP6:	info->special = SS_DARKPLACES;	break;
+		case PROTOCOL_VERSION_DP7:	info->special = SS_DARKPLACES;	break;
 #endif
 		default:
-			while (*token)
-			{
-				if (*token == 'w')
-					info->special |= SS_QUAKEWORLD;
-				else if (*token == 'n' || *token == 'd')
-					info->special |= SS_NETQUAKE;
-				else if (*token == 'x')
-					info->special |= SS_QEPROT;
-				else
-					continue;
-				break;
-			}
-			if ((info->special&SS_PROTOCOLMASK) == SS_UNKNOWN)
-			{	//guesses...
-				if (PROTOCOL_VERSION_Q2 >= info->protocol && info->protocol >= PROTOCOL_VERSION_Q2_MIN)
-					info->special |= SS_QUAKE2;	//q2 has a range!
-				else if (info->protocol > 60)
-					info->special |= SS_QUAKE3;
-				else if (!strcmp(Info_ValueForKey(msg, "gamename"), "DarkPlaces-Quake") || *Info_ValueForKey(msg, "nqprotocol"))
-					info->special |= SS_NETQUAKE;
-				else
-					info->special |= SS_QUAKEWORLD;
-			}
+			if (PROTOCOL_VERSION_Q2 >= info->protocol && info->protocol >= PROTOCOL_VERSION_Q2_MIN)
+				info->special |= SS_QUAKE2;	//q2 has a range!
+			else if (info->protocol > 60)
+				info->special |= SS_QUAKE3;
+			else if (!strcmp(Info_ValueForKey(msg, "gamename"), "DarkPlaces-Quake"))
+				info->special |= SS_DARKPLACES;
+			else
+				info->special |= SS_DARKPLACES|SS_FTESERVER;	//so its listed under qw-servers (but queried using dpmaster getinfo stuff).
 			break;
 		}
 	}
@@ -3295,7 +3262,7 @@ static int CL_ReadServerInfo(char *msg, enum masterprotocol_e prototype, qboolea
 		info->special |= SS_QUAKE2;
 #endif
 #ifdef Q3CLIENT
-	else if (prototype == MP_QUAKE3 || prototype == MP_DPMASTER/*if no protocol, assume q3 behaviours*/)
+	else if (prototype == MP_QUAKE3)
 		info->special |= SS_QUAKE3;
 #endif
 #ifdef NQPROT
@@ -3356,7 +3323,7 @@ static int CL_ReadServerInfo(char *msg, enum masterprotocol_e prototype, qboolea
 	msg = msg+strlen(msg)+1;
 
 	//clear player info. unless its an NQ server, which have some really annoying protocol to find out the players.
-	if ((info->special & (SS_PROTOCOLMASK|SS_GETINFO)) == SS_NETQUAKE)
+	if ((info->special & SS_PROTOCOLMASK) == SS_NETQUAKE)
 	{
 		if (!info->moreinfo && ((slist_cacheinfo.value == 2 || NET_CompareAdr(&info->adr, &selectedserver.adr)) || (info->special & SS_KEEPINFO)))
 			info->moreinfo = Z_Malloc(sizeof(serverdetailedinfo_t));
@@ -3530,7 +3497,7 @@ static int CL_ReadServerInfo(char *msg, enum masterprotocol_e prototype, qboolea
 				msg++;
 			}
 		}
-		if (!info->numbots)
+		if ((info->special & SS_PROTOCOLMASK) == SS_DARKPLACES && !info->numbots)
 		{
 			info->numbots = atoi(Info_ValueForKey(details.info, "bots"));
 			if (info->numbots > info->players)
@@ -3592,7 +3559,7 @@ void CL_MasterListParse(netadrtype_t adrtype, int type, qboolean slashpad)
 
 	last = firstserver;
 
-	while((net_message.currentbit>>3)+1+2 < net_message.cursize)
+	while(msg_readcount+1+2 < net_message.cursize)
 	{
 		if (slashpad)
 		{
@@ -3638,7 +3605,7 @@ void CL_MasterListParse(netadrtype_t adrtype, int type, qboolean slashpad)
 		}
 		if ((old = Master_InfoForServer(&info->adr, NULL)))	//remove if the server already exists.
 		{
-			if ((old->special & (SS_PROTOCOLMASK|SS_GETINFO)) != (type & (SS_PROTOCOLMASK|SS_GETINFO)))
+			if ((old->special & (SS_PROTOCOLMASK)) != (type & (SS_PROTOCOLMASK)))
 				old->special = type | (old->special & (SS_FAVORITE|SS_LOCAL));
 			old->sends = 1;	//reset.
 			old->status |= SRVSTATUS_GLOBAL;

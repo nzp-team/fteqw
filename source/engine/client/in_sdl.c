@@ -19,7 +19,7 @@ extern qboolean vid_isfullscreen;
 
 #if SDL_MAJOR_VERSION > 1 || (SDL_MAJOR_VERSION == 1 && SDL_MINOR_VERSION >= 3)
 #define HAVE_SDL_TEXTINPUT
-cvar_t sys_osk = CVARD("sys_osk", "0", "Enables support for text input. This will be ignored when the console has focus, but gamecode may end up with composition boxes appearing.");
+cvar_t sys_osk = CVARD("sys_osk", "1", "Enables support for text input. This will be ignored when the console has focus, but gamecode may end up with composition boxes appearing.");
 #endif
 
 void IN_ActivateMouse(void)
@@ -95,45 +95,6 @@ static uint32_t SDL_GiveFinger(SDL_JoystickID jid, SDL_TouchID tid, SDL_FingerID
 
 #if SDL_MAJOR_VERSION >= 2
 #define MAX_JOYSTICKS 16
-
-static struct
-{
-	int qaxis;
-	keynum_t pos, neg;
-} gpaxismap[] =
-{
-	{/*SDL_CONTROLLER_AXIS_LEFTX*/			GPAXIS_LT_RIGHT,	K_GP_LEFT_THUMB_RIGHT,	K_GP_LEFT_THUMB_LEFT},
-	{/*SDL_CONTROLLER_AXIS_LEFTY*/			GPAXIS_LT_DOWN,		K_GP_LEFT_THUMB_DOWN,	K_GP_LEFT_THUMB_UP},
-	{/*SDL_CONTROLLER_AXIS_RIGHTX*/			GPAXIS_RT_RIGHT,	K_GP_RIGHT_THUMB_RIGHT,	K_GP_RIGHT_THUMB_LEFT},
-	{/*SDL_CONTROLLER_AXIS_RIGHTY*/			GPAXIS_RT_DOWN,		K_GP_RIGHT_THUMB_DOWN,	K_GP_RIGHT_THUMB_UP},
-	{/*SDL_CONTROLLER_AXIS_TRIGGERLEFT*/	GPAXIS_LT_TRIGGER,	K_GP_LEFT_TRIGGER,		0},
-	{/*SDL_CONTROLLER_AXIS_TRIGGERRIGHT*/	GPAXIS_RT_TRIGGER,	K_GP_RIGHT_TRIGGER,		0},
-};
-static const int gpbuttonmap[] =
-{
-	K_GP_A,
-	K_GP_B,
-	K_GP_X,
-	K_GP_Y,
-	K_GP_BACK,
-	K_GP_GUIDE,
-	K_GP_START,
-	K_GP_LEFT_STICK,
-	K_GP_RIGHT_STICK,
-	K_GP_LEFT_SHOULDER,
-	K_GP_RIGHT_SHOULDER,
-	K_GP_DPAD_UP,
-	K_GP_DPAD_DOWN,
-	K_GP_DPAD_LEFT,
-	K_GP_DPAD_RIGHT,
-	K_GP_MISC1,
-	K_GP_PADDLE1,
-	K_GP_PADDLE2,
-	K_GP_PADDLE3,
-	K_GP_PADDLE4,
-	K_GP_TOUCHPAD
-};
-
 static struct sdljoy_s
 {
 	//fte doesn't distinguish between joysticks and controllers.
@@ -143,15 +104,8 @@ static struct sdljoy_s
 	SDL_GameController *controller;
 	SDL_JoystickID id;
 	unsigned int qdevid;
-
-	//axis junk
 	unsigned int axistobuttonp;
 	unsigned int axistobuttonn;
-	float repeattime[countof(gpaxismap)];
-
-	//button junk
-	unsigned int buttonheld;
-	float buttonrepeat[countof(gpbuttonmap)];
 } sdljoy[MAX_JOYSTICKS]; 
 
 //the enumid is the value for the open function rather than the working id.
@@ -213,9 +167,6 @@ static void J_JoystickAdded(int enumid)
 	if (i == MAX_JOYSTICKS)
 		return;
 
-	if (SDL_IsGameController(enumid))	//if its reported via the gamecontroller api then use that instead. don't open it twice.
-		return;
-
 	sdljoy[i].joystick = SDL_JoystickOpen(enumid);
 	if (!sdljoy[i].joystick)
 		return;
@@ -237,48 +188,46 @@ static struct sdljoy_s *J_DevId(SDL_JoystickID jid)
 }
 static void J_ControllerAxis(SDL_JoystickID jid, int axis, int value)
 {
+	static struct
+	{
+		int qaxis;
+		keynum_t pos, neg;
+	} axismap[] =
+	{
+		{/*SDL_CONTROLLER_AXIS_LEFTX*/			GPAXIS_LT_RIGHT,	K_GP_LEFT_THUMB_RIGHT,	K_GP_LEFT_THUMB_LEFT},
+		{/*SDL_CONTROLLER_AXIS_LEFTY*/			GPAXIS_LT_DOWN,		K_GP_LEFT_THUMB_DOWN,	K_GP_LEFT_THUMB_UP},
+		{/*SDL_CONTROLLER_AXIS_RIGHTX*/			GPAXIS_RT_RIGHT,	K_GP_RIGHT_THUMB_RIGHT,	K_GP_RIGHT_THUMB_LEFT},
+		{/*SDL_CONTROLLER_AXIS_RIGHTY*/			GPAXIS_RT_DOWN,		K_GP_RIGHT_THUMB_DOWN,	K_GP_RIGHT_THUMB_UP},
+		{/*SDL_CONTROLLER_AXIS_TRIGGERLEFT*/	GPAXIS_LT_TRIGGER,	K_GP_LEFT_TRIGGER,		0},
+		{/*SDL_CONTROLLER_AXIS_TRIGGERRIGHT*/	GPAXIS_RT_TRIGGER,	K_GP_RIGHT_TRIGGER,		0},
+	};
+
 	struct sdljoy_s *joy = J_DevId(jid);
-
-	if (joy->qdevid == DEVID_UNSET)
+	if (joy && axis < sizeof(axismap)/sizeof(axismap[0]) && joy->qdevid != DEVID_UNSET)
 	{
-		if (abs(value) < 0x4000)
-			return;	//has to be big enough to handle any generous dead zone.
-		J_AllocateDevID(joy);
-	}
-
-	if (joy && axis < countof(gpaxismap) && joy->qdevid != DEVID_UNSET)
-	{
-		if (value > 0x4000 && gpaxismap[axis].pos)
+		if (value > 0x4000 && axismap[axis].pos)
 		{
-			if (!(joy->axistobuttonp & (1u<<axis)))
-			{
-				IN_KeyEvent(joy->qdevid, true, gpaxismap[axis].pos, 0);
-				joy->repeattime[axis] = 1.0;
-			}
+			IN_KeyEvent(joy->qdevid, true, axismap[axis].pos, 0);
 			joy->axistobuttonp |= 1u<<axis;
 		}
 		else if (joy->axistobuttonp & (1u<<axis))
 		{
-			IN_KeyEvent(joy->qdevid, false, gpaxismap[axis].pos, 0);
+			IN_KeyEvent(joy->qdevid, false, axismap[axis].pos, 0);
 			joy->axistobuttonp &= ~(1u<<axis);
 		}
 
-		if (value < -0x4000 && gpaxismap[axis].neg)
+		if (value < -0x4000 && axismap[axis].neg)
 		{
-			if (!(joy->axistobuttonn & (1u<<axis)))
-			{
-				IN_KeyEvent(joy->qdevid, true, gpaxismap[axis].neg, 0);
-				joy->repeattime[axis] = 1.0;
-			}
+			IN_KeyEvent(joy->qdevid, true, axismap[axis].neg, 0);
 			joy->axistobuttonn |= 1u<<axis;
 		}
 		else if (joy->axistobuttonn & (1u<<axis))
 		{
-			IN_KeyEvent(joy->qdevid, false, gpaxismap[axis].neg, 0);
+			IN_KeyEvent(joy->qdevid, false, axismap[axis].neg, 0);
 			joy->axistobuttonn &= ~(1u<<axis);
 		}
 
-		IN_JoystickAxisEvent(joy->qdevid, gpaxismap[axis].qaxis, value / 32767.0);
+		IN_JoystickAxisEvent(joy->qdevid, axismap[axis].qaxis, value / 32767.0);
 	}
 }
 static void J_JoystickAxis(SDL_JoystickID jid, int axis, int value)
@@ -286,7 +235,7 @@ static void J_JoystickAxis(SDL_JoystickID jid, int axis, int value)
 	static const int axismap[] = {0,1,3,4,2,5};
 
 	struct sdljoy_s *joy = J_DevId(jid);
-	if (joy && !joy->controller && axis < sizeof(axismap)/sizeof(axismap[0]) && joy->qdevid != DEVID_UNSET)
+	if (joy && axis < sizeof(axismap)/sizeof(axismap[0]) && joy->qdevid != DEVID_UNSET)
 		IN_JoystickAxisEvent(joy->qdevid, axismap[axis], value / 32767.0);
 }
 //we don't do hats and balls and stuff.
@@ -294,8 +243,33 @@ static void J_ControllerButton(SDL_JoystickID jid, int button, qboolean pressed)
 {
 	//controllers have reliable button maps.
 	//but that doesn't meant that fte has specific k_ names for those buttons, but the mapping should be reliable, at least until they get mapped to proper k_ values.
+	static const int buttonmap[] =
+	{
+		K_GP_A,
+		K_GP_B,
+		K_GP_X,
+		K_GP_Y,
+		K_GP_BACK,
+		K_GP_GUIDE,
+		K_GP_START,
+		K_GP_LEFT_STICK,
+		K_GP_RIGHT_STICK,
+		K_GP_LEFT_SHOULDER,
+		K_GP_RIGHT_SHOULDER,
+		K_GP_DPAD_UP,
+		K_GP_DPAD_DOWN,
+		K_GP_DPAD_LEFT,
+		K_GP_DPAD_RIGHT,
+		K_GP_MISC1,
+		K_GP_PADDLE1,
+		K_GP_PADDLE2,
+		K_GP_PADDLE3,
+		K_GP_PADDLE4,
+		K_GP_TOUCHPAD
+	};
+
 	struct sdljoy_s *joy = J_DevId(jid);
-	if (joy && button < countof(gpbuttonmap))
+	if (joy && button < sizeof(buttonmap)/sizeof(buttonmap[0]))
 	{
 		if (joy->qdevid == DEVID_UNSET)
 		{
@@ -303,12 +277,7 @@ static void J_ControllerButton(SDL_JoystickID jid, int button, qboolean pressed)
 				return;
 			J_AllocateDevID(joy);
 		}
-		if (pressed)
-			joy->buttonheld |= (1u<<button);
-		else
-			joy->buttonheld &= ~(1u<<button);
-		IN_KeyEvent(joy->qdevid, pressed, gpbuttonmap[button], 0);
-		joy->buttonrepeat[button] = 1.0;
+		IN_KeyEvent(joy->qdevid, pressed, buttonmap[button], 0);
 	}
 }
 static void J_JoystickButton(SDL_JoystickID jid, int button, qboolean pressed)
@@ -366,7 +335,7 @@ static void J_JoystickButton(SDL_JoystickID jid, int button, qboolean pressed)
 	};
 
 	struct sdljoy_s *joy = J_DevId(jid);
-	if (joy && !joy->controller && button < sizeof(buttonmap)/sizeof(buttonmap[0]))
+	if (joy && button < sizeof(buttonmap)/sizeof(buttonmap[0]))
 	{
 		if (joy->qdevid == DEVID_UNSET)
 		{
@@ -964,77 +933,6 @@ static unsigned int tbl_sdltoquake[] =
 };
 #endif
 
-/* stubbed */
-qboolean INS_KeyToLocalName(int qkey, char *buf, size_t bufsize)
-{
-	const char *keyname;
-
-	//too lazy to make+maintain a reverse MySDL_MapKey, so lets just make a reverse table with it instead.
-	static qboolean stupidtabsetup;
-	static SDL_Keycode stupidtable[K_MAX];
-	if (!stupidtabsetup)
-	{
-		int i, k;
-		for (i = 0; i < SDL_NUM_SCANCODES; i++)
-		{
-			k = MySDL_MapKey(i);
-			if (k)
-				stupidtable[k] = i;
-
-			//grr, oh well, at least we're not scanning 2 billion codes here
-			k = MySDL_MapKey(SDL_SCANCODE_TO_KEYCODE(i));
-			if (k)
-				stupidtable[k] = SDL_SCANCODE_TO_KEYCODE(i);
-		}
-		stupidtabsetup = true;
-	}
-
-	if (stupidtable[qkey])
-		keyname = SDL_GetKeyName(stupidtable[qkey]);
-	else if (qkey >= K_GP_DIAMOND_DOWN && qkey < K_GP_TOUCHPAD)
-	{
-		SDL_GameControllerButton b;
-		switch(qkey)
-		{
-		case K_GP_DIAMOND_DOWN:		b = SDL_CONTROLLER_BUTTON_A;				break;
-		case K_GP_DIAMOND_RIGHT:	b = SDL_CONTROLLER_BUTTON_B;				break;
-		case K_GP_DIAMOND_LEFT:		b = SDL_CONTROLLER_BUTTON_X;				break;
-		case K_GP_DIAMOND_UP:		b = SDL_CONTROLLER_BUTTON_Y;				break;
-		case K_GP_BACK:				b = SDL_CONTROLLER_BUTTON_BACK;				break;
-		case K_GP_GUIDE:			b = SDL_CONTROLLER_BUTTON_GUIDE;			break;
-		case K_GP_START:			b = SDL_CONTROLLER_BUTTON_START;			break;
-		case K_GP_LEFT_STICK:		b = SDL_CONTROLLER_BUTTON_LEFTSTICK;		break;
-		case K_GP_RIGHT_STICK:		b = SDL_CONTROLLER_BUTTON_RIGHTSTICK;		break;
-		case K_GP_LEFT_SHOULDER:	b = SDL_CONTROLLER_BUTTON_LEFTSHOULDER;		break;
-		case K_GP_RIGHT_SHOULDER:	b = SDL_CONTROLLER_BUTTON_RIGHTSHOULDER;	break;
-		case K_GP_DPAD_UP:			b = SDL_CONTROLLER_BUTTON_DPAD_UP;			break;
-		case K_GP_DPAD_DOWN:		b = SDL_CONTROLLER_BUTTON_DPAD_DOWN;		break;
-		case K_GP_DPAD_LEFT:		b = SDL_CONTROLLER_BUTTON_DPAD_LEFT;		break;
-		case K_GP_DPAD_RIGHT:		b = SDL_CONTROLLER_BUTTON_DPAD_RIGHT;		break;
-#if SDL_VERSION_ATLEAST(2, 0, 14)
-		case K_GP_MISC1:			b = SDL_CONTROLLER_BUTTON_MISC1;			break;
-		case K_GP_PADDLE1:			b = SDL_CONTROLLER_BUTTON_PADDLE1;			break;
-		case K_GP_PADDLE2:			b = SDL_CONTROLLER_BUTTON_PADDLE2;			break;
-		case K_GP_PADDLE3:			b = SDL_CONTROLLER_BUTTON_PADDLE3;			break;
-		case K_GP_PADDLE4:			b = SDL_CONTROLLER_BUTTON_PADDLE4;			break;
-		case K_GP_TOUCHPAD:			b = SDL_CONTROLLER_BUTTON_TOUCHPAD;			break;
-#endif
-		default:
-			return false;
-		}
-		keyname = SDL_GameControllerGetStringForButton(b);
-	}
-	else
-		return false;
-
-	if (keyname)
-	{
-		Q_strncpyz(buf, keyname, bufsize);
-		return true;
-	}
-	return false;
-}
-
 static unsigned int tbl_sdltoquakemouse[] =
 {
 	K_MOUSE1,
@@ -1053,64 +951,21 @@ static unsigned int tbl_sdltoquakemouse[] =
 	K_MOUSE10
 };
 
-#ifdef HAVE_SDL_TEXTINPUT
-#ifdef __linux__
-#include <SDL_misc.h>
-static qboolean usesteamosk;
-#endif
-#endif
 void Sys_SendKeyEvents(void)
 {
 	SDL_Event event;
-	int axis, j;
 
 #ifdef HAVE_SDL_TEXTINPUT
-	static SDL_bool active = false;
-	SDL_bool osk = Key_Dest_Has(kdm_console|kdm_cwindows|kdm_message);
-	if (Key_Dest_Has(kdm_prompt|kdm_menu))
+	SDL_bool active = SDL_IsTextInputActive();
+	if (Key_Dest_Has(kdm_console|kdm_message) || (!Key_Dest_Has(~kdm_game) && cls.state == ca_disconnected) || sys_osk.ival)
 	{
-		j = Menu_WantOSK();
-		if (j < 0)
-			osk |= sys_osk.ival;
-		else
-			osk |= j;
-	}
-	else if (Key_Dest_Has(kdm_game))
-		osk |= sys_osk.ival;
-	if (osk)
-	{
-		SDL_Rect rect;
-		rect.x = 0;
-		rect.y = vid.rotpixelheight/2;
-		rect.w = vid.rotpixelwidth;
-		rect.h = vid.rotpixelheight - rect.y;
-		SDL_SetTextInputRect(&rect);
-
 		if (!active)
-		{
-#ifdef __linux__
-			if (usesteamosk)
-				SDL_OpenURL("steam://open/keyboard?Mode=1");
-			else
-#endif
-				SDL_StartTextInput();
-			active = true;
-//			Con_Printf("OSK shown...\n");
-		}
+			SDL_StartTextInput();
 	}
 	else
 	{
 		if (active)
-		{
-#ifdef __linux__
-			if (usesteamosk)
-				SDL_OpenURL("steam://close/keyboard?Mode=1");
-			else
-#endif
-				SDL_StopTextInput();
-			active = false;
-//			Con_Printf("OSK shown... killed\n");
-		}
+			SDL_StopTextInput();
 	}
 #endif
 
@@ -1137,7 +992,7 @@ void Sys_SendKeyEvents(void)
 				else
 #endif
 				{
-					#if SDL_VERSION_ATLEAST(2,0,1)
+					#if SDL_PATCHLEVEL >= 1
 						SDL_GL_GetDrawableSize(sdlwindow, &vid.pixelwidth, &vid.pixelheight);	//get the proper physical size.
 					#else
 						SDL_GetWindowSize(sdlwindow, &vid.pixelwidth, &vid.pixelheight);
@@ -1209,11 +1064,6 @@ void Sys_SendKeyEvents(void)
 			}
 			break;
 #ifdef HAVE_SDL_TEXTINPUT
-		/*case SDL_TEXTEDITING:
-			{
-				event.edit;
-			}
-			break;*/
 		case SDL_TEXTINPUT:
 			{
 				unsigned int uc;
@@ -1238,7 +1088,7 @@ void Sys_SendKeyEvents(void)
 			{
 				uint32_t thefinger = SDL_GiveFinger(-1, event.tfinger.touchId, event.tfinger.fingerId, event.type==SDL_FINGERUP);
 				IN_MouseMove(thefinger, true, event.tfinger.x * vid.pixelwidth, event.tfinger.y * vid.pixelheight, 0, event.tfinger.pressure);
-				IN_KeyEvent(thefinger, event.type==SDL_FINGERDOWN, K_TOUCH, 0);
+				IN_KeyEvent(thefinger, event.type==SDL_FINGERDOWN, K_MOUSE1, 0);
 			}
 			break;
 		case SDL_FINGERMOTION:
@@ -1364,50 +1214,6 @@ void Sys_SendKeyEvents(void)
 #endif
 		}
 	}
-
-	for (j = 0; j < MAX_JOYSTICKS; j++)
-	{
-		struct sdljoy_s *joy = &sdljoy[j];
-		if (joy->qdevid == DEVID_UNSET || !joy->controller)
-			continue;
-
-		if (joy->buttonheld)
-		{
-			for (axis = 0; axis < countof(gpbuttonmap); axis++)
-			{
-				if (joy->buttonheld & (1u<<axis))
-				{
-					joy->buttonrepeat[axis] -= host_frametime;
-					if (joy->buttonrepeat[axis] < 0)
-					{
-						IN_KeyEvent(joy->qdevid, true, gpbuttonmap[axis], 0);
-						joy->buttonrepeat[axis] = 0.25;
-					}
-				}
-			}
-		}
-
-		for (axis = 0; axis < countof(gpaxismap); axis++)
-		{
-			if ((joy->axistobuttonp | joy->axistobuttonn) & (1u<<axis))
-			{
-				joy->repeattime[axis] -= host_frametime;
-				if (joy->repeattime[axis] < 0)
-				{
-					if (joy->axistobuttonp & (1u<<axis))
-					{
-						IN_KeyEvent(joy->qdevid, true, gpaxismap[axis].pos, 0);
-						joy->repeattime[axis] = 0.25;
-					}
-					if (joy->axistobuttonn & (1u<<axis))
-					{
-						IN_KeyEvent(joy->qdevid, true, gpaxismap[axis].neg, 0);
-						joy->repeattime[axis] = 0.25;
-					}
-				}
-			}
-		}
-	}
 }
 
 
@@ -1453,12 +1259,6 @@ void INS_Init (void)
 {
 #ifdef HAVE_SDL_TEXTINPUT
 	Cvar_Register(&sys_osk, "input controls");
-#endif
-
-#ifdef HAVE_SDL_TEXTINPUT
-#ifdef __linux__
-	usesteamosk = SDL_GetHintBoolean("SteamDeck", false);	//looks like there's a 'SteamDeck=1' environment setting on the deck (when started via steam itself, at least), so we don't get valve's buggy-as-poop osk on windows etc.
-#endif
 #endif
 }
 void INS_Accumulate(void)	//input polling

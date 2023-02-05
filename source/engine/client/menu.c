@@ -107,24 +107,24 @@ void Menu_Push(menu_t *menu, qboolean prompt)
 {
 	if (!Menu_IsLinked(menu))
 	{	//only link once.
-		//annoying logic so that persistent menus always appear on top of other stuff.
-		menu_t **prev = prompt?&promptmenu:&topmenu;
-		while (menu->lowpriority && *prev && !(*prev)->lowpriority)
-			prev = &(*prev)->prev;
-		menu->prev = *prev;
-		*prev = menu;
+		if (prompt)
+		{
+			menu->prev = promptmenu;
+			promptmenu = menu;
+		}
+		else
+		{
+			menu->prev = topmenu;
+			topmenu = menu;
+		}
 	}
 	if (menu == promptmenu)
 	{
-		if (!Key_Dest_Has(kdm_prompt))
-			VRUI_SnapAngle();
 		Key_Dest_Add(kdm_prompt);
 		Menu_UpdateFocus();
 	}
 	if (menu == topmenu)
 	{
-		if (!Key_Dest_Has(kdm_menu))
-			VRUI_SnapAngle();
 		Key_Dest_Add(kdm_menu);
 		Menu_UpdateFocus();
 	}
@@ -153,15 +153,6 @@ void Menu_PopAll(void)
 		Menu_Unlink(menus[i], true);
 }
 
-int Menu_WantOSK(void)
-{
-	if (promptmenu)
-		return promptmenu->showosk;
-	if (topmenu)
-		return topmenu->showosk;
-	return -1;
-}
-
 void Menu_Draw(void)
 {
 #ifdef MENU_DAT
@@ -188,7 +179,7 @@ void M_DrawTextBox (int x, int y, int width, int lines)
 {
 	mpic_t	*p;
 	int		cx, cy;
-	int		n, w;
+	int		n;
 
 	// draw left side
 	cx = x;
@@ -217,38 +208,32 @@ void M_DrawTextBox (int x, int y, int width, int lines)
 		M_DrawScalePic (cx, cy+8, 8, 8, p);
 
 	// draw middle
-	cy = y;
 	cx += 8;
-	//top-strip
-	p = R2D_SafeCachePic ("gfx/box_tm.lmp");
-	if (p) for (w = 0; w < width; w+=2)
-		M_DrawScalePic (cx+w*8, cy, 16, 8, p);
-
-	//just-under-top (shadowed region)
-	if (lines)
+	while (width > 0)
 	{
-		cy+=8;
+		cy = y;
+		p = R2D_SafeCachePic ("gfx/box_tm.lmp");
+		if (p)
+			M_DrawScalePic (cx, cy, 16, 8, p);
 		p = R2D_SafeCachePic ("gfx/box_mm.lmp");
-		if (p) for (w = 0; w < width; w+=2)
-			M_DrawScalePic (cx+w*8, cy, 16, 8, p);
+		if (p)
+			for (n = 0; n < lines; n++)
+			{
+				cy += 8;
+				if (n == 1)
+				{
+					p = R2D_SafeCachePic ("gfx/box_mm2.lmp");
+					if (!p)
+						break;
+				}
+				M_DrawScalePic (cx, cy, 16, 8, p);
+			}
+		p = R2D_SafeCachePic ("gfx/box_bm.lmp");
+		if (p)
+			M_DrawScalePic (cx, cy+8, 16, 8, p);
+		width -= 2;
+		cx += 16;
 	}
-
-	//2d body
-	p = R2D_SafeCachePic ("gfx/box_mm2.lmp");
-	for (n = 1; n < lines; n++)
-	{
-		cy+=8;
-		if (p) for (w = 0; w < width; w+=2)
-			M_DrawScalePic (cx+w*8, cy, 16, 8, p);
-	}
-
-	//bottom strip
-	cy+=8;
-	p = R2D_SafeCachePic ("gfx/box_bm.lmp");
-	if (p) for (w = 0; w < width; w+=2)
-		M_DrawScalePic (cx+w*8, cy, 16, 8, p);
-
-	cx += 8*width;
 
 	// draw right side
 	cy = y;
@@ -394,7 +379,7 @@ void M_ToggleMenu_f (void)
 	}
 #endif
 #ifdef VM_UI
-	if (q3 && q3->ui.OpenMenu())
+	if (UI_OpenMenu())
 		return;
 #endif
 
@@ -421,12 +406,6 @@ void M_Restart_f(void)
 	}
 	else
 		M_Reinit();
-
-	//start up the ui now we have a renderer
-#ifdef VM_UI
-	if (q3)
-		q3->ui.Start();
-#endif
 }
 
 
@@ -452,7 +431,7 @@ static qboolean Prompt_MenuKeyEvent(struct menu_s *gm, qboolean isdown, unsigned
 	void (*callback)(void *, promptbutton_t) = m->callback;
 	void *ctx = m->ctx;
 
-	if (key == K_MOUSE1 || key == K_TOUCHTAP)
+	if (key == K_MOUSE1)
 	{	//mouse events fire their action on release.
 		if (isdown)
 		{
@@ -472,7 +451,7 @@ static qboolean Prompt_MenuKeyEvent(struct menu_s *gm, qboolean isdown, unsigned
 		action = PROMPT_NO;
 	else if (key == 'y' || key == 'Y')
 		action = PROMPT_YES;
-	else if (key==K_RIGHTARROW || key==K_GP_DPAD_RIGHT || key==K_GP_LEFT_THUMB_RIGHT || key==K_DOWNARROW || key==K_GP_DPAD_DOWN || key==K_GP_LEFT_THUMB_DOWN || key == K_GP_DIAMOND_ALTCONFIRM || (key == K_TAB && !keydown[K_LSHIFT] && !keydown[K_RSHIFT]))
+	else if (key==K_RIGHTARROW || key==K_GP_DPAD_RIGHT || key==K_DOWNARROW || key==K_GP_DPAD_DOWN || (key == K_TAB && !keydown[K_LSHIFT] && !keydown[K_RSHIFT]))
 	{
 		int start = m->kbutton;
 		for(;;)
@@ -487,7 +466,7 @@ static qboolean Prompt_MenuKeyEvent(struct menu_s *gm, qboolean isdown, unsigned
 		}
 		return true;
 	}
-	else if (key == K_LEFTARROW || key == K_GP_DPAD_LEFT || key==K_GP_LEFT_THUMB_LEFT || key==K_UPARROW || key==K_GP_DPAD_UP || key==K_GP_LEFT_THUMB_UP || key==K_TAB)
+	else if (key == K_LEFTARROW || key == K_GP_DPAD_LEFT || key==K_UPARROW || key==K_GP_DPAD_UP || key==K_TAB)
 	{
 		int start = m->kbutton;
 		for(;;)
@@ -502,12 +481,12 @@ static qboolean Prompt_MenuKeyEvent(struct menu_s *gm, qboolean isdown, unsigned
 		}
 		return true;
 	}
-	else if (key == K_ESCAPE || key == K_GP_BACK || key == K_MOUSE2 || key == K_MOUSE4 || key == K_GP_DIAMOND_CANCEL)
+	else if (key == K_ESCAPE || key == K_GP_BACK || key == K_MOUSE2)
 		action = PROMPT_CANCEL;
-	else if (key == K_ENTER || key == K_KP_ENTER || key == K_MOUSE1 || key == K_TOUCHTAP || key == K_GP_DIAMOND_CONFIRM)
+	else if (key == K_ENTER || key == K_KP_ENTER || key == K_MOUSE1 || key == K_GP_A)
 	{
 		int button;
-		if (key == K_MOUSE1 || key == K_TOUCHTAP)
+		if (key == K_MOUSE1)
 			button = m->mbutton;
 		else
 			button = m->kbutton;
@@ -611,7 +590,7 @@ static void Prompt_Release(struct menu_s *gm, qboolean forced)
 		callback(ctx, PROMPT_CANCEL);
 	Z_Free(m);
 }
-void Menu_Prompt (void (*callback)(void *, promptbutton_t), void *ctx, const char *messages, const char *optionyes, const char *optionno, const char *optioncancel, qboolean highpri)
+void Menu_Prompt (void (*callback)(void *, promptbutton_t), void *ctx, const char *messages, const char *optionyes, const char *optionno, const char *optioncancel)
 {
 	promptmenu_t *m;
 	char *t;
@@ -634,8 +613,7 @@ void Menu_Prompt (void (*callback)(void *, promptbutton_t), void *ctx, const cha
 	m->m.release = Prompt_Release;
 	m->mbutton = -1;
 	m->kbutton = -1;
-	m->m.persist = true;
-	Menu_Push(&m->m, highpri);
+	Menu_Push(&m->m, true);
 
 	m->callback = callback;
 	m->ctx = ctx;
@@ -1057,10 +1035,7 @@ void M_Help_Draw (emenu_t *m)
 			pic = NULL;
 	}
 	if (!pic)
-	{
-		m->postdraw = M_RemoveMenu;
 		M_Menu_Main_f ();
-	}
 	else
 	{
 		//define default aspect ratio
@@ -1086,10 +1061,8 @@ qboolean M_Help_Key (int key, emenu_t *m)
 	switch (key)
 	{
 	case K_ESCAPE:
-	case K_GP_DIAMOND_CANCEL:
-	case K_GP_START:
+	case K_GP_BACK:
 	case K_MOUSE2:
-	case K_MOUSE4:
 		M_RemoveMenu(m);
 		return true;
 
@@ -1098,7 +1071,6 @@ qboolean M_Help_Key (int key, emenu_t *m)
 	case K_KP_RIGHTARROW:
 	case K_GP_DPAD_RIGHT:
 	case K_MOUSE1:
-	case K_GP_DIAMOND_CONFIRM:
 		S_LocalSound ("misc/menu2.wav");
 		if (++help_page >= num_help_pages)
 			help_page = 0;
@@ -1108,7 +1080,6 @@ qboolean M_Help_Key (int key, emenu_t *m)
 	case K_LEFTARROW:
 	case K_KP_LEFTARROW:
 	case K_GP_DPAD_LEFT:
-	case K_GP_DIAMOND_ALTCONFIRM:
 		S_LocalSound ("misc/menu2.wav");
 		if (--help_page < 0)
 			help_page = num_help_pages-1;
@@ -1292,10 +1263,10 @@ void M_Menu_Quit_f (void)
 #endif
 		break;
 	case 2:
-		Menu_Prompt (M_Menu_DoQuitSave, NULL, "You have unsaved settings\nWould you like to\nsave them now?", "Yes", "No", "Cancel", true);
+		Menu_Prompt (M_Menu_DoQuitSave, NULL, "You have unsaved settings\nWould you like to\nsave them now?", "Yes", "No", "Cancel");
 		break;
 	case 1:
-		Menu_Prompt (M_Menu_DoQuit, NULL, quitMessage[rand()%countof(quitMessage)], "Quit", NULL, "Cancel", true);
+		Menu_Prompt (M_Menu_DoQuit, NULL, quitMessage[rand()%countof(quitMessage)], "Quit", NULL, "Cancel");
 		break;
 	}
 }
@@ -1303,7 +1274,7 @@ void M_Menu_Quit_f (void)
 #ifdef HAVE_LEGACY
 void M_Menu_Credits_f (void)
 {
-	Menu_Prompt (NULL, NULL, "That's all folks!\nTry a different mod now.", NULL, NULL, "Sure!", false);
+	Menu_Prompt (NULL, NULL, "That's all folks!\nTry a different mod now.", NULL, NULL, "Sure!");
 }
 #endif
 

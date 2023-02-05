@@ -220,11 +220,7 @@ extern qbyte *mod_base;
 			dist = plane->dist - dist;						\
 			break;
 
-#ifdef Q2BSPS
-#ifdef HAVE_CLIENT
-static unsigned char q2_palette[256*3];
-#endif
-#endif
+unsigned char d_q28to24table[1024];
 
 
 /*
@@ -387,11 +383,6 @@ typedef struct cminfo_s
 
 	q3cface_t	*faces;
 	int			numfaces;
-#endif
-
-#ifdef HAVE_CLIENT
-	int			oldclusters[2];
-	qbyte		*oldvis;
 #endif
 
 //	struct bihnode_s *bihnodes;
@@ -1287,7 +1278,7 @@ static qboolean CModQ2_LoadSurfaces (model_t *mod, qbyte *mod_base, lump_t *l)
 
 	return true;
 }
-#ifdef HAVE_CLIENT
+#ifndef SERVERONLY
 static texture_t *Mod_LoadWall(model_t *loadmodel, char *mapname, char *texname, char *shadername, unsigned int imageflags)
 {
 	char name[MAX_QPATH];
@@ -1363,7 +1354,7 @@ static texture_t *Mod_LoadWall(model_t *loadmodel, char *mapname, char *texname,
 
 		tex->srcdata = out = BZ_Malloc(size);
 		tex->srcfmt = TF_MIP4_8PAL24_T255;
-		tex->palette = q2_palette;
+		tex->palette = host_basepal;
 		memcpy(out, (qbyte *)wal + wal->offsets[0], (wal->width>>0)*(wal->height>>0));
 		out += (wal->width>>0)*(wal->height>>0);
 		memcpy(out, (qbyte *)wal + wal->offsets[1], (wal->width>>1)*(wal->height>>1));
@@ -1438,8 +1429,6 @@ static qboolean CModQ2_LoadTexInfo (model_t *mod, qbyte *mod_base, lump_t *l, ch
 			Q_strncatz(sname, "#ALPHA=0.66", sizeof(sname));
 		else if (out->flags & TI_TRANS33)
 			Q_strncatz(sname, "#ALPHA=0.33", sizeof(sname));
-		else if (out->flags & TI_KINGPIN_ALPHATEST) //kingpin...
-			Q_strncatz(sname, "#MASK=0.666#MASKLT", sizeof(sname));
 		else if (out->flags & (TI_WARP))
 			Q_strncatz(sname, "#ALPHA=1", sizeof(sname));
 		if (in->nexttexinfo != -1)	//used to ensure non-looping and looping don't conflict and get confused.
@@ -4037,7 +4026,7 @@ static int CM_GetQ2Palette (void)
 		Con_Printf (CON_WARNING "Couldn't find pics/colormap.pcx\n");
 		return -1;
 	}
-	if (!ReadPCXPalette(f, sz, q2_palette))
+	if (!ReadPCXPalette(f, sz, d_q28to24table))
 	{
 		Con_Printf (CON_WARNING "Couldn't read pics/colormap.pcx\n");
 		FS_FreeFile(f);
@@ -4046,14 +4035,14 @@ static int CM_GetQ2Palette (void)
 	FS_FreeFile(f);
 
 
-#if 0
+#if 1
 	{
 		float	inf;
 		qbyte	palette[768];
 		qbyte *pal;
 		int		i;
 
-		pal = q2_palette;
+		pal = d_q28to24table;
 
 		for (i=0 ; i<768 ; i++)
 		{
@@ -4065,7 +4054,7 @@ static int CM_GetQ2Palette (void)
 			palette[i] = inf;
 		}
 
-		memcpy (q2_palette, palette, sizeof(palette));
+		memcpy (d_q28to24table, palette, sizeof(palette));
 	}
 #endif
 	return 0;
@@ -4824,7 +4813,7 @@ static cmodel_t *CM_LoadMap (model_t *mod, qbyte *filein, size_t filelen, qboole
 
 #ifdef HAVE_CLIENT
 		if (CM_GetQ2Palette())
-			memcpy(q2_palette, host_basepal, 768);
+			memcpy(d_q28to24table, host_basepal, 768);
 #endif
 
 
@@ -4942,8 +4931,7 @@ static cmodel_t *CM_LoadMap (model_t *mod, qbyte *filein, size_t filelen, qboole
 	mod->rootnode = prv->cmodels[0].headnode;
 	mod->nummodelsurfaces = prv->cmodels[0].numsurfaces;
 
-#ifdef HAVE_CLIENT
-	prv->oldclusters[0] = prv->oldclusters[1] = -1;
+#ifndef SERVERONLY
 	if (qrenderer != QR_NONE)
 	{
 		builddata_t *bd = NULL;
@@ -7282,31 +7270,30 @@ static size_t	CM_LoadAreaPortalBlob (model_t *mod, void *ptr, size_t ptrsize)
 		switch(prv->mapisq3)
 		{
 #ifdef Q3BSPS
-		case 1:	//area*area refcounts. byte sizes don't tell us how many areas there were - would need sqrt(ptrsize/4) and I cba.
-			if (ptrsize != sizeof(prv->q3areas))
-			{	//don't bother trying to handle graceful expansion/truncation, just reset the entire thing.
-				size_t x,y;
-				if (ptrsize)
-					Con_Printf("CM_ReadPortalState() expected %u, but only %u available\n",(unsigned int)sizeof(prv->q3areas),(unsigned int)ptrsize);
-				for (x = 0; x < countof(prv->q3areas); x++)
-					for (y = 0; y < countof(prv->q3areas[x].numareaportals); y++)
-						prv->q3areas[x].numareaportals[y] = map_autoopenportals.ival;
-			}
+		case 1:
+			if (ptrsize < sizeof(prv->q3areas))
+				Con_Printf("CM_ReadPortalState() expected %u, but only %u available\n",(unsigned int)sizeof(prv->q3areas),(unsigned int)ptrsize);
 			else
-				memcpy(prv->q3areas, ptr, ptrsize);
-			FloodAreaConnections (prv);
-			return sizeof(prv->q3areas);
+			{
+				memcpy(prv->q3areas, ptr, sizeof(prv->q3areas));
+
+				FloodAreaConnections (prv);
+				return sizeof(prv->q3areas);
+			}
+			break;
 #endif
 #ifdef Q2BSPS
-		case 0:	//per-portal booleans. we can just pad any missing portals.
-			if (ptrsize && ptrsize != sizeof(prv->q2portalopen))
+		case 0:
+			if (ptrsize < sizeof(prv->q2portalopen))
 				Con_Printf("CM_ReadPortalState() expected %u, but only %u available\n",(unsigned int)sizeof(prv->q2portalopen),(unsigned int)ptrsize);
-			if (ptrsize > sizeof(prv->q2portalopen))
-				ptrsize = sizeof(prv->q2portalopen);
-			memcpy(prv->q2portalopen, ptr, ptrsize);
-			memset(prv->q2portalopen+ptrsize, map_autoopenportals.ival, sizeof(prv->q2portalopen)-ptrsize);
-			FloodAreaConnections (prv);
-			return sizeof(prv->q2portalopen);
+			else
+			{
+				memcpy(prv->q2portalopen, ptr, sizeof(prv->q2portalopen));
+
+				FloodAreaConnections (prv);
+				return sizeof(prv->q2portalopen);
+			}
+			break;
 #endif
 		default: break;
 		}
@@ -7357,17 +7344,16 @@ static unsigned int Q2BSP_PointContents(model_t *mod, const vec3_t axis[3], cons
 #ifdef HAVE_CLIENT
 static qbyte *frustumvis;
 static vec3_t modelorg;
-static unsigned int scenesequence;
-static unsigned int vissequence;
 /*
 ===============
 R_MarkLeaves
 ===============
 */
 #ifdef Q3BSPS
-qbyte *R_MarkLeaves_Q3 (model_t *mod, int clusters[2])
+qbyte *R_MarkLeaves_Q3 (void)
 {
 	static pvsbuffer_t	curframevis[R_MAX_RECURSE];
+	static qbyte	*cvis[R_MAX_RECURSE];
 	qbyte *vis;
 	int		i;
 
@@ -7375,12 +7361,11 @@ qbyte *R_MarkLeaves_Q3 (model_t *mod, int clusters[2])
 	mleaf_t	*leaf;
 	mnode_t *node;
 	int portal = r_refdef.recurse;
-	cminfo_t	*prv = mod->meshinfo;
 
 	if (!portal)
 	{
-		if (prv->oldclusters[0] == clusters[0] && !r_novis.value && clusters[0] != -1)
-			return prv->oldvis;
+		if (r_oldviewcluster == r_viewcluster && !r_novis.value && r_viewcluster != -1)
+			return cvis[portal];
 	}
 
 	// development aid to let you run around and see exactly where
@@ -7388,14 +7373,14 @@ qbyte *R_MarkLeaves_Q3 (model_t *mod, int clusters[2])
 //		if (r_lockpvs->value)
 //			return;
 
-	vissequence++;
-	prv->oldclusters[0] = clusters[0];
+	r_visframecount++;
+	r_oldviewcluster = r_viewcluster;
 
-	if (r_novis.ival || clusters[0] == -1 || !mod->vis )
+	if (r_novis.ival || r_viewcluster == -1 || !cl.worldmodel->vis )
 	{
 		vis = NULL;
 		// mark everything
-		for (i=0,leaf=mod->leafs ; i<mod->numleafs ; i++, leaf++)
+		for (i=0,leaf=cl.worldmodel->leafs ; i<cl.worldmodel->numleafs ; i++, leaf++)
 		{
 //			if (!leaf->nummarksurfaces)
 //			{
@@ -7405,12 +7390,12 @@ qbyte *R_MarkLeaves_Q3 (model_t *mod, int clusters[2])
 #if 1
 			for (node = (mnode_t*)leaf; node; node = node->parent)
 			{
-				if (node->visframe == vissequence)
+				if (node->visframe == r_visframecount)
 					break;
-				node->visframe = vissequence;
+				node->visframe = r_visframecount;
 			}
 #else
-			leaf->visframe = vissequence;
+			leaf->visframe = r_visframecount;
 			leaf->vischain = r_vischain;
 			r_vischain = leaf;
 #endif
@@ -7418,8 +7403,8 @@ qbyte *R_MarkLeaves_Q3 (model_t *mod, int clusters[2])
 	}
 	else
 	{
-		vis = CM_ClusterPVS (mod, clusters[0], &curframevis[portal], PVM_FAST);
-		for (i=0,leaf=mod->leafs ; i<mod->numleafs ; i++, leaf++)
+		vis = CM_ClusterPVS (cl.worldmodel, r_viewcluster, &curframevis[portal], PVM_FAST);
+		for (i=0,leaf=cl.worldmodel->leafs ; i<cl.worldmodel->numleafs ; i++, leaf++)
 		{
 			cluster = leaf->cluster;
 			if (cluster == -1)// || !leaf->nummarksurfaces)
@@ -7431,19 +7416,19 @@ qbyte *R_MarkLeaves_Q3 (model_t *mod, int clusters[2])
 #if 1
 				for (node = (mnode_t*)leaf; node; node = node->parent)
 				{
-					if (node->visframe == vissequence)
+					if (node->visframe == r_visframecount)
 						break;
-					node->visframe = vissequence;
+					node->visframe = r_visframecount;
 				}
 #else
-				leaf->visframe = vissequence;
+				leaf->visframe = r_visframecount;
 				leaf->vischain = r_vischain;
 				r_vischain = leaf;
 #endif
 			}
 		}
+		cvis[portal] = vis;
 	}
-	prv->oldvis = vis;
 	return vis;
 }
 
@@ -7457,7 +7442,7 @@ static void Surf_RecursiveQ3WorldNode (mnode_t *node, unsigned int clipflags)
 
 start:
 
-	if (node->visframe != vissequence)
+	if (node->visframe != r_visframecount)
 		return;
 
 	for (c = 0, clipplane = r_refdef.frustum; c < r_refdef.frustum_numworldplanes; c++, clipplane++)
@@ -7488,9 +7473,9 @@ start:
 		for (c = pleaf->nummarksurfaces; c; c--)
 		{
 			surf = *mark++;
-			if (surf->visframe == scenesequence)
+			if (surf->visframe == r_framecount)
 				continue;
-			surf->visframe = scenesequence;
+			surf->visframe = r_framecount;
 
 //			if (((dot < 0) ^ !!(surf->flags & SURF_PLANEBACK)))
 //				continue;		// wrong side
@@ -7539,7 +7524,7 @@ start:
 #endif
 
 #ifdef Q2BSPS
-qbyte *R_MarkLeaves_Q2 (model_t *mod, int viewclusters[2])
+qbyte *R_MarkLeaves_Q2 (void)
 {
 	static pvsbuffer_t	curframevis[R_MAX_RECURSE];
 	static qbyte	*cvis[R_MAX_RECURSE];
@@ -7551,58 +7536,57 @@ qbyte *R_MarkLeaves_Q2 (model_t *mod, int viewclusters[2])
 	qbyte *vis;
 
 	int portal = r_refdef.recurse;
-	cminfo_t	*prv = mod->meshinfo;
 
 	if (r_refdef.forcevis)
 	{
 		vis = cvis[portal] = r_refdef.forcedvis;
 
-		prv->oldclusters[0] = -1;
-		prv->oldclusters[1] = -1;
+		r_oldviewcluster = -1;
+		r_oldviewcluster2 = -1;
 	}
 	else
 	{
 		vis = cvis[portal];
 		if (!portal)
 		{
-			if (prv->oldclusters[0] == viewclusters[0] && prv->oldclusters[1] == viewclusters[1])
+			if (r_oldviewcluster == r_viewcluster && r_oldviewcluster2 == r_viewcluster2)
 				return vis;
 
-			prv->oldclusters[0] = viewclusters[0];
-			prv->oldclusters[1] = viewclusters[1];
+			r_oldviewcluster = r_viewcluster;
+			r_oldviewcluster2 = r_viewcluster2;
 		}
 		else
 		{
-			prv->oldclusters[0] = -1;
-			prv->oldclusters[1] = -1;
+			r_oldviewcluster = -1;
+			r_oldviewcluster2 = -1;
 		}
 
 		if (r_novis.ival == 2)
 			return vis;
 
-		if (r_novis.ival || r_viewcluster == -1 || !mod->vis)
+		if (r_novis.ival || r_viewcluster == -1 || !cl.worldmodel->vis)
 		{
 			// mark everything
-			for (i=0 ; i<mod->numleafs ; i++)
-				mod->leafs[i].visframe = vissequence;
-			for (i=0 ; i<mod->numnodes ; i++)
-				mod->nodes[i].visframe = vissequence;
+			for (i=0 ; i<cl.worldmodel->numleafs ; i++)
+				cl.worldmodel->leafs[i].visframe = r_visframecount;
+			for (i=0 ; i<cl.worldmodel->numnodes ; i++)
+				cl.worldmodel->nodes[i].visframe = r_visframecount;
 			return vis;
 		}
 
-		if (viewclusters[1] != viewclusters[0])	// may have to combine two clusters because of solid water boundaries
+		if (r_viewcluster2 != r_viewcluster)	// may have to combine two clusters because of solid water boundaries
 		{
-			vis = CM_ClusterPVS (mod, viewclusters[0], &curframevis[portal], PVM_REPLACE);
-			vis = CM_ClusterPVS (mod, viewclusters[1], &curframevis[portal], PVM_MERGE);
+			vis = CM_ClusterPVS (cl.worldmodel, r_viewcluster, &curframevis[portal], PVM_REPLACE);
+			vis = CM_ClusterPVS (cl.worldmodel, r_viewcluster2, &curframevis[portal], PVM_MERGE);
 		}
 		else
-			vis = CM_ClusterPVS (mod, viewclusters[0], &curframevis[portal], PVM_FAST);
+			vis = CM_ClusterPVS (cl.worldmodel, r_viewcluster, &curframevis[portal], PVM_FAST);
 		cvis[portal] = vis;
 	}
 
-	vissequence++;
+	r_visframecount++;
 
-	for (i=0,leaf=mod->leafs ; i<mod->numleafs ; i++, leaf++)
+	for (i=0,leaf=cl.worldmodel->leafs ; i<cl.worldmodel->numleafs ; i++, leaf++)
 	{
 		cluster = leaf->cluster;
 		if (cluster == -1)
@@ -7612,9 +7596,9 @@ qbyte *R_MarkLeaves_Q2 (model_t *mod, int viewclusters[2])
 			node = (mnode_t *)leaf;
 			do
 			{
-				if (node->visframe == vissequence)
+				if (node->visframe == r_visframecount)
 					break;
-				node->visframe = vissequence;
+				node->visframe = r_visframecount;
 				node = node->parent;
 			} while (node);
 		}
@@ -7634,7 +7618,7 @@ static void Surf_RecursiveQ2WorldNode (mnode_t *node)
 	if (node->contents == Q2CONTENTS_SOLID)
 		return;		// solid
 
-	if (node->visframe != vissequence)
+	if (node->visframe != r_visframecount)
 		return;
 	if (R_CullBox (node->minmaxs, node->minmaxs+3))
 		return;
@@ -7659,7 +7643,7 @@ static void Surf_RecursiveQ2WorldNode (mnode_t *node)
 		{
 			do
 			{
-				(*mark)->visframe = scenesequence;
+				(*mark)->visframe = r_framecount;
 				mark++;
 			} while (--c);
 		}
@@ -7704,13 +7688,13 @@ static void Surf_RecursiveQ2WorldNode (mnode_t *node)
 	// draw stuff
 	for ( c = node->numsurfaces, surf = currentmodel->surfaces + node->firstsurface; c ; c--, surf++)
 	{
-		if (surf->visframe != scenesequence)
+		if (surf->visframe != r_framecount)
 			continue;
 
 		if ( (surf->flags & SURF_PLANEBACK) != sidebit )
 			continue;		// wrong side
 
-		surf->visframe = 0;//scenesequence+1;//-1;
+		surf->visframe = 0;//r_framecount+1;//-1;
 
 		Surf_RenderDynamicLightmaps (surf);
 
@@ -7736,20 +7720,19 @@ static void CM_PrepareFrame(model_t *mod, refdef_t *refdef, int area, int viewcl
 
 	VectorCopy (r_refdef.vieworg, modelorg);
 
-	scenesequence++;
 #ifdef Q3BSPS
-	if (mod->fromgame == fg_quake3)
+	if (currentmodel->fromgame == fg_quake3)
 	{
-		entvis = surfvis = R_MarkLeaves_Q3 (mod, viewclusters);
-		Surf_RecursiveQ3WorldNode (mod->nodes, (1<<r_refdef.frustum_numworldplanes)-1);
+		entvis = surfvis = R_MarkLeaves_Q3 ();
+		Surf_RecursiveQ3WorldNode (currentmodel->nodes, (1<<r_refdef.frustum_numworldplanes)-1);
 	}
 	else
 #endif
 #ifdef Q2BSPS
-	if (mod->fromgame == fg_quake2)
+	if (currentmodel->fromgame == fg_quake2)
 	{
-		entvis = surfvis = R_MarkLeaves_Q2 (mod, viewclusters);
-		Surf_RecursiveQ2WorldNode (mod->nodes);
+		entvis = surfvis = R_MarkLeaves_Q2 ();
+		Surf_RecursiveQ2WorldNode (currentmodel->nodes);
 	}
 	else
 #endif

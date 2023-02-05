@@ -29,7 +29,7 @@ cvar_t		log_dosformat = CVARF("log_dosformat", "0", CVAR_NOTFROMSERVER);
 qboolean	log_newline[LOG_TYPES];
 
 #ifdef IPLOG
-cvar_t		iplog_autodump = CVARFD("ipautodump", "0", CVAR_ARCHIVE|CVAR_NOTFROMSERVER, "Enables dumping the 'iplog.txt' file, which contains a log of usernames seen for a given IP, which is useful for detecting fake-nicks.");
+cvar_t		iplog_autodump = CVARFD("ipautodump", "1", CVAR_NOTFROMSERVER, "Enables dumping the 'iplog.txt' file, which contains a log of usernames seen for a given IP, which is useful for detecting fake-nicks.");
 #endif
 
 static char log_dir[MAX_OSPATH];
@@ -227,7 +227,7 @@ void Con_Log (const char *s)
 }
 
 
-#ifdef HAVE_SERVER
+#ifndef CLIENTONLY
 //still to add stuff at:
 //connects
 //disconnects
@@ -632,13 +632,11 @@ static void IPLog_Merge_f(void)
 }
 #endif
 
-#if defined(HAVE_DTLS) && defined(HAVE_CLIENT)	//requires UI prompts
+#ifdef HAVE_CLIENT	//requires UI prompts
 struct certlog_s
 {
 	link_t l;
 	char *hostname;
-	qboolean trusted;	//when true, the user has given explicit trust
-						//when false we buldozed straight through and will only complain when it changes (legacy mode).
 	size_t certsize;
 	qbyte cert[1];
 };
@@ -656,7 +654,7 @@ static struct certlog_s *CertLog_Find(const char *hostname)
 	}
 	return NULL;
 }
-static void CertLog_Update(const char *hostname, const void *cert, size_t certsize, qboolean trusted)
+static void CertLog_Update(const char *hostname, const void *cert, size_t certsize)
 {
 	struct certlog_s *l = CertLog_Find(hostname);
 	if (l)
@@ -665,7 +663,6 @@ static void CertLog_Update(const char *hostname, const void *cert, size_t certsi
 		Z_Free(l);
 	}
 	l = Z_Malloc(sizeof(*l) + certsize + strlen(hostname));
-	l->trusted = trusted;
 	l->certsize = certsize;
 	l->hostname = l->cert + l->certsize;
 	memcpy(l->cert, cert, certsize);
@@ -678,7 +675,7 @@ static void CertLog_Write(void)
 	vfsfile_t *f = FS_OpenVFS(CERTLOG_FILENAME, "wb", FS_ROOT);
 	if (f)
 	{
-		VFS_PRINTF(f, "version 1.1\n");
+		VFS_PRINTF(f, "version 1.0\n");
 
 		for (l=(struct certlog_s*)certlog.next ; l != (struct certlog_s*)&certlog ; l = (struct certlog_s*)l->l.next)
 		{
@@ -693,7 +690,7 @@ static void CertLog_Write(void)
 			certhex[i*2] = 0;
 			VFS_PRINTF(f, "%s \"", l->hostname);
 			VFS_PUTS(f, certhex);
-			VFS_PRINTF(f, "\" %i\n", l->trusted?true:false);
+			VFS_PRINTF(f, "\"\n");
 		}
 	}
 }
@@ -723,7 +720,6 @@ static void CertLog_Import(const char *filename)
 	char addressstring[512];
 	char certhex[32768];
 	char certdata[16384];
-	char trusted[16];
 	char line[65536], *l;
 	size_t i, certsize;
 	vfsfile_t *f;
@@ -742,7 +738,6 @@ static void CertLog_Import(const char *filename)
 		l = line;
 		l = COM_ParseOut(l, addressstring, sizeof(addressstring));
 		l = COM_ParseOut(l, certhex, sizeof(certhex));
-		l = COM_ParseOut(l, trusted, sizeof(trusted));
 
 		certsize = 0;
 		for (i = 0; certsize < sizeof(certdata); i++)
@@ -751,7 +746,7 @@ static void CertLog_Import(const char *filename)
 				break;
 			certdata[certsize++] = (hexdecode(certhex[(i<<1)+0])<<4)|hexdecode(certhex[(i<<1)+1]);
 		}
-		CertLog_Update(addressstring, certdata, certsize, atoi(trusted));
+		CertLog_Update(addressstring, certdata, certsize);
 	}
 }
 static void CertLog_UntrustAll_f(void)
@@ -780,7 +775,7 @@ static void CertLog_Add_Prompted(void *vctx, promptbutton_t button)
 	struct certprompt_s *ctx = vctx;
 	if (button == PROMPT_YES)	//button_yes / button_left
 	{
-		CertLog_Update(ctx->hostname, ctx->cert, ctx->certsize, true);
+		CertLog_Update(ctx->hostname, ctx->cert, ctx->certsize);
 		CertLog_Write();
 
 		CL_BeginServerReconnect();
@@ -791,10 +786,8 @@ static void CertLog_Add_Prompted(void *vctx, promptbutton_t button)
 	certlog_curprompt = NULL;
 }
 qboolean CertLog_ConnectOkay(const char *hostname, void *cert, size_t certsize, unsigned int certlogproblems)
-{	//this is specifically for dtls certs.
-	extern cvar_t net_enable_dtls;
+{
 	struct certlog_s *l;
-	qboolean trusted = (net_enable_dtls.ival >= 2);
 
 	if (certlog_curprompt)
 		return false;
@@ -804,14 +797,7 @@ qboolean CertLog_ConnectOkay(const char *hostname, void *cert, size_t certsize, 
 		CertLog_Import(NULL);
 	l = CertLog_Find(hostname);
 
-	if (!l && !trusted)
-	{	//cert is new, but we don't care about full trust. don't bother to prompt when the user doesn't much care.
-		//(but do pin so we at least know when its MITMed after the fact)
-		Con_Printf(CON_WARNING"Auto-Pinning certificate for %s."CON_DEFAULT" ^[/seta %s 2^]+ for actual security.\n", hostname, net_enable_dtls.name);
-		CertLog_Update(hostname, cert, certsize, false);
-		CertLog_Write();
-	}
-	else if (!l || l->certsize != certsize || memcmp(l->cert, cert, certsize) || (trusted && !l->trusted))
+	if (!l || l->certsize != certsize || memcmp(l->cert, cert, certsize))
 	{	//new or different
 		if (qrenderer)
 		{
@@ -849,12 +835,10 @@ qboolean CertLog_ConnectOkay(const char *hostname, void *cert, size_t certsize, 
 			text[len] = 0;
 
 			//FIXME: display some sort of fingerprint
-			Menu_Prompt(CertLog_Add_Prompted, ctx, text, accepttext, NULL, localtext("Disconnect"), true);
+			Menu_Prompt(CertLog_Add_Prompted, ctx, text, accepttext, NULL, localtext("Disconnect"));
 		}
 		return false;	//can't connect yet...
 	}
-	else if (!l->trusted)
-		Con_Printf(CON_WARNING"Server certificate for %s was previously auto-pinned."CON_DEFAULT" ^[/seta %s 2^]+ for actual security.\n", hostname, net_enable_dtls.name);
 	return true;
 }
 #endif
@@ -1076,7 +1060,7 @@ void Log_Init(void)
 	if (COM_CheckParm("-condebug"))
 		Cvar_ForceSet(&log_enable[LOG_CONSOLE], "1");
 
-#if defined(HAVE_DTLS) && defined(HAVE_CLIENT)
+#ifdef HAVE_CLIENT
 	ClearLink(&certlog);
 	Cmd_AddCommand("dtls_untrustall", CertLog_UntrustAll_f);
 	Cmd_AddCommand("dtls_importtrust", CertLog_Import_f);

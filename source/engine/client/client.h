@@ -248,6 +248,9 @@ typedef struct
 
 typedef struct
 {
+	//this is the sequence we requested for this frame.
+	int			delta_sequence;		// sequence number to delta from, -1 = full update
+
 	// received from server
 	int			frameid;		//the sequence number of the frame, so we can easily detect which frames are valid without poking all in advance, etc
 	int			ackframe;		//the outgoing sequence this frame acked (for prediction backlerping).
@@ -471,9 +474,6 @@ typedef struct
 	#define CPNQ_IS_DP (cls.protocol_nq >= CPNQ_DP5)
 	#define CPNQ_IS_BJP (cls.protocol_nq >= CPNQ_BJP1 && cls.protocol_nq <= CPNQ_BJP3)
 	qboolean proquake_angles_hack;	//angles are always 16bit
-#ifdef NQPROT
-	qboolean qex;	//we're connected to a QuakeEx server, which means lots of special workarounds that are not controlled via the actual protocol version.
-#endif
 
 	int protocol_q2;
 
@@ -755,6 +755,8 @@ struct playerview_s
 	vec4_t		screentint;
 	vec4_t		bordertint;	//won't contain v_cshift values, only powerup+contents+damage+bf flashes
 
+	vec3_t		vw_axis[3];	//weapons should be positioned relative to this
+	vec3_t		vw_origin;	//weapons should be positioned relative to this
 //	entity_t	viewent;	// is this not utterly redundant yet?
 	struct
 	{
@@ -852,7 +854,6 @@ typedef struct
 								// is rendering at.  always <= realtime
 	double		lasttime;		//cl.time from last frame.
 	double		lastlinktime;	//cl.time from last frame.
-	double		mapstarttime;	//for computing csqc's cltime.
 
 	float servertime;	//current server time, bound between gametime and gametimemark
 	float mtime;		//server time as on the server when we last received a packet. not allowed to decrease.
@@ -914,6 +915,7 @@ typedef struct
 	char				*particle_csname[MAX_CSPARTICLESPRE];
 	int					particle_csprecache[MAX_CSPARTICLESPRE];	//these are actually 1-based, so we can be lazy and do a simple negate.
 
+	qboolean			model_precaches_added;
 	qboolean			particle_ssprecaches;	//says to not try to do any dp-compat hacks.
 	qboolean			particle_csprecaches;	//says to not try to do any dp-compat hacks.
 
@@ -983,7 +985,6 @@ typedef struct
 
 	qboolean teamfortress;	// *sigh*. This is used for teamplay stuff. This sucks.
 	qboolean hexen2pickups;
-	qboolean disablemouse;	//no mouse inputs (for controller-only games, though we do also allow keyboards if only because of joy2key type stuff)
 
 	qboolean sendprespawn;
 	int contentstage;
@@ -1112,9 +1113,8 @@ extern	qboolean	nomaster;
 //
 void CL_InitDlights(void);
 void CL_FreeDlights(void);
-dlight_t *CL_AllocDlight (int key);	//allocates or reuses the light with the specified key index
-dlight_t *CL_AllocDlightOrg (int keyidx, vec3_t keyorg); //reuses the light at the specified origin...
-dlight_t *CL_AllocSlight (void);	//allocates a new static light
+dlight_t *CL_AllocDlight (int key);
+dlight_t *CL_AllocSlight (void);	//allocates a static light
 dlight_t *CL_NewDlight (int key, const vec3_t origin, float radius, float time, float r, float g, float b);
 dlight_t *CL_NewDlightCube (int key, const vec3_t origin, vec3_t angles, float radius, float time, vec3_t colours);
 void CL_CloneDlight(dlight_t *dl, dlight_t *src);	//copies one light to another safely
@@ -1144,6 +1144,7 @@ void CL_SaveInfo(vfsfile_t *f);
 void CL_SetInfo (int pnum, const char *key, const char *value);
 void CL_SetInfoBlob (int pnum, const char *key, const char *value, size_t valuesize);
 
+void CL_BeginServerConnect(const char *host, int port, qboolean noproxy);
 char *CL_TryingToConnect(void);
 
 void CL_ExecInitialConfigs(char *defaultexec);
@@ -1192,7 +1193,7 @@ extern char emodel_name[], pmodel_name[], prespawn_name[], modellist_name[], sou
 
 //CL_TraceLine traces against network(positive)+csqc(negative) ents. returns frac(1 on failure), and impact, normal, ent values
 float CL_TraceLine (vec3_t start, vec3_t end, vec3_t impact, vec3_t normal, int *ent);
-entity_t *TraceLineR (vec3_t start, vec3_t end, vec3_t impact, vec3_t normal, qboolean bsponly);
+entity_t *TraceLineR (vec3_t start, vec3_t end, vec3_t impact, vec3_t normal);
 
 //
 // cl_input
@@ -1216,9 +1217,6 @@ void CL_UpdateWindowTitle(void);
 
 #ifdef QUAKESTATS
 const char *IN_GetPreselectedViewmodelName(unsigned int pnum);
-qboolean IN_WeaponWheelAccumulate(int pnum, float x, float y, float threshhold);
-qboolean IN_DrawWeaponWheel(int pnum);
-qboolean IN_WeaponWheelIsShown(void);	//to decide when the game should be auto-paused.
 #endif
 void CL_InitInput (void);
 void CL_SendCmd (double frametime, qboolean mainloop);
@@ -1265,12 +1263,12 @@ void CL_ReadPacket(void);
 
 int  CL_ReadFromServer (void);
 void CL_WriteToServer (usercmd_t *cmd);
+void CL_BaseMove (usercmd_t *cmd, int pnum, float priortime, float extratime);
 
 int Master_FindBestRoute(char *server, char *out, size_t outsize, int *directcost, int *chainedcost);
 
 float CL_KeyState (kbutton_t *key, int pnum, qboolean noslowstart);
 const char *Key_KeynumToString (int keynum, int modifier);
-const char *Key_KeynumToLocalString (int keynum, int modifier);
 int Key_StringToKeynum (const char *str, int *modifier);
 const char *Key_GetBinding(int keynum, int bindmap, int modifier);
 void Key_GetBindMap(int *bindmaps);
@@ -1444,6 +1442,25 @@ void CL_LinkPacketEntities (void);
 void CL_LinkProjectiles (void);
 void CL_ClearLerpEntsParticleState (void);
 qboolean CL_MayLerp(void);
+
+//
+//clq3_parse.c
+//
+#ifdef Q3CLIENT
+void VARGS CLQ3_SendClientCommand(const char *fmt, ...) LIKEPRINTF(1);
+void CLQ3_SendAuthPacket(netadr_t *gameserver);
+void CLQ3_SendConnectPacket(netadr_t *to, int challenge, int qport);
+void CLQ3_SendCmd(usercmd_t *cmd);
+qboolean CLQ3_Netchan_Process(void);
+void CLQ3_ParseServerMessage (void);
+struct snapshot_s;
+qboolean CG_FillQ3Snapshot(int snapnum, struct snapshot_s *snapshot);
+
+void CG_InsertIntoGameState(int num, char *str);
+void CG_Restart_f(void);
+
+char *CG_GetConfigString(int num);
+#endif
 
 //
 //pr_csqc.c

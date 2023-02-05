@@ -48,7 +48,7 @@ static struct
 	int width;
 	int height;
 } pvid;
-static void QDECL QI_UpdateVideo(int width, int height, qboolean restarted)
+static void QDECL QI_UpdateVideo(int width, int height)
 {
 	pvid.width = width;
 	pvid.height = height;
@@ -889,12 +889,6 @@ static void QDECL QI_Tick(double realtime, double gametime)
 				if (dlcontext == -1)
 				{	
 					QI_RefreshMapList(false);
-
-					if (packagemanager)
-					{
-						VFS_CLOSE(packagemanager);
-						packagemanager = NULL;
-					}
 					return;
 				}
 				archive = false;
@@ -961,24 +955,30 @@ static int QDECL QI_ConExecuteCommand(qboolean isinsecure)
 	return true;
 }
 
-static void QI_ExecuteCommand_f(void)
+static qboolean QI_ExecuteCommand(qboolean isinsecure)
 {
 	char cmd[256];
-	if (cmdfuncs->Argc() > 1)
+	cmdfuncs->Argv(0, cmd, sizeof(cmd));
+	if (!strcmp(cmd, "qi") || !strcmp(cmd, "quaddicted"))
 	{
-		cmdfuncs->Args(cmd, sizeof(cmd));
-		QI_UpdateFilter(cmd);
-	}
-	else if (QI_SetupWindow(WINDOWNAME, false))
-	{
-		confuncs->SetActive(WINDOWNAME);
-		return;
-	}
+		if (cmdfuncs->Argc() > 1)
+		{
+			cmdfuncs->Args(cmd, sizeof(cmd));
+			QI_UpdateFilter(cmd);
+		}
+		else if (QI_SetupWindow(WINDOWNAME, false))
+		{
+			confuncs->SetActive(WINDOWNAME);
+			return true;
+		}
 
-	if (!thedatabase && dlcontext == -1)
-		filefuncs->Open(DATABASEURL, &dlcontext, 1);
+		if (!thedatabase && dlcontext == -1)
+			filefuncs->Open(DATABASEURL, &dlcontext, 1);
 
-	QI_RefreshMapList(true);
+		QI_RefreshMapList(true);
+		return true;
+	}
+	return false;
 }
 
 void QI_GenPackages(const char *url, vfsfile_t *pipe)
@@ -1007,11 +1007,12 @@ qboolean Plug_Init(void)
 		plugfuncs->ExportFunction("UpdateVideo", QI_UpdateVideo);
 		if (plugfuncs->ExportFunction("Tick", QI_Tick) &&
 			plugfuncs->ExportFunction("Shutdown", QI_Shutdown) &&
+			plugfuncs->ExportFunction("ExecuteCommand", QI_ExecuteCommand) &&
 			plugfuncs->ExportFunction("ConExecuteCommand", QI_ConExecuteCommand) &&
 			plugfuncs->ExportFunction("ConsoleLink", QI_ConsoleLink))
 		{
-			cmdfuncs->AddCommand("qi", QI_ExecuteCommand_f, "Select or install maps or mods from Quaddicted's database.");
-			cmdfuncs->AddCommand("quaddicted", QI_ExecuteCommand_f, "Select or install maps or mods from Quaddicted's database.");
+			cmdfuncs->AddCommand("qi");
+			cmdfuncs->AddCommand("quaddicted");
 			return true;
 		}
 	}

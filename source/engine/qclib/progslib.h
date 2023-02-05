@@ -94,8 +94,7 @@ ev_struct,	//big complex type
 ev_union,	//not really sure why this is separate from struct
 ev_accessor,//some weird type to provide class-like functions over a basic type.
 ev_enum,	//just a numeric type
-ev_typedef,	//so typedefs can refer to their original type (primarily for structs).
-ev_boolean,	//exists to optimise if(-0) workarounds. engine just sees int/float.
+ev_boolean	//exists to optimise if(-0) workarounds.
 } etype_t;
 enum {
 	DEBUG_TRACE_OFF,		//debugging should be off.
@@ -182,8 +181,8 @@ struct pubprogfuncs_s
 	int		callargc;	//number of args of built-in call
 
 	char *stringtable;	//qc strings are all relative. add to a qc string. this is required for support of frikqcc progs that strip string immediates.
-	unsigned int stringtablesize;
-	unsigned int stringtablemaxsize;
+	int stringtablesize;
+	int stringtablemaxsize;
 	int fieldadjust;	//FrikQCC style arrays can cause problems due to field remapping. This causes us to leave gaps but offsets identical. except for system fields, qc-addressable variables use their old offsets, this is the bias so that the offset pokes the correct memory.
 	unsigned int activefieldslots; //f+=fieldadjust; invalidfield = (f<0)||(f+fldsize>=activefieldslots); note that this does NOT apply to 'object' entities which are variable sized, use ed->fieldsize for those.
 

@@ -29,16 +29,31 @@ enum tlsmode_e
 	TLS_STARTING	//don't send any nick/user/pass info while this is set
 };
 
-static cvar_t	*irc_debug;// = {"irc_debug", "0", irccvars, 0};
-static cvar_t	*irc_motd;// = {"irc_motd", "0", irccvars, 0};
-static cvar_t	*irc_nick;// = {"irc_nick", "", irccvars, 0};
-static cvar_t	*irc_altnick;// = {"irc_altnick", "", irccvars, 0};
-static cvar_t	*irc_realname;// = {"irc_realname", "FTE IRC-Plugin", irccvars, 0};
-static cvar_t	*irc_hostname;// = {"irc_hostname", "localhost", irccvars, 0};
-static cvar_t	*irc_username;// = {"irc_username", "FTE", irccvars, 0};
-static cvar_t	*irc_timestamp;// = {"irc_timestamp", "0", irccvars, 0};
-static cvar_t	*irc_quitmessage;// = {"irc_quitmessage", "", irccvars, 0};
-static cvar_t	*irc_config;// = {"irc_config", "1", irccvars, 0};
+#define irccvars "IRC Console Variables"
+static vmcvar_t	irc_debug = {"irc_debug", "0", irccvars, 0};
+static vmcvar_t	irc_motd = {"irc_motd", "0", irccvars, 0};
+static vmcvar_t	irc_nick = {"irc_nick", "", irccvars, 0};
+static vmcvar_t	irc_altnick = {"irc_altnick", "", irccvars, 0};
+static vmcvar_t	irc_realname = {"irc_realname", "FTE IRC-Plugin", irccvars, 0};
+static vmcvar_t	irc_hostname = {"irc_hostname", "localhost", irccvars, 0};
+static vmcvar_t	irc_username = {"irc_username", "FTE", irccvars, 0};
+static vmcvar_t	irc_timestamp = {"irc_timestamp", "0", irccvars, 0};
+static vmcvar_t	irc_quitmessage = {"irc_quitmessage", "", irccvars, 0};
+static vmcvar_t	irc_config = {"irc_config", "1", irccvars, 0};
+#undef irccvars
+
+static vmcvar_t	*cvarlist[] ={
+	&irc_debug,
+	&irc_motd,
+	&irc_nick,
+	&irc_altnick,
+	&irc_realname,
+	&irc_hostname,
+	&irc_username,
+	&irc_timestamp,
+	&irc_quitmessage,
+	NULL
+};
 
 static icefuncs_t *piceapi;
 static int next_window_x;
@@ -63,7 +78,7 @@ static struct
 	int width;
 	int height;
 } pvid;
-static void QDECL IRC_UpdateVideo(int width, int height, qboolean restarted)
+static void QDECL IRC_UpdateVideo(int width, int height)
 {
 	pvid.width = width;
 	pvid.height = height;
@@ -363,21 +378,29 @@ static void IRC_Printf(ircclient_t *irc, const char *subname, const char *format
 
 static void IRC_InitCvars(void)
 {
-	const char *cvargroup = "IRC Console Variables";
-	irc_debug		= cvarfuncs->GetNVFDG("irc_debug", "0", 0, NULL, cvargroup);
-	irc_motd		= cvarfuncs->GetNVFDG("irc_motd", "0", 0, NULL, cvargroup);
-	irc_nick		= cvarfuncs->GetNVFDG("irc_nick", "", 0, NULL, cvargroup);
-	irc_altnick		= cvarfuncs->GetNVFDG("irc_altnick", "", 0, NULL, cvargroup);
-	irc_realname	= cvarfuncs->GetNVFDG("irc_realname", "FTE IRC-Plugin", 0, NULL, cvargroup);
-	irc_hostname	= cvarfuncs->GetNVFDG("irc_hostname", "localhost", 0, NULL, cvargroup);
-	irc_username	= cvarfuncs->GetNVFDG("irc_username", "FTE", 0, NULL, cvargroup);
-	irc_timestamp	= cvarfuncs->GetNVFDG("irc_timestamp", "0", 0, NULL, cvargroup);
-	irc_quitmessage	= cvarfuncs->GetNVFDG("irc_quitmessage", "", 0, NULL, cvargroup);
-	irc_config		= cvarfuncs->GetNVFDG("irc_config", "1", 0, NULL, cvargroup);
+	vmcvar_t *v;
+	int i;
+	for (i=0; cvarlist[i]; i++)
+	{
+		v = cvarlist[i];
+		v->handle = cvarfuncs->Register(v->name, v->string, v->flags, v->group);
+	}
+}
+
+static int IRC_CvarUpdate(void) // perhaps void instead?
+{
+	vmcvar_t *v;
+	int i;
+	for (i=0; cvarlist[i]; i++)
+	{
+		v = cvarlist[i];
+		cvarfuncs->Update(v->handle, &v->modificationcount, v->string, sizeof(v->string), &v->value);
+	}
+	return 0;
 }
 
 void IRC_Command(ircclient_t *ircclient, char *dest, char *args);
-void IRC_ExecuteCommand_f(void);
+qboolean IRC_ExecuteCommand(qboolean isinsecure);
 int IRC_ConExecuteCommand(qboolean isinsecure);
 void IRC_Frame(double realtime, double gametime);
 qboolean IRC_ConsoleLink(void);
@@ -393,9 +416,10 @@ qboolean Plug_Init(void)
 
 	if (netfuncs &&
 		filefuncs &&
-		plugfuncs->ExportFunction("Tick", IRC_Frame))
+		plugfuncs->ExportFunction("Tick", IRC_Frame) &&
+		plugfuncs->ExportFunction("ExecuteCommand", IRC_ExecuteCommand))
 	{
-		cmdfuncs->AddCommand(COMMANDNAME, IRC_ExecuteCommand_f, "Internet Relay Chat client, use ^[/"COMMANDNAME" /help^] for help");
+		cmdfuncs->AddCommand(COMMANDNAME);
 
 		plugfuncs->ExportFunction("ConsoleLink", IRC_ConsoleLink);
 		if (!confuncs || !plugfuncs->ExportFunction("ConExecuteCommand", IRC_ConExecuteCommand))
@@ -417,13 +441,20 @@ qboolean Plug_Init(void)
 
 
 
-void IRC_ExecuteCommand_f(void)
+qboolean IRC_ExecuteCommand(qboolean isinsecure)
 {
-	ircclient_t *ircclient = ircclients;
-	char imsg[8192];
-	cmdfuncs->Args(imsg, sizeof(imsg));
-	//FIXME: select an irc network more inteligently
-	IRC_Command(ircclient, ircclient?ircclient->defaultdest:"", imsg);
+	char cmd[256];
+	cmdfuncs->Argv(0, cmd, sizeof(cmd));
+	if (!strcmp(cmd, COMMANDNAME))
+	{
+		ircclient_t *ircclient = ircclients;
+		char imsg[8192];
+		cmdfuncs->Args(imsg, sizeof(imsg));
+		//FIXME: select an irc network more inteligently
+		IRC_Command(ircclient, ircclient?ircclient->defaultdest:"", imsg);
+		return true;
+	}
+	return false;
 }
 int IRC_ConExecuteCommand(qboolean isinsecure)
 {
@@ -469,7 +500,7 @@ static void IRC_AddClientMessage(ircclient_t *irc, char *msg)
 	memcpy(irc->bufferedoutmessage + irc->bufferedoutammount, output, len);
 	irc->bufferedoutammount += len;
 
-	if (irc_debug->value == 1) { IRC_Printf(irc, DEFAULTCONSOLE,COLOURYELLOW "<< %s \n",msg); }
+	if (irc_debug.value == 1) { IRC_Printf(irc, DEFAULTCONSOLE,COLOURYELLOW "<< %s \n",msg); }
 }
 
 static ircclient_t *IRC_FindAccount(const char *server)
@@ -502,6 +533,8 @@ static ircclient_t *IRC_Create(const char *server, const char *nick, const char 
 	irc->socket = invalid_handle;
 
 	Q_strlcpy(irc->server, server, sizeof(irc->server));
+
+	IRC_CvarUpdate();
 
 	Q_strlcpy(irc->primarynick,	nick,		sizeof(irc->primarynick));
 	Q_strlcpy(irc->nick,		nick,		sizeof(irc->nick));
@@ -537,6 +570,8 @@ static void IRC_SetNick(ircclient_t *irc, char *nick)
 }
 static void IRC_SetUser(ircclient_t *irc, char *user)
 {
+	IRC_CvarUpdate();
+
 	if (irc->tlsmode != TLS_STARTING)
 	{
 		const char *username = irc->username;
@@ -597,7 +632,7 @@ static qboolean IRC_Establish(ircclient_t *irc)
 		irc->nicktries = 0;
 		IRC_SetPass(irc, irc->pwd);
 		IRC_SetNick(irc, irc->nick);
-		IRC_SetUser(irc, irc_username->string);
+		IRC_SetUser(irc, irc_username.string);
 	}
 
 	return true;
@@ -657,7 +692,7 @@ static void IRC_WriteConfig(void)
 {
 	qhandle_t config;
 
-	if (irc_config->value == 0)
+	if (irc_config.value == 0)
 		return;
 
 	filefuncs->Open("**plugconfig", &config, 2);
@@ -946,6 +981,8 @@ static void IRC_TryNewNick(ircclient_t *irc, char *nickname)
 {
 	char *seedednick;
 
+	IRC_CvarUpdate();
+
 	if (irc->tlsmode == TLS_STARTING)
 	{
 		//don't submit any of this info here.
@@ -965,18 +1002,18 @@ static void IRC_TryNewNick(ircclient_t *irc, char *nickname)
 		if (irc->nicktries == 1)
 		{
 			irc->nicktries++;
-			if (*irc_nick->string && strcmp(nickname, irc_nick->string))
+			if (*irc_nick.string && strcmp(nickname, irc_nick.string))
 			{
-				IRC_SetNick(irc, irc_nick->string);
+				IRC_SetNick(irc, irc_nick.string);
 				return;
 			}
 		}
 		if (irc->nicktries == 2)
 		{
 			irc->nicktries++;
-			if (*irc_altnick->string && strcmp(nickname, irc_altnick->string))
+			if (*irc_altnick.string && strcmp(nickname, irc_altnick.string))
 			{
-				IRC_SetNick(irc, irc_altnick->string);
+				IRC_SetNick(irc, irc_altnick.string);
 				return;
 			}
 		}
@@ -991,10 +1028,10 @@ static void IRC_TryNewNick(ircclient_t *irc, char *nickname)
 		//IRC_Printf(irc, DEFAULTCONSOLE, COLOURRED "ERROR: primary nickname in use. Attempting random nickname.\n");
 		if (*irc->primarynick && irc->nicktries < 7)
 			seedednick = va("%.6s%i", irc->primarynick, rand());
-		else if (*irc_nick->string && irc->nicktries < 8)
-			seedednick = va("%.6s%i", irc_nick->string, rand());
-		else if (*irc_altnick->string && irc->nicktries < 9)
-			seedednick = va("%.6s%i", irc_altnick->string, rand());
+		else if (*irc_nick.string && irc->nicktries < 8)
+			seedednick = va("%.6s%i", irc_nick.string, rand());
+		else if (*irc_altnick.string && irc->nicktries < 9)
+			seedednick = va("%.6s%i", irc_altnick.string, rand());
 		else
 			seedednick = va("%.6s%i", "FTE", rand());
 		seedednick[9] = 0; //'Each client is distinguished from other clients by a unique nickname having a maximum length of nine (9) characters'
@@ -1020,7 +1057,7 @@ static void numbered_command(int comm, char *msg, ircclient_t *irc) // move vars
 		if (irc->tlsmode != TLS_STARTING)
 			irc->connecting = 0; // ok we are connected
 
-		if (irc_motd->value)
+		if (irc_motd.value)
 			IRC_Printf(irc, DEFAULTCONSOLE, COLOURYELLOW "SERVER STATS: %s\n",casevar[3]);
 		return;
 	}
@@ -1031,13 +1068,13 @@ static void numbered_command(int comm, char *msg, ircclient_t *irc) // move vars
 //	}
 	case 20:	/* RPL_HELLO */
 	{
-		if (irc_motd->value)
+		if (irc_motd.value)
 			IRC_Printf(irc, DEFAULTCONSOLE, COLOURYELLOW "%s\n",casevar[3]);
 		return;
 	}
 	case 42:	/*RPL_YOURID */
 	{
-		if (irc_motd->value)
+		if (irc_motd.value)
 			IRC_Printf(irc, DEFAULTCONSOLE, COLOURYELLOW "%s\n",casevar[3]);
 		return;
 	}
@@ -1054,7 +1091,7 @@ static void numbered_command(int comm, char *msg, ircclient_t *irc) // move vars
 	case 265:
 	case 266:
 	{
-		if (irc_motd->value)
+		if (irc_motd.value)
 			IRC_Printf(irc, DEFAULTCONSOLE, COLOURYELLOW "SERVER STATS: %s\n",casevar[3]);
 		return;
 	}
@@ -1174,9 +1211,11 @@ static void numbered_command(int comm, char *msg, ircclient_t *irc) // move vars
 	{
 		char *motdmessage = casevar[3]+1;
 
-		if (irc_motd->value == 2)
+		IRC_CvarUpdate();
+
+		if (irc_motd.value == 2)
 			IRC_Printf(irc, DEFAULTCONSOLE, "MOTD: %s\n", motdmessage);
-		else if (irc_motd->value)
+		else if (irc_motd.value)
 			IRC_Printf(irc, DEFAULTCONSOLE, "%s\n", motdmessage);
 
 		if (*irc->autochannels)
@@ -1279,7 +1318,7 @@ static void numbered_command(int comm, char *msg, ircclient_t *irc) // move vars
 		irc->nicktries = 0;
 		IRC_SetPass(irc, irc->pwd);
 		IRC_SetNick(irc, irc->nick);
-		IRC_SetUser(irc, irc_username->string);
+		IRC_SetUser(irc, irc_username.string);
 		return;
 	}
 	case 691: /* ERR_STARTTLS */
@@ -1312,37 +1351,37 @@ static struct ircice_s *IRC_ICE_Create(ircclient_t *irc, const char *sender, enu
 		return NULL;
 
 	if (!creator && type == ICEP_QWSERVER)
-		ice = piceapi->Create(NULL, NULL, sender, ICEM_ICE, ICEP_QWCLIENT, creator);
+		ice = piceapi->ICE_Create(NULL, NULL, sender, ICEM_ICE, ICEP_QWCLIENT);
 	else if (!creator && type == ICEP_QWCLIENT)
-		ice = piceapi->Create(NULL, NULL, sender, ICEM_ICE, ICEP_QWSERVER, creator);
+		ice = piceapi->ICE_Create(NULL, NULL, sender, ICEM_ICE, ICEP_QWSERVER);
 	else
-		ice = piceapi->Create(NULL, NULL, sender, ICEM_ICE, type, creator);
+		ice = piceapi->ICE_Create(NULL, NULL, sender, ICEM_ICE, type);
 
 	if (!ice)
 		return NULL;
 
-	piceapi->Set(ice, "controller", creator?"1":"0");
+	piceapi->ICE_Set(ice, "controller", creator?"1":"0");
 	if (creator && type == ICEP_VOICE)
 	{
 		//note: the engine will ignore codecs it does not support.
-		piceapi->Set(ice, "codec96", "opus@48000");
-		piceapi->Set(ice, "codec97", "speex@16000");	//wide
-		piceapi->Set(ice, "codec98", "speex@8000");		//narrow
-		piceapi->Set(ice, "codec99", "speex@32000");	//ultrawide
-		piceapi->Set(ice, "codec8", "pcma@8000");
-		piceapi->Set(ice, "codec0", "pcmu@8000");
+		piceapi->ICE_Set(ice, "codec96", "opus@48000");
+		piceapi->ICE_Set(ice, "codec97", "speex@16000");	//wide
+		piceapi->ICE_Set(ice, "codec98", "speex@8000");		//narrow
+		piceapi->ICE_Set(ice, "codec99", "speex@32000");	//ultrawide
+		piceapi->ICE_Set(ice, "codec8", "pcma@8000");
+		piceapi->ICE_Set(ice, "codec0", "pcmu@8000");
 	}
 
 	//query dns to see if there's a stunserver hosted by the same domain
 	//nslookup -querytype=SRV _stun._udp.example.com
 //		Q_snprintf(stunhost, sizeof(stunhost), "_stun._udp.%s", ice->server);
 //		if (NET_DNSLookup_SRV(stunhost, stunhost, sizeof(stunhost)))
-//			piceapi->Set(ice, "stunip", stunhost);
+//			piceapi->ICE_Set(ice, "stunip", stunhost);
 //		else
 	{
 		//irc services tend to not provide any stun info, so steal someone's... hopefully they won't mind too much. :(
-		piceapi->Set(ice, "stunport", "19302");
-		piceapi->Set(ice, "stunip", "stun.l.google.com");
+		piceapi->ICE_Set(ice, "stunport", "19302");
+		piceapi->ICE_Set(ice, "stunip", "stun.l.google.com");
 	}
 
 	ircice = malloc(sizeof(*ircice));
@@ -1395,8 +1434,8 @@ static void IRC_ICE_Update(ircclient_t *irc, struct ircice_s *ice, char updatety
 		char ufrag[256];
 		char pwd[256];
 
-		piceapi->Get(ice->ice, "lufrag",  ufrag, sizeof(ufrag));
-		piceapi->Get(ice->ice, "lpwd",	 pwd, sizeof(pwd));
+		piceapi->ICE_Get(ice->ice, "lufrag",  ufrag, sizeof(ufrag));
+		piceapi->ICE_Get(ice->ice, "lpwd",	 pwd, sizeof(pwd));
 
 		Q_snprintf(message, sizeof(message), " ufrag/%s pwd/%s", ufrag, pwd);
 	}
@@ -1410,7 +1449,7 @@ static void IRC_ICE_Update(ircclient_t *irc, struct ircice_s *ice, char updatety
 			char codecname[64];
 			char argn[64];
 			Q_snprintf(argn, sizeof(argn), "codec%i", i);
-			if (!piceapi->Get(ice->ice, argn,  codecname, sizeof(codecname)))
+			if (!piceapi->ICE_Get(ice->ice, argn,  codecname, sizeof(codecname)))
 				continue;
 
 			if (!strcmp(codecname, "speex@8000"))		//speex narrowband
@@ -1448,7 +1487,7 @@ static void IRC_ICE_Update(ircclient_t *irc, struct ircice_s *ice, char updatety
 */
 	if (updatetype != '+' && updatetype != '-')
 	{
-		while ((c = piceapi->GetLCandidateInfo(ice->ice)))
+		while ((c = piceapi->ICE_GetLCandidateInfo(ice->ice)))
 		{
 			char type[] = "hspr";
 			char cand[256];
@@ -1503,7 +1542,7 @@ static void IRC_ICE_ParseCandidate(struct icestate_s *ice, char *cand)
 	Q_strlcpy(info.candidateid, cand+1, sizeof(info.candidateid));
 	Q_strlcpy(info.addr, addr, sizeof(info.candidateid));
 	
-	piceapi->AddRCandidateInfo(ice, &info);
+	piceapi->ICE_AddRCandidateInfo(ice, &info);
 }
 
 static void IRC_ICE_ParseCodec(struct icestate_s *ice, char *codec)
@@ -1518,7 +1557,7 @@ static void IRC_ICE_ParseCodec(struct icestate_s *ice, char *codec)
 
 	Q_strlcat(name, va("@%u", rate), sizeof(name));
 
-	piceapi->Set(ice, va("codec%i", num), name);
+	piceapi->ICE_Set(ice, va("codec%i", num), name);
 }
 
 static void IRC_ICE_Parse(ircclient_t *irc, const char *sender, char *message)
@@ -1559,16 +1598,16 @@ static void IRC_ICE_Parse(ircclient_t *irc, const char *sender, char *message)
 				else if (!strncmp(token, "codec/", 6))
 					IRC_ICE_ParseCodec(ice->ice, token);
 				else if (!strncmp(token, "ufrag/", 6))
-					piceapi->Set(ice->ice, "rufrag", token+6);
+					piceapi->ICE_Set(ice->ice, "rufrag", token+6);
 				else if (!strncmp(token, "pwd/", 4))
-					piceapi->Set(ice->ice, "rpwd", token+4);
+					piceapi->ICE_Set(ice->ice, "rpwd", token+4);
 				else if (*token)
 					IRC_Printf(irc, sender, "unknown ice token %s\n", token);
 			}
 
 			if ((icetype == '=' || icetype == '*') && !ice->accepted && ice->allowed)
 			{
-				piceapi->Set(ice->ice, "state", STRINGIFY(ICE_CONNECTING));
+				piceapi->ICE_Set(ice->ice, "state", STRINGIFY(ICE_CONNECTING));
 				ice->accepted = true;
 			}
 
@@ -1642,7 +1681,7 @@ static void IRC_ICE_Frame(ircclient_t *irc)
 		if (!ice->accepted || !ice->allowed)
 			continue;
 		//ice needs some maintainence. if things change then we need to be prepared to send updated candidate info
-		piceapi->Get(ice->ice, "newlc", bah, sizeof(bah));
+		piceapi->ICE_Get(ice->ice, "newlc", bah, sizeof(bah));
 		if (atoi(bah))
 		{
 			IRC_Printf(irc, ice->peer, "Sending updated peer info\n");
@@ -1687,7 +1726,7 @@ static void IRC_ICE_Authorise(ircclient_t *irc, const char *with, enum iceproto_
 					IRC_ICE_Update(irc, ice, '-');
 					*link = ice->next;
 					if (ice->ice)
-						piceapi->Close(ice->ice, true);
+						piceapi->ICE_Close(ice->ice);
 					IRC_Free(ice);
 
 					IRC_Printf(irc, announce, "Connection terminated\n");
@@ -1898,8 +1937,10 @@ static int IRC_ClientFrame(ircclient_t *irc)
 
 	}
 
-//	if (irc_debug->value == 1) { IRC_Printf(irc, DEFAULTCONSOLE,COLOURRED "!!!!! ^11: %s ^22: %s ^33: %s ^44: %s ^55: %s ^66: %s ^77: %s ^88: %s\n",var[1],var[2],var[3],var[4],var[5],var[6],var[7],var[8]); }
-	if (irc_debug->value == 1) { IRC_Printf(irc, DEFAULTCONSOLE,COLOURRED "%s\n",var[1]); }
+	IRC_CvarUpdate(); // is this the right place for it?
+
+//	if (irc_debug.value == 1) { IRC_Printf(irc, DEFAULTCONSOLE,COLOURRED "!!!!! ^11: %s ^22: %s ^33: %s ^44: %s ^55: %s ^66: %s ^77: %s ^88: %s\n",var[1],var[2],var[3],var[4],var[5],var[6],var[7],var[8]); }
+	if (irc_debug.value == 1) { IRC_Printf(irc, DEFAULTCONSOLE,COLOURRED "%s\n",var[1]); }
 
 	if (*msg == ':')	//we need to strip off the prefix
 	{
@@ -1964,7 +2005,7 @@ static int IRC_ClientFrame(ircclient_t *irc)
 				to++;
 			for (end = to + strlen(to)-1; end >= to && *end <= ' '; end--)
 				*end = '\0';
-			if (!strcmp(to, irc_nick->string))
+			if (!strcmp(to, irc_nick.string))
 				to = prefix;	//This was directed straight at us.
 								//So change the 'to', to the 'from'.
 
@@ -2217,7 +2258,7 @@ static int IRC_ClientFrame(ircclient_t *irc)
 	else if (!strncmp(msg, "372 ", 4))
 	{
 		char *text = strstr(msg, ":-");
-		if (!*irc->autochannels || irc_motd->value)
+		if (!*irc->autochannels || irc_motd.value)
 		{
 			if (text)
 				IRC_Printf(irc, DEFAULTCONSOLE, "%s\n", text+2);
@@ -2354,7 +2395,9 @@ static int IRC_ClientFrame(ircclient_t *irc)
 
 		numbered_command(atoi(var[2]), msg, irc);
 
-		if (irc_debug->value == 1) { IRC_Printf(irc, DEFAULTCONSOLE, "%s\n", msg); }
+		IRC_CvarUpdate();
+
+		if (irc_debug.value == 1) { IRC_Printf(irc, DEFAULTCONSOLE, "%s\n", msg); }
 	}
 	else
 		IRC_Printf(irc, DEFAULTCONSOLE, "%s\n", msg);
@@ -2445,7 +2488,7 @@ void IRC_Command(ircclient_t *ircclient, char *dest, char *args)
 
 			//set up some defaults
 			if (!*nick)
-				Q_strlcpy(nick, irc_nick->string, sizeof(nick));
+				Q_strlcpy(nick, irc_nick.string, sizeof(nick));
 			if (!*nick)
 				cvarfuncs->GetString("name", nick, sizeof(nick));
 
@@ -2459,7 +2502,7 @@ void IRC_Command(ircclient_t *ircclient, char *dest, char *args)
 				}
 			}
 			else
-				ircclient = IRC_Create(server, nick, irc_realname->string, irc_hostname->string, irc_username->string, password, channels);
+				ircclient = IRC_Create(server, nick, irc_realname.string, irc_hostname.string, irc_username.string, password, channels);
 			if (ircclient)
 			{
 				IRC_MakeDefault(ircclient);
@@ -2486,7 +2529,7 @@ void IRC_Command(ircclient_t *ircclient, char *dest, char *args)
 		{
 			msg = COM_Parse(msg, token, sizeof(token));
 			if (!ircclient)	//not yet connected.
-				cvarfuncs->SetString(irc_nick->name, token);
+				cvarfuncs->SetString(irc_nick.name, token);
 			else
 			{
 				if (!handleisvalid(ircclient->socket))
@@ -2500,7 +2543,7 @@ void IRC_Command(ircclient_t *ircclient, char *dest, char *args)
 		else if (!strcmp(token+1, "user"))
 		{
 			msg = COM_Parse(msg, token, sizeof(token));
-			cvarfuncs->SetString(irc_username->name, token);
+			cvarfuncs->SetString(irc_username.name, token);
 			if (ircclient)
 				IRC_SetUser(ircclient, token);
 
@@ -2680,7 +2723,7 @@ void IRC_Command(ircclient_t *ircclient, char *dest, char *args)
 			if (*token)
 				IRC_AddClientMessage(ircclient, va("QUIT :%s", token));
 			else
-				IRC_AddClientMessage(ircclient, va("QUIT :%s", irc_quitmessage->string));
+				IRC_AddClientMessage(ircclient, va("QUIT :%s", irc_quitmessage.string));
 			ircclient->quitting = true;
 
 			IRC_WriteConfig();

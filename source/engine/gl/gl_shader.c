@@ -700,8 +700,8 @@ qboolean Shader_ParseSkySides (char *shadername, char *texturename, texid_t *ima
 			}
 			if (!images[i]->width)
 			{
-				Con_DPrintf("Sky \"%s\" missing texture: %s\n", shadername, path);
-				images[i] = r_blackimage;
+				Con_Printf("Sky \"%s\" missing texture: %s\n", shadername, path);
+				images[i] = missing_texture;
 				allokay = false;
 			}
 		}
@@ -8186,7 +8186,7 @@ void Shader_NeedReload(qboolean rescanfs)
 	shader_reload_needed = true;
 }
 
-cin_t *QDECL R_ShaderGetCinematic(shader_t *s)
+cin_t *R_ShaderGetCinematic(shader_t *s)
 {
 #ifdef HAVE_MEDIA_DECODER
 	int j;

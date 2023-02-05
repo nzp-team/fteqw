@@ -1059,7 +1059,7 @@ reeval:
 		break;
 	case OP_LOADA_I64:
 		i = st->a + OPB->_int;
-		if ((size_t)i >= (size_t)(current_progstate->globals_bytes>>2)-1u)
+		if ((size_t)i >= (size_t)(current_progstate->globals_bytes>>2))
 		{
 			QCFAULT(&progfuncs->funcs, "bad array read in %s (index %i)", PR_StringToNative(&progfuncs->funcs, prinst.pr_xfunction->s_name), OPB->_int);
 		}

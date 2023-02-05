@@ -266,15 +266,13 @@ enum iceproto_e
 };
 enum icemode_e
 {
-	ICEM_RAW,		//not actually interactive beyond a simple handshake.
-	ICEM_ICE,		//rfc5245. meant to be able to holepunch, but not implemented properly yet.
-	ICEM_WEBRTC,	//IP+UDP+((ICE/STUN/SDP)+(DTLS+SCTP))... no more layers? :o
+	ICEM_RAW,	//not actually interactive beyond a simple handshake.
+	ICEM_ICE		//rfc5245. meant to be able to holepunch, but not implemented properly yet.
 };
 enum icestate_e
 {
 	ICE_INACTIVE,	//idle.
 	ICE_FAILED,
-	ICE_GATHERING,
 	ICE_CONNECTING,	//exchanging pings.
 	ICE_CONNECTED	//media is flowing, supposedly. sending keepalives.
 };
@@ -282,15 +280,15 @@ struct icestate_s;
 #define ICE_API_CURRENT "Internet Connectivity Establishment 0.0"
 typedef struct
 {
-	struct icestate_s *(QDECL *Create)(void *module, const char *conname, const char *peername, enum icemode_e mode, enum iceproto_e proto, qboolean initiator);	//doesn't start pinging anything.
-	qboolean (QDECL *Set)(struct icestate_s *con, const char *prop, const char *value);
-	qboolean (QDECL *Get)(struct icestate_s *con, const char *prop, char *value, size_t valuesize);
-	struct icecandinfo_s *(QDECL *GetLCandidateInfo)(struct icestate_s *con);		//retrieves candidates that need reporting to the peer.
-	void (QDECL *AddRCandidateInfo)(struct icestate_s *con, struct icecandinfo_s *cand);		//stuff that came from the peer.
-	void (QDECL *Close)(struct icestate_s *con, qboolean force);	//bye then.
-	void (QDECL *CloseModule)(void *module);	//closes all unclosed connections, with warning.
-//	struct icestate_s *(QDECL *Find)(void *module, const char *conname);
-	qboolean (QDECL *GetLCandidateSDP)(struct icestate_s *con, char *out, size_t valuesize);		//retrieves candidates that need reporting to the peer.
+	struct icestate_s *(QDECL *ICE_Create)(void *module, const char *conname, const char *peername, enum icemode_e mode, enum iceproto_e proto);	//doesn't start pinging anything.
+	qboolean (QDECL *ICE_Set)(struct icestate_s *con, const char *prop, const char *value);
+	qboolean (QDECL *ICE_Get)(struct icestate_s *con, const char *prop, char *value, size_t valuesize);
+	struct icecandinfo_s *(QDECL *ICE_GetLCandidateInfo)(struct icestate_s *con);		//retrieves candidates that need reporting to the peer.
+	void (QDECL *ICE_AddRCandidateInfo)(struct icestate_s *con, struct icecandinfo_s *cand);		//stuff that came from the peer.
+	void (QDECL *ICE_Close)(struct icestate_s *con);	//bye then.
+	void (QDECL *ICE_CloseModule)(void *module);	//closes all unclosed connections, with warning.
+//	struct icestate_s *(QDECL *ICE_Find)(void *module, const char *conname);
+	qboolean (QDECL *ICE_GetLCandidateSDP)(struct icestate_s *con, char *out, size_t valuesize);		//retrieves candidates that need reporting to the peer.
 } icefuncs_t;
 extern icefuncs_t iceapi;
 #endif
@@ -347,35 +345,16 @@ enum hashvalidation_e
 	VH_CORRECT				//all is well.
 };
 struct dtlsfuncs_s;
-typedef struct dtlscred_s
-{
-	struct dtlslocalcred_s
-	{
-		void *cert;
-		size_t certsize;
-		void *key;
-		size_t keysize;
-	} local;
-	struct dtlspeercred_s
-	{
-		const char *name;	//cert must match this if specified
-
-		hashfunc_t *hash;	//if set peer's cert MUST match the specified digest (with this hash function)
-		qbyte digest[DIGEST_MAXSIZE];
-	} peer;
-} dtlscred_t;
+#ifdef HAVE_DTLS
 typedef struct dtlsfuncs_s
 {
-	void *(*CreateContext)(const dtlscred_t *credinfo, void *cbctx, neterr_t(*push)(void *cbctx, const qbyte *data, size_t datasize), qboolean isserver);	//the certificate to advertise.
-	qboolean (*CheckConnection)(void *cbctx, void *peeraddr, size_t peeraddrsize, void *indata, size_t insize, neterr_t(*push)(void *cbctx, const qbyte *data, size_t datasize), void (*EstablishTrueContext)(void **cbctx, void *state));
+	void *(*CreateContext)(const char *remotehost, void *cbctx, neterr_t(*push)(void *cbctx, const qbyte *data, size_t datasize), qboolean isserver);	//if remotehost is null then their certificate will not be validated.
 	void (*DestroyContext)(void *ctx);
 	neterr_t (*Transmit)(void *ctx, const qbyte *data, size_t datasize);
 	neterr_t (*Received)(void *ctx, sizebuf_t *message);	//operates in-place...
 	neterr_t (*Timeouts)(void *ctx);
 	void (*GetPeerCertificate)(void *ctx);
-	qboolean (*GenTempCertificate)(const char *subject, struct dtlslocalcred_s *cred);
 } dtlsfuncs_t;
-#ifdef HAVE_DTLS
 const dtlsfuncs_t *DTLS_InitServer(void);
 const dtlsfuncs_t *DTLS_InitClient(void);
 #endif
@@ -440,7 +419,7 @@ void QDECL ICE_AddLCandidateInfo(struct icestate_s *con, netadr_t *adr, int adrn
 ftenet_generic_connection_t *FTENET_ICE_EstablishConnection(ftenet_connections_t *col, const char *address, netadr_t adr);
 enum icemsgtype_s
 {	//shared by rtcpeers+broker
-	ICEMSG_PEERLOST=0,	//other side dropped connection
+	ICEMSG_PEERDROP=0,	//other side dropped connection
 	ICEMSG_GREETING=1,	//master telling us our unique game name
 	ICEMSG_NEWPEER=2,	//relay established, send an offer now.
 	ICEMSG_OFFER=3,		//peer's initial details
@@ -448,7 +427,6 @@ enum icemsgtype_s
 	ICEMSG_ACCEPT=5,	//go go go (response from offer)
 	ICEMSG_SERVERINFO=6,//server->broker (for advertising the server properly)
 	ICEMSG_SERVERUPDATE=7,//broker->browser (for querying available server lists)
-	ICEMSG_NAMEINUSE=8,	//requested resource is unavailable.
 };
 
 enum websocketpackettype_e

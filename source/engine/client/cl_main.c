@@ -1733,11 +1733,6 @@ void CL_ResetFog(int ftype)
 	cl.fog[ftype].colour[2] = SRGBf(0.3);
 	cl.fog[ftype].alpha = 1;
 	cl.fog[ftype].depthbias = 0;
-	/*
-	cl.fog[ftype].end = 16384;
-	cl.fog[ftype].height = 1<<30;
-	cl.fog[ftype].fadedepth = 128;
-	*/
 }
 
 static void CL_ReconfigureCommands(int newgame)
@@ -4548,6 +4543,16 @@ void CL_FTP_f(void)
 }
 #endif
 
+unsigned char convert_5to8(unsigned char value) {
+    return (value << 3) | (value >> 2);
+}
+
+unsigned char convert_6to8(unsigned char value) {
+    return (value << 2) | (value >> 4);
+}
+
+vec3_t fakergb;
+
 //fixme: make a cvar
 void CL_Fog_f(void)
 {
@@ -4559,69 +4564,104 @@ void CL_Fog_f(void)
 		ftype = FOGTYPE_SKYROOM;
 	else //fog
 		ftype = FOGTYPE_AIR;
-	if ((cl.fog_locked && !Cmd_FromGamecode() && !cls.allow_cheats) || Cmd_Argc() <= 1)
-	{
-		static const char *fognames[FOGTYPE_COUNT]={"fog","waterfog","skyroomfog"};
-		if (Cmd_ExecLevel != RESTRICT_INSECURE)
-			Con_Printf("Current %s %f (r:%f g:%f b:%f, a:%f bias:%f)\n", fognames[ftype], cl.fog[ftype].density, cl.fog[ftype].colour[0], cl.fog[ftype].colour[1], cl.fog[ftype].colour[2], cl.fog[ftype].alpha, cl.fog[ftype].depthbias);
+
+	//
+	// NZ:P Team fog modification START
+	// ----
+	// dQuake puts us in a shitty position requiring inaccurate fog stuffs..
+	// but it does mean we get to restore GL_FOG_START and GL_FOG_END which
+	// is NICE!
+	// ----
+	// here's the gist on the issue:
+	// dQuake takes values 0-255 as "RGB" values for the fog. These aren't
+	// really RGB though, they just multiply the value by 0.01 and throw it
+	// into sceGuFog :s
+	// 
+	if ((cl.fog_locked && !Cmd_FromGamecode() && !cls.allow_cheats) || Cmd_Argc() <= 1) {
+		/*Con_Printf("usage:\n");
+		//Con_Printf("   fog <fade>\n");
+		Con_Printf("   fog <start> <end>\n");
+		Con_Printf("   fog <red> <green> <blue>\n");
+		Con_Printf("   fog <fade> <red> <green> <blue>\n");
+		Con_Printf("   fog <start> <end> <red> <green> <blue>\n");
+		Con_Printf("NOTE: start and end become density: ((start / end) / 2).\n");
+		//Con_Printf("   fog <start> <end> <red> <green> <blue> <fade>\n");
+		Con_Printf("current values:\n");
+		Con_Printf("   \"density\" is \"%f\"\n", cl.fog[ftype].density);
+		Con_Printf("   \"red\" is \"%f\"\n", fakergb[0]);
+		Con_Printf("   \"green\" is \"%f\"\n", fakergb[1]);
+		Con_Printf("   \"blue\" is \"%f\"\n", fakergb[2]);
+		//Con_Printf("   \"fade\" is \"%f\"\n", fade_time);*/
+		return;
 	}
-	else
-	{
-		CL_ResetFog(ftype);
-		VectorSet(rgb, 0.3,0.3,0.3);
 
-		switch(Cmd_Argc())
-		{
-		case 1:
-			break;
-		case 2:
-			cl.fog[ftype].density = atof(Cmd_Argv(1));
-			break;
-		case 3:
-			cl.fog[ftype].density = atof(Cmd_Argv(1));
-			rgb[0] = rgb[1] = rgb[2] = atof(Cmd_Argv(2));
-			break;
-		case 4:
-			cl.fog[ftype].density = 0.05;	//make something up for vauge compat with fitzquake, so it doesn't get the default of 0
-			rgb[0] = atof(Cmd_Argv(1));
-			rgb[1] = atof(Cmd_Argv(2));
-			rgb[2] = atof(Cmd_Argv(3));
-			break;
-		case 5:
-		default:
-			cl.fog[ftype].density = atof(Cmd_Argv(1));
-			rgb[0] = atof(Cmd_Argv(2));
-			rgb[1] = atof(Cmd_Argv(3));
-			rgb[2] = atof(Cmd_Argv(4));
-			break;
-		}
+	CL_ResetFog(ftype);
+	VectorSet(rgb, 0.3, 0.3, 0.3);
 
-		if (rgb[0]>=2 || rgb[1]>=2 || rgb[2]>=2)	//we allow SOME slop for hdr fog... hopefully we won't need it. this is mostly just an issue when skyfog is enabled[default .5] ('why is my sky white on map FOO')
-			Con_Printf(CON_WARNING "Fog colour of %g %g %g exceeds standard 0-1 range\n", rgb[0], rgb[1], rgb[2]);
-		cl.fog[ftype].colour[0] = SRGBf(rgb[0]);
-		cl.fog[ftype].colour[1] = SRGBf(rgb[1]);
-		cl.fog[ftype].colour[2] = SRGBf(rgb[2]);
+	switch(Cmd_Argc()) {
+		case 1: // Just in case it somehow gets this far :P
+			break;
+		case 2: // This used to be <fade>, but let's make try to it forward-compatible with distance stuff.
+			cl.fog[ftype].density = atof(Cmd_Argv(1)); // <end>
+			break;
+		case 3: // <start> <end>
+			cl.fog[ftype].density = (atof(Cmd_Argv(1)) / atof(Cmd_Argv(2))) / 2; // <density>
+			break;
+		case 4: // <red> <green> <blue>
+			rgb[0] = atof(Cmd_Argv(1)); // <red>
+			rgb[1] = atof(Cmd_Argv(2)); // <green>
+			rgb[2] = atof(Cmd_Argv(3)); // <blue>
+			break;
+		case 5: // <distance> <red> <green> <blue>
+			cl.fog[ftype].density = (1 / atof(Cmd_Argv(1))) / 2; // <density>
+			rgb[0] = atof(Cmd_Argv(2)); // <red>
+			rgb[1] = atof(Cmd_Argv(3)); // <green>
+			rgb[2] = atof(Cmd_Argv(4)); // <blue>
+			break;
+		case 6: // <start> <end> <red> <green> <blue>
+			cl.fog[ftype].density = (atof(Cmd_Argv(1)) / atof(Cmd_Argv(2))) / 2; // <density>
+			rgb[0] = atof(Cmd_Argv(3)); // <red>
+			rgb[1] = atof(Cmd_Argv(4)); // <green>
+			rgb[2] = atof(Cmd_Argv(5)); // <blue>
+			break;
+	}
 
-		if (cls.state == ca_active)
-			cl.fog[ftype].time += 1;
+	// Have some means of detecting when someone used the old/vanilla FTE 0-1 values:
+	if (rgb[0] <= 0.99 && rgb[1] <= 0.99 && rgb[2] <= 0.99) {
+		// We'll say fuck it and guess some density :(
+		cl.fog[ftype].density = 0.1;
 
-		//fitz:
-		//if (Cmd_Argc() >= 6) cl.fog_time += atof(Cmd_Argv(5));
-		//dp:
-		if (Cmd_Argc() >= 6) cl.fog[ftype].alpha = atof(Cmd_Argv(5));
-		if (Cmd_Argc() >= 7) cl.fog[ftype].depthbias = atof(Cmd_Argv(6));
-		//if (Cmd_Argc() >= 8) cl.fog.end = atof(Cmd_Argv(7));
-		//if (Cmd_Argc() >= 9) cl.fog.height = atof(Cmd_Argv(8));
-		//if (Cmd_Argc() >= 10) cl.fog.fadedepth = atof(Cmd_Argv(9));
+		VectorSet(fakergb, rgb[0] * 255, rgb[1] * 255, rgb[2] * 255);
+	} else {
+		// We want to lie to hide the fact we're manipulating the hell out
+		// of this.
+		VectorSet(fakergb, rgb[0], rgb[1], rgb[2]);
 
-		if (Cmd_FromGamecode())
-			cl.fog_locked = !!cl.fog[ftype].density;
+		// Weird as fuck color hack !!! :)
+		rgb[0] = (10 * (exp(0.03 * rgb[0]) - 1)) + 20;
+		rgb[1] = (10 * (exp(0.03 * rgb[1]) - 1)) + 20;
+		rgb[2] = (10 * (exp(0.03 * rgb[2]) - 1)) + 20;
+
+		rgb[0] *= 0.01;
+		rgb[1] *= 0.01;
+		rgb[2] *= 0.01;
+	}
+
+	//
+	// NZ:P Team fog modification END
+	//
+
+	cl.fog[ftype].colour[0] = SRGBf(rgb[0]);
+	cl.fog[ftype].colour[1] = SRGBf(rgb[1]);
+	cl.fog[ftype].colour[2] = SRGBf(rgb[2]);
+
+	if (cls.state == ca_active)
+		cl.fog[ftype].time += 1;
 
 #ifdef HAVE_LEGACY
-		if (cl.fog[ftype].colour[0] > 1 || cl.fog[ftype].colour[1] > 1 || cl.fog[ftype].colour[2] > 1)
-			Con_DPrintf(CON_WARNING "Fog is oversaturated. This can result in compatibility issues.\n");
+	if (cl.fog[ftype].colour[0] > 1 || cl.fog[ftype].colour[1] > 1 || cl.fog[ftype].colour[2] > 1)
+		Con_DPrintf(CON_WARNING "Fog is oversaturated. This can result in compatibility issues.\n");
 #endif
-	}
 }
 
 #ifdef _DEBUG

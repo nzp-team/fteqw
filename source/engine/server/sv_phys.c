@@ -65,7 +65,7 @@ cvar_t	sv_gameplayfix_spawnbeforethinks	= CVARD( "sv_gameplayfix_spawnbeforethin
 #endif
 cvar_t	dpcompat_noretouchground	= CVARD( "dpcompat_noretouchground", "0", "Prevents entities that are already standing on an entity from touching the same entity again.");
 cvar_t	sv_sound_watersplash = CVAR( "sv_sound_watersplash", "misc/h2ohit1.wav");
-cvar_t	sv_sound_land		 = CVAR( "sv_sound_land", "demon/dland2.wav");
+cvar_t	sv_sound_land		 = CVAR( "sv_sound_land", "");
 cvar_t	sv_stepheight		 = CVARAFD("pm_stepheight", "",	/*dp*/"sv_stepheight", CVAR_SERVERINFO, "If empty, the value "STRINGIFY(PM_DEFAULTSTEPHEIGHT)" will be used instead. This is the size of the step you can step up or down.");
 
 cvar_t	pm_ktjump			 = CVARF("pm_ktjump", "", CVAR_SERVERINFO);

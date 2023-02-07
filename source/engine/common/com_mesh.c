@@ -3792,7 +3792,20 @@ static void *Q1MDL_LoadSkins_GL (galiasinfo_t *galias, dmdl_t *pq1inmodel, model
 	const char *slash;
 	unsigned int texflags;
 
+	// NZ:P -- stupid zombie hack START
+	char specChar;
+	qboolean is_zombie;
+
+	specChar = loadmodel->name[strlen(loadmodel->name) - 5];
+
+	if (specChar == '%' || specChar == '#' || specChar == '^' || specChar == '(')
+		is_zombie = true;
+	else
+		is_zombie = false;
+	// NZ:P -- stupid zombie hack END
+
 	s = pq1inmodel->skinwidth*pq1inmodel->skinheight;
+
 	for (i = 0; i < pq1inmodel->numskins; i++)
 	{
 		switch(LittleLong(pskintype->type))
@@ -3834,6 +3847,12 @@ static void *Q1MDL_LoadSkins_GL (galiasinfo_t *galias, dmdl_t *pq1inmodel, model
 				frames[0].texnums.loweroverlay = R_LoadReplacementTexture(skinname, alttexpath, texflags, NULL, outskin->skinwidth, outskin->skinheight, TF_INVALID);
 			}
 			Q_snprintfz(frames[0].shadername, sizeof(frames[0].shadername), "%s_%i.lmp", loadmodel->name, i);
+			// NZ:P Team - stupid zombie hack START
+			if (is_zombie == true) {
+				Q_snprintfz(frames[0].shadername, sizeof(frames[0].shadername), "models/ai/zfull.mdl_0.lmp");
+
+			}
+			// NZ:P Team - stupid zombie hack END
 			frames[0].shader = NULL;
 			frames[0].defaultshader = NULL;
 			outskin->frame = frames;

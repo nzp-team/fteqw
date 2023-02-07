@@ -4605,7 +4605,7 @@ void CL_Fog_f(void)
 			cl.fog[ftype].density = atof(Cmd_Argv(1)); // <end>
 			break;
 		case 3: // <start> <end>
-			cl.fog[ftype].density = (atof(Cmd_Argv(1)) / atof(Cmd_Argv(2))) / 2; // <density>
+			cl.fog[ftype].density = (atof(Cmd_Argv(1)) / atof(Cmd_Argv(2))) / 4; // <density>
 			break;
 		case 4: // <red> <green> <blue>
 			rgb[0] = atof(Cmd_Argv(1)); // <red>
@@ -4613,13 +4613,13 @@ void CL_Fog_f(void)
 			rgb[2] = atof(Cmd_Argv(3)); // <blue>
 			break;
 		case 5: // <distance> <red> <green> <blue>
-			cl.fog[ftype].density = (1 / atof(Cmd_Argv(1))) / 2; // <density>
+			cl.fog[ftype].density = (1 / atof(Cmd_Argv(1))) / 4; // <density>
 			rgb[0] = atof(Cmd_Argv(2)); // <red>
 			rgb[1] = atof(Cmd_Argv(3)); // <green>
 			rgb[2] = atof(Cmd_Argv(4)); // <blue>
 			break;
 		case 6: // <start> <end> <red> <green> <blue>
-			cl.fog[ftype].density = (atof(Cmd_Argv(1)) / atof(Cmd_Argv(2))) / 2; // <density>
+			cl.fog[ftype].density = (atof(Cmd_Argv(1)) / atof(Cmd_Argv(2))) / 4; // <density>
 			rgb[0] = atof(Cmd_Argv(3)); // <red>
 			rgb[1] = atof(Cmd_Argv(4)); // <green>
 			rgb[2] = atof(Cmd_Argv(5)); // <blue>

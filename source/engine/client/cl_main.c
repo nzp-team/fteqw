@@ -4619,6 +4619,7 @@ void CL_Fog_f(void)
 			rgb[2] = atof(Cmd_Argv(4)); // <blue>
 			break;
 		case 6: // <start> <end> <red> <green> <blue>
+		case 7: // <start> <end> <red> <green> <blue> <fade> (dont do anything about fade)
 			cl.fog[ftype].density = (atof(Cmd_Argv(1)) / atof(Cmd_Argv(2))) / 3; // <density>
 			rgb[0] = atof(Cmd_Argv(3)); // <red>
 			rgb[1] = atof(Cmd_Argv(4)); // <green>

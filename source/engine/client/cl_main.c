@@ -4628,7 +4628,9 @@ void CL_Fog_f(void)
 	}
 
 	// Have some means of detecting when someone used the old/vanilla FTE 0-1 values:
-	if (rgb[0] <= 0.99 && rgb[1] <= 0.99 && rgb[2] <= 0.99) {
+	// Now with black fog hack!!!!!! WOOOO!!
+	if (rgb[0] <= 0.99 && rgb[1] <= 0.99 && rgb[2] <= 0.99 &&
+	rgb[0] != 0 && rgb[1] != 0 && rgb[2] != 0) {
 		// We'll say fuck it and guess some density :(
 		cl.fog[ftype].density = 0.1;
 

@@ -4641,13 +4641,20 @@ void CL_Fog_f(void)
 		VectorSet(fakergb, rgb[0], rgb[1], rgb[2]);
 
 		// Weird as fuck color hack !!! :)
-		rgb[0] = (10 * (exp(0.03 * rgb[0]) - 1)) + 20;
-		rgb[1] = (10 * (exp(0.03 * rgb[1]) - 1)) + 20;
-		rgb[2] = (10 * (exp(0.03 * rgb[2]) - 1)) + 20;
+		if (rgb[0] != 0) {
+			rgb[0] = (10 * (exp(0.03 * rgb[0]) - 1)) + 20;
+			rgb[0] *= 0.01;
+		}
 
-		rgb[0] *= 0.01;
-		rgb[1] *= 0.01;
-		rgb[2] *= 0.01;
+		if (rgb[1] != 0) {
+			rgb[1] = (10 * (exp(0.03 * rgb[0]) - 1)) + 20;
+			rgb[1] *= 0.01;
+		}
+
+		if (rgb[2] != 0) {
+			rgb[2] = (10 * (exp(0.03 * rgb[0]) - 1)) + 20;
+			rgb[2] *= 0.01;
+		}
 	}
 
 	//

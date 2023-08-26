@@ -4640,6 +4640,11 @@ void CL_Fog_f(void)
 		// of this.
 		VectorSet(fakergb, rgb[0], rgb[1], rgb[2]);
 
+		// For some reason black fog breaks density.. I guess
+		if (rgb[0] == 0 && rgb[1] == 0 && rgb[2] == 0) {
+			cl.fog[ftype].density *= 3;
+		}
+
 		// Weird as fuck color hack !!! :)
 		if (rgb[0] != 0) {
 			rgb[0] = (10 * (exp(0.03 * rgb[0]) - 1)) + 20;
@@ -4647,12 +4652,12 @@ void CL_Fog_f(void)
 		}
 
 		if (rgb[1] != 0) {
-			rgb[1] = (10 * (exp(0.03 * rgb[0]) - 1)) + 20;
+			rgb[1] = (10 * (exp(0.03 * rgb[1]) - 1)) + 20;
 			rgb[1] *= 0.01;
 		}
 
 		if (rgb[2] != 0) {
-			rgb[2] = (10 * (exp(0.03 * rgb[0]) - 1)) + 20;
+			rgb[2] = (10 * (exp(0.03 * rgb[2]) - 1)) + 20;
 			rgb[2] *= 0.01;
 		}
 	}

@@ -4408,14 +4408,7 @@ void SV_Pause_f (void)
 		return;
 	}
 
-	if (SV_TogglePause(host_client))
-	{
-		if (sv.paused & PAUSE_EXPLICIT)
-			SV_BroadcastTPrintf (PRINT_HIGH, "%s paused the game\n", host_client->name);
-		else
-			SV_BroadcastTPrintf (PRINT_HIGH, "%s unpaused the game\n", host_client->name);
-	}
-
+	SV_TogglePause(host_client);
 }
 
 static void SV_UpdateSeats(client_t *controller)

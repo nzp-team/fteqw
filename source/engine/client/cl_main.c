@@ -3069,7 +3069,6 @@ void CL_Changing_f (void)
 	if (cls.state)
 	{
 		cls.state = ca_connected;	// not active anymore, but not disconnected
-		Con_TPrintf ("\nChanging map...\n");
 	}
 	else
 		Con_Printf("Changing while not connected\n");

@@ -19,7 +19,7 @@
 
 	"//": "NOTE: you will likely need to change this line for a TC, and provide your own",
 	"rename-desktop-file":"nzportable.desktop",
-	"rename-icon":"nzportable",
+	"rename-icon":"nzportable-flatpak",
 	"strip":"true",
 
 	"//":"dri needed for gl",

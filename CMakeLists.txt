@@ -1601,7 +1601,7 @@ INSTALL(TARGETS ${INSTALLTARGS}
 )
 
 INSTALL(FILES
-	fteqw.desktop
+	nzportable.desktop
 	DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/applications/")
 
 

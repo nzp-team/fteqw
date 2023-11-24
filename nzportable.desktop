@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Nazi Zombies: Portable
+Comment=Quake-based Call of Duty Zombies remake
+Exec=nzportable %u
+Icon=gay.nzp.nzportable
+Terminal=false
+Categories=Game;
+MimeType=application/x-quakeworlddemo;x-scheme-handler/quake;x-scheme-handler/qw;
+Actions=quake;rerel;netquake;quake2;quake3;hexen2;hexen2mp

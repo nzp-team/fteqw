@@ -19,7 +19,6 @@
 
 	"//": "NOTE: you will likely need to change this line for a TC, and provide your own",
 	"rename-desktop-file":"nzportable.desktop",
-	"rename-icon":"nzportable-flatpak",
 	"strip":"true",
 
 	"//":"dri needed for gl",
@@ -74,7 +73,8 @@
 
 			"//":"Add in our manifest file(s) for instabbable TCs.",
 			"post-install": [
-				"install -d /app/etc/xdg/nzportable/"
+				"install -d /app/etc/xdg/nzportable/",
+				"install -Dm00644 nzportable-flatpak.png $FLATPAK_DEST/share/icons/hicolor/256x256/apps/$FLATPAK_ID.png"
 			],
 			"build-options" : {
                 "no-debuginfo": true

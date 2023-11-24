@@ -119,7 +119,7 @@ SET(FTE_USE_SDL false CACHE BOOL "Force the use of SDL instead of using native b
 
 INCLUDE(GNUInstallDirs)
 SET(FTE_INSTALL_BINDIR games CACHE STRING "Binary dir to install to.")
-SET(FTE_INSTALL_LIBDIR fteqw CACHE STRING "Binary dir to install to.")
+SET(FTE_INSTALL_LIBDIR nzportable CACHE STRING "Binary dir to install to.")
 
 IF(NOT WIN32)
 	SET(SYS_LIBS ${SYS_LIBS} m)
@@ -607,7 +607,7 @@ SET(FTE_COMMON_FILES
 	engine/common/config_nocompat.h
 	engine/common/config_wastes.h
 	engine/common/config_freecs.h
-	engine/common/config_fteqw_noweb.h
+	engine/common/config_nzportable_noweb.h
 	engine/common/config_nzportable.h
 
 	#useless headers that I'll never search for
@@ -969,53 +969,53 @@ IF(ANDROID)
 	ENDIF()
 ELSE()
 	#systems that actually have executables...
-	SET(FTE_ENGINE true CACHE BOOL "Compile fteqw engine binary.")
+	SET(FTE_ENGINE true CACHE BOOL "Compile nzportable engine binary.")
 	IF(FTE_ENGINE)
-		ADD_EXECUTABLE(fteqw WIN32
+		ADD_EXECUTABLE(nzportable WIN32
 			${FTE_ARCH_FILES}
 			${FTE_COMMON_FILES}
 			${FTE_CLIENT_FILES}
 			${FTE_SERVER_FILES}
 		)
-		SET_TARGET_PROPERTIES(fteqw PROPERTIES COMPILE_DEFINITIONS "${FTE_LIB_DEFINES};${FTE_DEFINES};${FTE_REVISON}")
-		TARGET_INCLUDE_DIRECTORIES(fteqw PUBLIC ${FTE_INCLUDES})
-		TARGET_LINK_LIBRARIES(fteqw ${FTE_LIBS})
-		SET(INSTALLTARGS ${INSTALLTARGS} fteqw)
+		SET_TARGET_PROPERTIES(nzportable PROPERTIES COMPILE_DEFINITIONS "${FTE_LIB_DEFINES};${FTE_DEFINES};${FTE_REVISON}")
+		TARGET_INCLUDE_DIRECTORIES(nzportable PUBLIC ${FTE_INCLUDES})
+		TARGET_LINK_LIBRARIES(nzportable ${FTE_LIBS})
+		SET(INSTALLTARGS ${INSTALLTARGS} nzportable)
 
-		ADD_CUSTOM_TARGET(fteqw-i18n ALL
+		ADD_CUSTOM_TARGET(nzportable-i18n ALL
 			VERBATIM
 			WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-			COMMAND xgettext --output=${CMAKE_CURRENT_BINARY_DIR}/fteqw.pot -k -kCon_TPrintf -kCon_SafeTPrintf -kNetchan_OutOfBandTPrintf:4 -kSV_OutOfBandTPrintf:4 -klangtext -kSV_TPrintToClient:3 -kSV_ClientTPrintf:3 -kSV_BroadcastTPrintf:2 -kCVARAFCD:6 -kCVARAFD:5 -kCVARFCD:5 -kCVARAD:4 -kCVARFD:4 -kCVARCD:4 -kCVARD:3 -kCmd_AddCommandD:3 -kCmd_AddCommandAD:4 -kMenu_Prompt:4:5:6 -kHost_EndGame	${FTE_ARCH_FILES} ${FTE_COMMON_FILES} ${FTE_CLIENT_FILES} ${FTE_SERVER_FILES}
-			BYPRODUCTS "${CMAKE_CURRENT_BINARY_DIR}/fteqw.pot"
+			COMMAND xgettext --output=${CMAKE_CURRENT_BINARY_DIR}/nzportable.pot -k -kCon_TPrintf -kCon_SafeTPrintf -kNetchan_OutOfBandTPrintf:4 -kSV_OutOfBandTPrintf:4 -klangtext -kSV_TPrintToClient:3 -kSV_ClientTPrintf:3 -kSV_BroadcastTPrintf:2 -kCVARAFCD:6 -kCVARAFD:5 -kCVARFCD:5 -kCVARAD:4 -kCVARFD:4 -kCVARCD:4 -kCVARD:3 -kCmd_AddCommandD:3 -kCmd_AddCommandAD:4 -kMenu_Prompt:4:5:6 -kHost_EndGame	${FTE_ARCH_FILES} ${FTE_COMMON_FILES} ${FTE_CLIENT_FILES} ${FTE_SERVER_FILES}
+			BYPRODUCTS "${CMAKE_CURRENT_BINARY_DIR}/nzportable.pot"
 			SOURCES
 				${FTE_ARCH_FILES} ${FTE_COMMON_FILES} ${FTE_CLIENT_FILES} ${FTE_SERVER_FILES}
 		)
 	ENDIF()
 
-	SET(FTE_ENGINE_SERVER_ONLY true CACHE BOOL "Compile fteqw-sv (server only) engine binary.")
+	SET(FTE_ENGINE_SERVER_ONLY true CACHE BOOL "Compile nzportable-sv (server only) engine binary.")
 	IF(FTE_ENGINE_SERVER_ONLY)
-		ADD_EXECUTABLE(fteqw-sv
+		ADD_EXECUTABLE(nzportable-sv
 			${FTESV_ARCH_FILES}
 			${FTE_COMMON_FILES}
 			${FTE_SERVER_FILES}
 		)
-		SET_TARGET_PROPERTIES(fteqw-sv PROPERTIES COMPILE_DEFINITIONS "SERVERONLY;${FTE_LIB_DEFINES};${FTESV_DEFINES};${FTE_REVISON}")
-		TARGET_INCLUDE_DIRECTORIES(fteqw-sv PUBLIC ${FTE_INCLUDES})
-		TARGET_LINK_LIBRARIES(fteqw-sv ${FTESV_LIBS})
-		SET(INSTALLTARGS ${INSTALLTARGS} fteqw-sv)
+		SET_TARGET_PROPERTIES(nzportable-sv PROPERTIES COMPILE_DEFINITIONS "SERVERONLY;${FTE_LIB_DEFINES};${FTESV_DEFINES};${FTE_REVISON}")
+		TARGET_INCLUDE_DIRECTORIES(nzportable-sv PUBLIC ${FTE_INCLUDES})
+		TARGET_LINK_LIBRARIES(nzportable-sv ${FTESV_LIBS})
+		SET(INSTALLTARGS ${INSTALLTARGS} nzportable-sv)
 	ENDIF()
 
 	SET(FTE_ENGINE_CLIENT_ONLY false CACHE BOOL "Compile ftedw-cl (client-only) engine binary.")
 	IF(FTE_ENGINE_CLIENT_ONLY)
-		ADD_EXECUTABLE(fteqw-cl
+		ADD_EXECUTABLE(nzportable-cl
 			${FTE_ARCH_FILES}
 			${FTE_COMMON_FILES}
 			${FTE_CLIENT_FILES}
 		)
-		SET_TARGET_PROPERTIES(fteqw-cl PROPERTIES COMPILE_DEFINITIONS "CLIENTONLY;${FTE_LIB_DEFINES};${FTE_DEFINES};${FTE_REVISON}")
-		TARGET_INCLUDE_DIRECTORIES(fteqw-cl PUBLIC ${FTE_INCLUDES})
-		TARGET_LINK_LIBRARIES(fteqw-cl ${FTE_LIBS})
-		SET(INSTALLTARGS ${INSTALLTARGS} fteqw-cl)
+		SET_TARGET_PROPERTIES(nzportable-cl PROPERTIES COMPILE_DEFINITIONS "CLIENTONLY;${FTE_LIB_DEFINES};${FTE_DEFINES};${FTE_REVISON}")
+		TARGET_INCLUDE_DIRECTORIES(nzportable-cl PUBLIC ${FTE_INCLUDES})
+		TARGET_LINK_LIBRARIES(nzportable-cl ${FTE_LIBS})
+		SET(INSTALLTARGS ${INSTALLTARGS} nzportable-cl)
 	ENDIF()
 
 	IF(FTE_ENGINE OR FTE_ENGINE_CLIENT)

@@ -48,7 +48,7 @@ static struct
 	int width;
 	int height;
 } pvid;
-static void QDECL QI_UpdateVideo(int width, int height)
+static void QDECL QI_UpdateVideo(int width, int height, qboolean restarted)
 {
 	pvid.width = width;
 	pvid.height = height;
@@ -516,6 +516,8 @@ static void QI_AddPackages(xmltree_t *qifile)
 }
 static void QI_RunMap(xmltree_t *qifile, const char *map)
 {
+	char gamedir[65];
+	char buf[256];
 	if (!qifile)
 	{
 		return;
@@ -527,10 +529,35 @@ static void QI_RunMap(xmltree_t *qifile, const char *map)
 	if (!*map || strchr(map, '\\') || strchr(map, '\"') || strchr(map, '\n') || strchr(map, ';'))
 		map = "";
 
+	strcpy(gamedir, "id1");
+	{
+		char descbuf[1024];
+		xmltree_t *tech = XML_ChildOfTree(qifile, "techinfo", 0);
+		const char *cmdline = XML_GetChildBody(tech, "commandline", "");
+		while (cmdline)
+		{
+			cmdline = cmdfuncs->ParseToken(cmdline, descbuf, sizeof(descbuf), NULL);
+			if (!strcmp(descbuf, "-game"))
+				cmdline = cmdfuncs->ParseToken(cmdline, gamedir, sizeof(gamedir), NULL);
+			else if (!strcmp(descbuf, "-hipnotic") || !strcmp(descbuf, "-rogue") || !strcmp(descbuf, "-quoth"))
+			{
+				if (!*gamedir)
+					strcpy(gamedir, descbuf+1);
+			}
+		}
+	}
 
-	cmdfuncs->AddText("fs_changemod spmap \"", false);
-	cmdfuncs->AddText(map, false);
-	cmdfuncs->AddText("\"", false);
+	cmdfuncs->AddText("fs_changemod", false);
+	if (*gamedir)
+	{
+		cmdfuncs->AddText(" dir ", false);
+		cmdfuncs->AddText(cmdfuncs->QuotedString(gamedir, buf, sizeof(buf), false), false);
+	}
+	if (map && *map)
+	{
+		cmdfuncs->AddText(" spmap ", false);
+		cmdfuncs->AddText(cmdfuncs->QuotedString(map, buf, sizeof(buf), false), false);
+	}
 	QI_AddPackages(qifile);
 //	Con_Printf("Command: %s\n", cmd);
 	cmdfuncs->AddText("\n", false);
@@ -548,13 +575,13 @@ void VARGS VFS_PRINTF(vfsfile_t *vf, const char *format, ...)
 
 	VFS_PUTS(vf, string);
 }
-static void QI_WriteUpdateList(vfsfile_t *pminfo)
+static void QI_WriteUpdateList(xmltree_t *database, vfsfile_t *pminfo)
 {
 	xmltree_t *file;
 	char descbuf[1024], *d, *nl;
 
-	if (thedatabase)
-	for (file = thedatabase->child; file; file = file->sibling)
+	if (database)
+	for (file = database->child; file; file = file->sibling)
 	{
 		const char *id = XML_GetParameter(file, "id", "unnamed");
 		const char *rating = XML_GetParameter(file, "rating", "");
@@ -889,6 +916,12 @@ static void QDECL QI_Tick(double realtime, double gametime)
 				if (dlcontext == -1)
 				{	
 					QI_RefreshMapList(false);
+
+					if (packagemanager)
+					{
+						VFS_CLOSE(packagemanager);
+						packagemanager = NULL;
+					}
 					return;
 				}
 				archive = false;
@@ -931,7 +964,7 @@ static void QDECL QI_Tick(double realtime, double gametime)
 		else
 		{
 			VFS_PRINTF(packagemanager, "version 3\n");
-			QI_WriteUpdateList(packagemanager);
+			QI_WriteUpdateList(thedatabase, packagemanager);
 		}
 		VFS_CLOSE(packagemanager);
 		packagemanager = NULL;
@@ -955,34 +988,68 @@ static int QDECL QI_ConExecuteCommand(qboolean isinsecure)
 	return true;
 }
 
-static qboolean QI_ExecuteCommand(qboolean isinsecure)
+static void QI_ExecuteCommand_f(void)
 {
 	char cmd[256];
-	cmdfuncs->Argv(0, cmd, sizeof(cmd));
-	if (!strcmp(cmd, "qi") || !strcmp(cmd, "quaddicted"))
+	if (cmdfuncs->Argc() > 1)
 	{
-		if (cmdfuncs->Argc() > 1)
-		{
-			cmdfuncs->Args(cmd, sizeof(cmd));
-			QI_UpdateFilter(cmd);
-		}
-		else if (QI_SetupWindow(WINDOWNAME, false))
-		{
-			confuncs->SetActive(WINDOWNAME);
-			return true;
-		}
-
-		if (!thedatabase && dlcontext == -1)
-			filefuncs->Open(DATABASEURL, &dlcontext, 1);
-
-		QI_RefreshMapList(true);
-		return true;
+		cmdfuncs->Args(cmd, sizeof(cmd));
+		QI_UpdateFilter(cmd);
 	}
-	return false;
+	else if (QI_SetupWindow(WINDOWNAME, false))
+	{
+		confuncs->SetActive(WINDOWNAME);
+		return;
+	}
+
+	if (!thedatabase && dlcontext == -1)
+		filefuncs->Open(DATABASEURL, &dlcontext, 1);
+
+	QI_RefreshMapList(true);
 }
 
-void QI_GenPackages(const char *url, vfsfile_t *pipe)
+void QI_GenPackages(const char *url, vfsfile_t *pipe, qboolean favourcache)
 {
+	if (thedatabase)
+	{	//already read it?... fine.
+		VFS_PRINTF(pipe, "version 3\n");
+		QI_WriteUpdateList(thedatabase, pipe);
+		VFS_CLOSE(pipe);
+		return;
+	}
+	else if (favourcache)
+	{	//just read the cached copy from disk. use the menu to update it.
+		xmltree_t *t = NULL;
+		qhandle_t fd = -1;
+		int ofs = 0;
+
+		int flen = filefuncs->Open("**plugconfig", &fd, 1);
+		if (flen >= 0)
+		{
+			qbyte *file = malloc(flen+1);
+			file[flen] = 0;
+			filefuncs->Read(fd, file, flen);
+			filefuncs->Close(fd);
+
+			do
+			{
+				if (t)
+					XML_Destroy(t);
+				t = XML_Parse(file, &ofs, flen, false, "");
+			} while(t && !t->child);
+			free(file);
+
+			VFS_PRINTF(pipe, "version 3\n");
+			QI_WriteUpdateList(t, pipe);
+
+			if (t)
+				XML_Destroy(t);
+			VFS_CLOSE(pipe);
+			return;
+		}
+	}
+
+	//fill it in once we've got it...
 	if (packagemanager)
 		VFS_CLOSE(packagemanager);
 	packagemanager = pipe;
@@ -1007,12 +1074,11 @@ qboolean Plug_Init(void)
 		plugfuncs->ExportFunction("UpdateVideo", QI_UpdateVideo);
 		if (plugfuncs->ExportFunction("Tick", QI_Tick) &&
 			plugfuncs->ExportFunction("Shutdown", QI_Shutdown) &&
-			plugfuncs->ExportFunction("ExecuteCommand", QI_ExecuteCommand) &&
 			plugfuncs->ExportFunction("ConExecuteCommand", QI_ConExecuteCommand) &&
 			plugfuncs->ExportFunction("ConsoleLink", QI_ConsoleLink))
 		{
-			cmdfuncs->AddCommand("qi");
-			cmdfuncs->AddCommand("quaddicted");
+			cmdfuncs->AddCommand("qi", QI_ExecuteCommand_f, "Select or install maps or mods from Quaddicted's database.");
+			cmdfuncs->AddCommand("quaddicted", QI_ExecuteCommand_f, "Select or install maps or mods from Quaddicted's database.");
 			return true;
 		}
 	}

@@ -35,6 +35,14 @@ extern	cvar_t		scr_viewsize;
 
 qboolean SCR_RSShot (void);
 
+typedef struct
+{
+	qboolean enabled;
+	vec3_t angles;
+} vrui_t;
+extern vrui_t vrui;
+void VRUI_SnapAngle(void);
+
 //void SCR_DrawConsole (qboolean noback);
 //void SCR_SetUpToDrawConsole (void);
 
@@ -74,7 +82,7 @@ void SCR_ShowPic_Hide(void);
 void SCR_ShowPic_Move(void);
 void SCR_ShowPic_Update(void);
 void SCR_ShowPic_ClearAll(qboolean persistflag);
-char *SCR_ShowPics_ClickCommand(int cx, int cy);
+const char *SCR_ShowPics_ClickCommand(float cx, float cy, qboolean loadtouch);
 void SCR_ShowPic_Script_f(void);
 void SCR_ShowPic_Remove_f(void);
 
@@ -313,7 +321,8 @@ void Font_Init(void);
 void Font_Shutdown(void);
 int Font_RegisterTrackerImage(const char *image);	//returns a unicode char value that can be used to embed the char within a line of text.
 qboolean Font_TrackerValid(unsigned int imid);
-struct font_s *Font_LoadFont(const char *fontfilename, float height, float scale, int outline);
+struct font_s *Font_LoadFont(const char *fontfilename, float height, float scale, int outline, unsigned int flags);
+#define FONT_MONO 1
 void Font_Free(struct font_s *f);
 void Font_BeginString(struct font_s *font, float vx, float vy, int *px, int *py);
 void Font_BeginScaledString(struct font_s *font, float vx, float vy, float szx, float szy, float *px, float *py); /*avoid using*/

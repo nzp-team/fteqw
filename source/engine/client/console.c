@@ -159,9 +159,7 @@ void Con_Destroy (console_t *con)
 	}
 	con->display = con->current = con->oldest = NULL;
 
-	if (con->footerline)
-		Z_Free(con->footerline);
-	con->footerline = NULL;
+	Con_Footerf(con, false, "");
 	if (con->completionline)
 		Z_Free(con->completionline);
 	con->completionline = NULL;
@@ -331,13 +329,7 @@ void Con_SetActive (console_t *con)
 		con_current = con;
 	}
 
-	if (con->footerline)
-	{
-		con->selstartline = NULL;
-		con->selendline = NULL;
-		Z_Free(con->footerline);
-		con->footerline = NULL;
-	}
+	Con_Footerf(con, false, "");
 	con->buttonsdown = CB_NONE;
 }
 /*for enumerating consoles*/
@@ -637,6 +629,7 @@ void Con_ToggleConsole_Force(void)
 		{
 			con_curwindow = con;
 			Key_Dest_Add(kdm_cwindows);
+			VRUI_SnapAngle();
 		}
 	}
 	else
@@ -644,7 +637,10 @@ void Con_ToggleConsole_Force(void)
 		if (Key_Dest_Has(kdm_console))
 			Key_Dest_Remove(kdm_console);
 		else
+		{
 			Key_Dest_Add(kdm_console);
+			VRUI_SnapAngle();
+		}
 	}
 }
 void Con_ToggleConsole_f (void)
@@ -932,9 +928,10 @@ qboolean Con_InsertConChars (console_t *con, conline_t *line, int offset, concha
 void Con_PrintCon (console_t *con, const char *txt, unsigned int parseflags)
 {
 	conchar_t expanded[4096];
-	conchar_t *c;
+	conchar_t *c, *n;
 	conline_t *reuse;
 	int maxlines;
+	unsigned flags, codepoint;
 
 	if (con->maxlines)
 		maxlines = con->maxlines;
@@ -946,14 +943,13 @@ void Con_PrintCon (console_t *con, const char *txt, unsigned int parseflags)
 	c = expanded;
 	if (*c)
 		con->unseentext = true;
-	while (*c)
+	for (;*c; c=n)
 	{
-		switch (*c & (CON_CHARMASK|CON_HIDDEN))	//include hidden so we don't do \r or \n on hidden chars, allowing them to be embedded in links and stuff.
-		{
-		case '\r':
+		n = Font_Decode(c, &flags, &codepoint);
+		if (codepoint=='\r' && !(flags&CON_HIDDEN))
 			con->cr = true;
-			break;
-		case '\n':
+		else if (codepoint=='\n' && !(flags&CON_HIDDEN))
+		{
 			con->cr = false;
 			reuse = NULL;
 			while (con->linecount >= maxlines)
@@ -983,6 +979,8 @@ void Con_PrintCon (console_t *con, const char *txt, unsigned int parseflags)
 				con->current->flags |= CONL_CENTERED;
 			if (parseflags & PFS_NONOTIFY)
 				con->current->flags |= CONL_NONOTIFY;
+			else if (!Key_Dest_Has(~kdm_game) && (con->flags & CONF_NOTIFY))
+				VRUI_SnapAngle();
 
 #if defined(HAVE_SPEECHTOTEXT)
 			if (con->current)
@@ -1006,8 +1004,9 @@ void Con_PrintCon (console_t *con, const char *txt, unsigned int parseflags)
 			con->current->length = 0;
 			if (con->display == con->current->older && con->displayscroll==0)
 				con->display = con->current;
-			break;
-		default:
+		}
+		else
+		{
 			if (con->cr)
 			{
 				con->current->length = 0;
@@ -1028,10 +1027,8 @@ void Con_PrintCon (console_t *con, const char *txt, unsigned int parseflags)
 			}
 
 			//FIXME: don't do this a char at a time
-			Con_InsertConChars(con, con->current, con->current->length, c, 1);
-			break;
+			Con_InsertConChars(con, con->current, con->current->length, c, n-c);
 		}
-		c++;
 	}
 
 	con->current->time = realtime;
@@ -1182,7 +1179,7 @@ void VARGS Con_TPrintf (translation_t text, ...)
 {
 	va_list		argptr;
 	char		msg[MAXPRINTMSG];
-	const char *fmt = langtext(text, com_language);
+	const char *fmt = localtext(text);
 
 	va_start (argptr,text);
 	vsnprintf (msg,sizeof(msg), fmt,argptr);
@@ -1196,7 +1193,7 @@ void VARGS Con_SafeTPrintf (translation_t text, ...)
 {
 	va_list		argptr;
 	char		msg[MAXPRINTMSG];
-	const char *fmt = langtext(text, com_language);
+	const char *fmt = localtext(text);
 
 	va_start (argptr,text);
 	vsnprintf (msg,sizeof(msg), fmt,argptr);
@@ -1307,7 +1304,7 @@ void VARGS Con_ThrottlePrintf (float *timer, int developerlevel, const char *fmt
 
 	if (*timer > now)
 		;	//in the future? zomg
-	else if (*timer > now-1)
+	else if (*timer >= now-1)
 		return;	//within the last second
 	*timer = now;	//in the future? zomg
 
@@ -1321,14 +1318,70 @@ void VARGS Con_ThrottlePrintf (float *timer, int developerlevel, const char *fmt
 		Con_Printf("%s", msg);
 }
 
+static void Con_FooterMarked(console_t *con, qboolean append, conchar_t *marked, conchar_t *markedend)
+{
+	int oldlen, newlen;
+	conline_t *newf = NULL, *l;
+	unsigned fl, cp;
+	conchar_t *nl, *n;
+
+	if (!append)
+	{
+		while(con->footerline)
+		{
+			l = con->footerline;
+			con->footerline = l->older;
+			if (con->selstartline == l)
+				con->selstartline = NULL;
+			if (con->selendline == l)
+				con->selendline = NULL;
+			Z_Free(l);
+		}
+		con->footerline = NULL;
+	}
+	for (append = true; marked < markedend; marked = n, append = false)
+	{
+		n = markedend;
+		for (nl = marked; nl < markedend; nl=n)
+		{
+			n = Font_Decode(nl, &fl, &cp);
+			if (cp == '\n' && !(fl&CONF_HIDDEN))
+				break;
+		}
+
+		newlen = nl - marked;
+		if (append && con->footerline)
+			oldlen = con->footerline->length;
+		else
+			oldlen = 0;
+
+		if (newlen || !append)
+		{
+			newf = Z_Malloc(sizeof(*newf) + (oldlen + newlen) * sizeof(conchar_t));
+			if (append && con->footerline)
+			{
+				memcpy(newf, con->footerline, sizeof(*con->footerline)+oldlen*sizeof(conchar_t));
+				Z_Free(con->footerline);
+			}
+			else
+				newf->older = con->footerline;
+			if (newf->older)
+				newf->older->newer = newf;
+
+			memcpy((conchar_t*)(newf+1)+oldlen, marked, newlen*sizeof(conchar_t));
+			newf->length = oldlen + newlen;
+			con->footerline = newf;
+		}
+	}
+}
+
 /*description text at the bottom of the console*/
 void Con_Footerf(console_t *con, qboolean append, const char *fmt, ...)
 {
 	va_list		argptr;
 	char		msg[MAXPRINTMSG];
 	conchar_t	marked[MAXPRINTMSG], *markedend;
-	int oldlen, newlen;
-	conline_t *newf;
+
 	if (!con)
 		con = con_current;
 	if (!con)
@@ -1339,31 +1392,7 @@ void Con_Footerf(console_t *con, qboolean append, const char *fmt, ...)
 	va_end (argptr);
 	markedend = COM_ParseFunString((COLOR_YELLOW << CON_FGSHIFT)|(con->backshader?CON_NONCLEARBG:0), msg, marked, sizeof(marked), false);
 
-	newlen = markedend - marked;
-	if (append && con->footerline)
-		oldlen = con->footerline->length;
-	else
-		oldlen = 0;
-
-	if (!newlen && !oldlen)
-		newf = NULL;
-	else
-	{
-		newf = Z_Malloc(sizeof(*newf) + (oldlen + newlen) * sizeof(conchar_t));
-		if (con->footerline)
-			memcpy(newf, con->footerline, sizeof(*con->footerline)+oldlen*sizeof(conchar_t));
-		markedend = (void*)(newf+1);
-		markedend += oldlen;
-		memcpy(markedend, marked, newlen*sizeof(conchar_t));
-		newf->length = oldlen + newlen;
-	}
-
-	if (con->selstartline == con->footerline)
-		con->selstartline = NULL;
-	if (con->selendline == con->footerline)
-		con->selendline = NULL;
-	Z_Free(con->footerline);
-	con->footerline = newf;
+	Con_FooterMarked(con, append, marked, markedend);
 }
 
 /*
@@ -1924,10 +1953,10 @@ static int Con_DrawProgress(int left, int right, int y)
 		if (progresspercent < 0)
 		{
 			if ((int)(realtime/2)&1 || total == 0)
-				sprintf(progresspercenttext, " (%ukbps)", CL_DownloadRate()/1000);
+				sprintf(progresspercenttext, " (%ukB/s)", CL_DownloadRate()/1000);
 			else
 			{
-				sprintf(progresspercenttext, " (%u%skb)", (int)(total/1024), extra?"+":"");
+				sprintf(progresspercenttext, " (%u%sKiB)", (int)(total/1024), extra?"+":"");
 			}
 
 			//do some marquee thing, so the user gets the impression that SOMETHING is happening.
@@ -1939,10 +1968,10 @@ static int Con_DrawProgress(int left, int right, int y)
 		else
 		{
 			if ((int)(realtime/2)&1 || total == 0)
-				sprintf(progresspercenttext, " %5.1f%% (%ukbps)", progresspercent, CL_DownloadRate()/1000);
+				sprintf(progresspercenttext, " %5.1f%% (%ukB/s)", progresspercent, CL_DownloadRate()/1000);
 			else
 			{
-				sprintf(progresspercenttext, " %5.1f%% (%u%skb)", progresspercent, (int)(total/1024), extra?"+":"");
+				sprintf(progresspercenttext, " %5.1f%% (%u%sKiB)", progresspercent, (int)(total/1024), extra?"+":"");
 			}
 		}
 	}
@@ -2743,25 +2772,27 @@ static void Con_DrawModelPreview(model_t *model, float x, float y, float w, floa
 	VectorScale(ent.axis[0], scale, ent.axis[0]);
 	VectorScale(ent.axis[1], scale, ent.axis[1]);
 	VectorScale(ent.axis[2], scale, ent.axis[2]);
-	/*if (strstr(model->name, "player"))
-	{
-		ent.bottomcolour	= genhsv(realtime*0.1 + 0, 1, 1);
-		ent.topcolour		= genhsv(realtime*0.1 + 0.5, 1, 1);
-	}
-	else*/
-	{
-		ent.topcolour = TOP_DEFAULT;
-		ent.bottomcolour = BOTTOM_DEFAULT;
-	}
+	ent.topcolour = TOP_DEFAULT;
+	ent.bottomcolour = BOTTOM_DEFAULT;
 //	ent.fatness = sin(realtime)*5;
 	ent.playerindex = -1;
 	ent.skinnum = 0;
 	ent.shaderTime = 0;//realtime;
 	ent.framestate.g[FS_REG].lerpweight[0] = 1;
-//				ent.framestate.g[FS_REG].frame[0] = animationnum;
 	ent.framestate.g[FS_REG].frametime[0] = ent.framestate.g[FS_REG].frametime[1] = realtime;
 	ent.framestate.g[FS_REG].endbone = 0x7fffffff;
-//				ent.customskin = Mod_RegisterSkinFile(va("%s_0.skin", mods->modelname));
+	if (model->submodelof)
+		;
+	else
+	{
+		ent.customskin = Mod_RegisterSkinFile(va("%s_0.skin", model->publicname));
+		if (ent.customskin == 0)
+		{
+			char haxxor[MAX_QPATH];
+			COM_StripExtension(model->publicname, haxxor, sizeof(haxxor));
+			ent.customskin = Mod_RegisterSkinFile(va("%s_default.skin", haxxor));
+		}
+	}
 
 	Vector4Set(ent.shaderRGBAf, 1,1,1,1);
 	VectorSet(ent.glowmod, 1,1,1);
@@ -2906,12 +2937,15 @@ static void Con_DrawMouseOver(console_t *mouseconsole)
 					}
 					else
 						shader = NULL;
-					key = Info_ValueForKey(info, "modelviewer");
-					if (*key)
+					if (!vrui.enabled)
 					{
-						model = Mod_ForName(key, MLV_WARN);
-						if (model->loadstate != MLS_LOADED)
-							model = NULL;
+						key = Info_ValueForKey(info, "modelviewer");
+						if (*key)
+						{
+							model = Mod_ForName(key, MLV_WARN);
+							if (model->loadstate != MLS_LOADED)
+								model = NULL;
+						}
 					}
 
 					key = Info_ValueForKey(info, "playaudio");
@@ -3283,7 +3317,7 @@ void Con_DrawConsole (int lines, qboolean noback)
 		}
 		selactive = Key_GetConsoleSelectionBox(con_current, &selsx, &selsy, &selex, &seley);
 
-		if ((con_current->flags & CONF_KEEPSELECTION) && con_current->selstartline && con_current->selendline)
+		if ((con_current->flags & CONF_KEEPSELECTION) && con_current->selstartline && con_current->selendline && con_current->buttonsdown != CB_SELECTED && con_current->buttonsdown != CB_TAPPED)
 			selactive = -1;
 
 		Font_BeginString(font_console, x, y, &x, &y);
@@ -3316,6 +3350,58 @@ void Con_DrawConsole (int lines, qboolean noback)
 
 		Font_EndString(font_console);
 		mouseconsole = con_mouseover?con_mouseover:con_current;
+
+
+		if (con_current->buttonsdown == CB_SELECTED || con_current->buttonsdown == CB_TAPPED)
+		{	//select was released...
+			console_t *con = con_current;
+			char *buffer;
+			qboolean tapped = con->buttonsdown==CB_TAPPED;
+			con->buttonsdown = CB_NONE;
+			if (con->selstartline)
+			{
+				if (tapped)
+					con->flags &= ~CONF_KEEPSELECTION;
+				else
+					con->flags |= CONF_KEEPSELECTION;
+				if (con->userline)
+				{
+					if (con->flags & CONF_BACKSELECTION)
+					{
+						con->userline = con->selendline;
+						con->useroffset = con->selendoffset;
+					}
+					else
+					{
+						con->userline = con->selstartline;
+						con->useroffset = con->selstartoffset;
+					}
+				}
+				if (con->selstartline == con->selendline && con->selendoffset <= con->selstartoffset+1)
+				{
+					if (keydown[K_LSHIFT] || keydown[K_RSHIFT])
+						;
+					else
+					{
+						buffer = Con_CopyConsole(con, false, true, false);
+						if (buffer)
+						{
+							Key_HandleConsoleLink(con, buffer);
+							Z_Free(buffer);
+						}
+					}
+				}
+				else
+				{
+					buffer = Con_CopyConsole(con, true, false, true);	//don't keep markup if we're copying to the clipboard
+					if (buffer)
+					{
+						Sys_SaveClipboard(CBT_SELECTION,  buffer);
+						Z_Free(buffer);
+					}
+				}
+			}
+		}
 	}
 	else
 		mouseconsole = con_mouseover?con_mouseover:NULL;
@@ -3367,6 +3453,57 @@ void Con_DrawOneConsole(console_t *con, qboolean focused, struct font_s *font, f
 	if (!con->display)
 		con->display = con->current;
 	Con_DrawConsoleLines(con, con->display, con->displayscroll, x, sx, sy, y, selactive, selsx, selex, selsy, seley, lineagelimit);
+
+
+	if (con->buttonsdown == CB_SELECTED || con->buttonsdown == CB_TAPPED)
+	{	//select was released...
+		char *buffer;
+		qboolean tapped = con->buttonsdown==CB_TAPPED;
+		con->buttonsdown = CB_NONE;
+		if (con->selstartline)
+		{
+			if (tapped)
+				con->flags &= ~CONF_KEEPSELECTION;
+			else
+				con->flags |= CONF_KEEPSELECTION;
+			if (con->userline)
+			{
+				if (con->flags & CONF_BACKSELECTION)
+				{
+					con->userline = con->selendline;
+					con->useroffset = con->selendoffset;
+				}
+				else
+				{
+					con->userline = con->selstartline;
+					con->useroffset = con->selstartoffset;
+				}
+			}
+			if (con->selstartline == con->selendline && con->selendoffset <= con->selstartoffset+1)
+			{
+				if (keydown[K_LSHIFT] || keydown[K_RSHIFT])
+					;
+				else
+				{
+					buffer = Con_CopyConsole(con, false, true, false);
+					if (buffer)
+					{
+						Key_HandleConsoleLink(con, buffer);
+						Z_Free(buffer);
+					}
+				}
+			}
+			else
+			{
+				buffer = Con_CopyConsole(con, true, false, true);	//don't keep markup if we're copying to the clipboard
+				if (buffer)
+				{
+					Sys_SaveClipboard(CBT_SELECTION,  buffer);
+					Z_Free(buffer);
+				}
+			}
+		}
+	}
 
 	Font_EndString(font);
 }

@@ -15,15 +15,9 @@ int com_language;
 char sys_language[64] = "";
 static char langpath[MAX_OSPATH] = "";
 struct language_s languages[MAX_LANGUAGES];
-static struct po_s *com_translations;
 
 static void QDECL TL_LanguageChanged(struct cvar_s *var, char *oldvalue)
 {
-	if (com_translations)
-	{
-		PO_Close(com_translations);
-		com_translations = NULL;
-	}
 	com_language = TL_FindLanguage(var->string);
 }
 
@@ -46,6 +40,9 @@ void TL_Shutdown(void)
 		languages[j].name = NULL;
 		PO_Close(languages[j].po);
 		languages[j].po = NULL;
+
+		PO_Close(languages[j].po_qex);
+		languages[j].po_qex = NULL;
 	}
 }
 
@@ -75,15 +72,15 @@ static int TL_LoadLanguage(char *lang)
 		//keep truncating until we can find a name that works
 		u = strrchr(lang, '_');
 		if (u)
+		{
 			*u = 0;
-		else
-			lang = "";
-		return TL_LoadLanguage(lang);
+			return TL_LoadLanguage(lang);
+		}
 	}
 	languages[j].name = strdup(lang);
 	languages[j].po = NULL;
 	
-#ifndef COLOURUNTRANSLATEDSTRINGS
+#if !defined(COLOURUNTRANSLATEDSTRINGS) && !defined(COLOURMISSINGSTRINGS)
 	if (f)
 #endif
 	{
@@ -311,14 +308,45 @@ struct po_s
 };
 
 static struct poline_s *PO_AddText(struct po_s *po, const char *orig, const char *trans)
-{
+{	//input is assumed to be utf-8, but that's not always what quake uses. on the plus side we do have our own silly markup to handle unicode (and colours etc).
 	size_t olen = strlen(orig)+1;
-	size_t tlen = strlen(trans)+1;
-	struct poline_s *line = Z_Malloc(sizeof(*line)+olen+tlen);
+	size_t tlen;
+	struct poline_s *line;
+	const char *s;
+	char temp[64];
+
+	//figure out the required length for the encoding we're actually going to use
+	if (com_parseutf8.ival != 1)
+	{
+		tlen = 0;
+		for (s = trans, tlen = 0; *s; )
+		{
+			unsigned int err;
+			unsigned int chr = utf8_decode(&err, s, &s);
+			tlen += unicode_encode(temp, chr, sizeof(temp), true);
+		}
+		tlen++;
+	}
+	else
+		tlen = strlen(trans)+1;
+
+	line = Z_Malloc(sizeof(*line)+olen+tlen);
 	memcpy(line+1, orig, olen);
 	orig = (const char*)(line+1);
 	line->translated = (char*)(line+1)+olen;
-	memcpy(line->translated, trans, tlen);
+	if (com_parseutf8.ival != 1)
+	{
+		//do the loop again now we know we've got enough space for it.
+		for (s = trans, tlen = 0; *s; )
+		{
+			unsigned int err;
+			unsigned int chr = utf8_decode(&err, s, &s);
+			tlen += unicode_encode(line->translated+tlen, chr, sizeof(temp), true);
+		}
+		line->translated[tlen] = 0;
+	}
+	else
+		memcpy(line->translated, trans, tlen);
 	trans = (const char*)(line->translated);
 	Hash_Add(&po->hash, orig, line, &line->buck);
 
@@ -473,7 +501,7 @@ void PO_Close(struct po_s *po)
 const char *PO_GetText(struct po_s *po, const char *msg)
 {
 	struct poline_s *line;
-	if (!po)
+	if (!po || !msg)
 		return msg;
 	line = Hash_Get(&po->hash, msg);
 
@@ -482,17 +510,20 @@ const char *PO_GetText(struct po_s *po, const char *msg)
 	{
 		char temp[1024];
 		int i;
-		Q_snprintfz(temp, sizeof(temp), "%s", msg);
-		for (i = 0; temp[i]; i++)
+		const char *in = msg;
+		for (i = 0; *in && i < sizeof(temp)-1; )
 		{
-			if (temp[i] == '%')
-			{
-				while (temp[i] > ' ')
-					i++;
+			if (*in == '%')
+			{	//don't mess up % formatting too much
+				while (*in > ' ' && i < sizeof(temp)-1)
+					temp[i++] = *in++;
 			}
-			else if (temp[i] >= ' ')
-				temp[i] |= 0x80;
+			else if (in > ' ' && *in < 128)	//otherwise force any ascii chars to the 0xe0XX range so it doesn't use any freetype fonts so its instantly recognisable as bad.
+				i += utf8_encode(temp+i, *in++|0xe080, sizeof(temp)-1-i);
+			else
+				temp[i++] = *in++;	//don't mess with any c0/extended codepoints
 		}
+		temp[i] = 0;
 		line = PO_AddText(po, msg, temp);
 	}
 #endif
@@ -503,7 +534,7 @@ const char *PO_GetText(struct po_s *po, const char *msg)
 }
 
 
-static void PO_Merge_Rerelease(struct po_s *po, const char *fmt)
+static void PO_Merge_Rerelease(struct po_s *po, const char *langname, const char *fmt)
 {
 	//FOO <plat,plat> = "CString"
 	char line[32768];
@@ -512,22 +543,22 @@ static void PO_Merge_Rerelease(struct po_s *po, const char *fmt)
 	char *s;
 	vfsfile_t *file = NULL;
 
-	if (!file && *language.string)	//use system locale names
-		file = FS_OpenVFS(va(fmt, language.string), "rb", FS_GAME);
+	if (!file && *langname)	//use system locale names
+		file = FS_OpenVFS(va(fmt, langname), "rb", FS_GAME);
 	if (!file)	//make a guess
 	{
 		s = NULL;
-		if (language.string[0] && language.string[1] && (!language.string[2] || language.string[2] == '-' || language.string[2] == '_'))
+		if (langname[0] && langname[1] && (!langname[2] || langname[2] == '-' || langname[2] == '_'))
 		{	//try to map the user's formal locale to the rerelease's arbitrary names (at least from the perspective of anyone who doesn't speak english).
-			if (!strncmp(language.string, "fr", 2))
+			if (!strncmp(langname, "fr", 2))
 				s = "french";
-			else if (!strncmp(language.string, "de", 2))
+			else if (!strncmp(langname, "de", 2))
 				s = "german";
-			else if (!strncmp(language.string, "it", 2))
+			else if (!strncmp(langname, "it", 2))
 				s = "italian";
-			else if (!strncmp(language.string, "ru", 2))
+			else if (!strncmp(langname, "ru", 2))
 				s = "russian";
-			else if (!strncmp(language.string, "es", 2))
+			else if (!strncmp(langname, "es", 2))
 				s = "spanish";
 		}
 		if (s)
@@ -553,18 +584,18 @@ static void PO_Merge_Rerelease(struct po_s *po, const char *fmt)
 	}
 }
 
-const char *TL_Translate(const char *src)
+const char *TL_Translate(int language, const char *src)
 {
 	if (*src == '$')
 	{
-		if (!com_translations)
+		if (!languages[language].po_qex)
 		{
 			char lang[64], *h;
 			vfsfile_t *f = NULL;
-			com_translations = PO_Create();
-			PO_Merge_Rerelease(com_translations, "localization/loc_%s.txt");
+			languages[language].po_qex = PO_Create();
+			PO_Merge_Rerelease(languages[language].po_qex, languages[language].name, "localization/loc_%s.txt");
 
-			Q_strncpyz(lang, language.string, sizeof(lang));
+			Q_strncpyz(lang, languages[language].name, sizeof(lang));
 			while ((h = strchr(lang, '-')))
 				*h = '_';	//standardise it
 			if (*lang)
@@ -579,20 +610,20 @@ const char *TL_Translate(const char *src)
 				}
 			}
 			if (f)
-				PO_Merge(com_translations, f);
+				PO_Merge(languages[language].po_qex, f);
 		}
-		src = PO_GetText(com_translations, src);
+		src = PO_GetText(languages[language].po_qex, src);
 	}
 	return src;
 }
-void TL_Reformat(char *out, size_t outsize, size_t numargs, const char **arg)
+void TL_Reformat(int language, char *out, size_t outsize, size_t numargs, const char **arg)
 {
 	const char *fmt;
 	const char *a;
 	size_t alen;
 
 	fmt = (numargs>0&&arg[0])?arg[0]:"";
-	fmt = TL_Translate(fmt);
+	fmt = TL_Translate(language, fmt);
 
 	outsize--;
 	while (outsize > 0)
@@ -623,7 +654,7 @@ void TL_Reformat(char *out, size_t outsize, size_t numargs, const char **arg)
 			if (index >= numargs || !arg[index])
 				a = "";
 			else
-				a = TL_Translate(arg[index]);
+				a = TL_Translate(language, arg[index]);
 
 			alen = strlen(a);
 			if (alen > outsize)

@@ -22,7 +22,7 @@ typedef struct {
 #define SAVEFIRST_STANDARD (SAVEFIRST_AUTO + SAVECOUNT_AUTO)
 #define SAVECOUNT_STANDARD 20
 #define	MAX_SAVEGAMES		(1+SAVECOUNT_AUTO+SAVECOUNT_STANDARD)
-struct
+static struct
 {
 	qboolean loadable;
 	qbyte	saveable; //0=autosave, 1=regular, 2=quick
@@ -33,7 +33,7 @@ struct
 	char	map[32];
 } m_saves[MAX_SAVEGAMES];
 
-static void M_ScanSave(unsigned int slot, const char *name, qboolean savable)
+static void M_ScanSave(unsigned int slot, const char *name, qbyte savable)
 {
 	char	*in, *out, *end;
 	int		j;
@@ -372,7 +372,7 @@ void M_Menu_SinglePlayer_f (void)
 #endif
 
 #if MAX_SPLITS > 1
-		b = (menubutton_t*)MC_AddCvarCombo(menu, 72, 170, 96, "Splitscreen", &cl_splitscreen, splitopts, splitvals);
+		b = (menubutton_t*)MC_AddCvarCombo(menu, 72, 170, 96, localtext("Splitscreen"), &cl_splitscreen, splitopts, splitvals);
 #endif
 
 		menu->cursoritem = (menuoption_t*)MC_AddWhiteText(menu, 48, 0, 40, NULL, false);
@@ -404,30 +404,37 @@ void M_Menu_SinglePlayer_f (void)
 
 			if (!strncmp(Cmd_Argv(1), "class", 5))
 			{
+				unsigned taken = 0;
+				int oldclass;
 				int pnum;
 				pnum = atoi(Cmd_Argv(1)+5);
-				if (!pnum)
-					pnum = 1;
+				cl_splitscreen.ival = bound(0, cl_splitscreen.ival, MAX_SPLITS-1);
+				pnum = bound(1, pnum, cl_splitscreen.ival+1);
 
 				MC_AddCenterPicture(menu, 0, 60, "gfx/menu/title2.lmp");
 
 				if (cl_splitscreen.ival)
-					MC_AddBufferedText(menu, 80, 0, (y+=8)+12, va("Player %i\n", pnum), false, true); 
+					MC_AddBufferedText(menu, 80, 0, (y+=8)+12, va(localtext("Player %i\n"), pnum), false, true);
+
+				for (i = 0; i < pnum-1 && i < countof(cls.userinfo); i++)
+					taken |= 1<<atoi(InfoBuf_ValueForKey(&cls.userinfo[i], "cl_playerclass"));
+				oldclass = atoi(InfoBuf_ValueForKey(&cls.userinfo[pnum-1], "cl_playerclass"));
 
 				for (i = 0; i <= 4+havemp; i++)
 				{
-					b = MC_AddConsoleCommandHexen2BigFont(menu, 80, y+=20,		classlistmp[i],
+					b = MC_AddConsoleCommandHexen2BigFont(menu, 80, y+=20,		(!i || !(taken&(1<<i)))?classlistmp[i]:(va(S_COLOR_GRAY"%s", classlistmp[i])),
 							va("p%i setinfo cl_playerclass %i; menu_single %s %s\n",
 								pnum,
 								i?i:((rand()%(4+havemp))+1),
 								((pnum+1 > cl_splitscreen.ival+1)?"skill":va("class%i",pnum+1)),
 								Cmd_Argv(2)));
-					if (!menu->selecteditem)
+					if (!menu->selecteditem || i == oldclass)
 						menu->selecteditem = (menuoption_t*)b;
 				}
 			}
 			else if (!strncmp(Cmd_Argv(1), "skill", 5))
 			{
+				extern cvar_t skill;
 				//yes, hexen2 has per-class names for the skill levels. because being weird and obtuse is kinda its forte
 				static char *skillnames[6][4] =
 				{
@@ -477,7 +484,7 @@ void M_Menu_SinglePlayer_f (void)
 				for (i = 0; i < 4; i++)
 				{
 					b = MC_AddConsoleCommandHexen2BigFont(menu, 80, y+=20,	sn[i],	va("skill %i; closemenu; disconnect; deathmatch 0; coop %i;wait;map %s\n", i, cl_splitscreen.ival>0, Cmd_Argv(2)));
-					if (!menu->selecteditem)
+					if (!menu->selecteditem || i == skill.ival)
 						menu->selecteditem = (menuoption_t*)b;
 				}
 			}
@@ -501,10 +508,10 @@ void M_Menu_SinglePlayer_f (void)
 				MC_AddConsoleCommandHexen2BigFont(menu, 80, y+=20,		"Load Game",	"menu_load\n");
 #endif
 
-				MC_AddCvarCombo(menu, 72, 170, y+=20, "Splitscreen", &cl_splitscreen, splitopts, splitvals);
+				MC_AddCvarCombo(menu, 72, 170, y+=20, localtext("Splitscreen"), &cl_splitscreen, splitopts, splitvals);
 			}
 
-			menu->cursoritem = (menuoption_t *)MC_AddCursor(menu, &resel, 56, menu->selecteditem?menu->selecteditem->common.posy:0);
+			menu->cursoritem = (menuoption_t *)MC_AddCursor(menu, menu->selecteditem?NULL:&resel, 56, menu->selecteditem?menu->selecteditem->common.posy:0);
 
 			return;
 		}
@@ -518,7 +525,7 @@ void M_Menu_SinglePlayer_f (void)
 			MC_AddCenterPicture(menu, 4, 24, "gfx/ttl_sgl.lmp");
 
 			menu->selecteditem = (menuoption_t*)
-			MC_AddConsoleCommandQBigFont	(menu, 72, 32,	"New Game",  "closemenu;disconnect;maxclients 1;samelevel \"\";deathmatch \"\";set_calc coop ($cl_splitscreen>0);startmap_sp\n");
+			MC_AddConsoleCommandQBigFont	(menu, 72, 32,	"New Game",  "closemenu;disconnect;maxclients 1;spectator \"\";samelevel \"\";deathmatch \"\";set_calc coop ($cl_splitscreen>0);startmap_sp\n");
 #ifdef SAVEDGAMES
 			MC_AddConsoleCommandQBigFont	(menu, 72, 52,	"Load Game", "menu_load\n");
 			MC_AddConsoleCommandQBigFont	(menu, 72, 72,	"Save Game", "menu_save\n");
@@ -551,7 +558,7 @@ void M_Menu_SinglePlayer_f (void)
 
 		MC_AddPicture(menu, 72, 32, 232, 64, "gfx/sp_menu.lmp");
 
-		b = MC_AddConsoleCommand	(menu, 72, 304, 32,	"", "closemenu;disconnect;maxclients 1;samelevel \"\";deathmatch \"\";set_calc coop ($cl_splitscreen>0);startmap_sp\n");
+		b = MC_AddConsoleCommand	(menu, 72, 304, 32,	"", "closemenu;disconnect;maxclients 1;spectator \"\";samelevel \"\";deathmatch \"\";set_calc coop ($cl_splitscreen>0);startmap_sp\n");
 		menu->selecteditem = (menuoption_t *)b;
 		b->common.width = width;
 		b->common.height = 20;
@@ -566,7 +573,7 @@ void M_Menu_SinglePlayer_f (void)
 
 #if MAX_SPLITS > 1
 		b = (menubutton_t*)MC_AddCvarCombo(menu, 72, 72+width/2, 92, "", &cl_splitscreen, splitopts, splitvals);
-		MC_AddWhiteText(menu, 72, 0, 92, "^aSplitscreen", false);
+		MC_AddRedText(menu, 72, 0, 92, localtext("Splitscreen"), false);
 		b->common.height = 20;
 		b->common.width = width;
 #endif
@@ -598,6 +605,9 @@ typedef struct {
 
 	demoloc_t *fs; 
 	int pathlen;
+
+	//for the basedir picker...
+	ftemanifest_t *man;
 
 	char *command[64];	//these let the menu be used for nearly any sort of file browser.
 	char *ext[64];
@@ -646,41 +656,48 @@ static void M_DemoDraw(int x, int y, menucustom_t *control, emenu_t *menu)
 	if (!item)
 		info->firstitem = info->items;
 
-	if (!info->dragscroll && keydown[K_MOUSE1])
+	if (keydown[K_MOUSE1] || keydown[K_TOUCHSLIDE])
 	{
-		info->dragscroll = 1;
-		info->mousedownpos = mousecursor_y;
-	}
-	if (info->dragscroll && keydown[K_MOUSE1])
-	{
-		if (info->mousedownpos >= mousecursor_y+8)
+		if (!info->dragscroll)
 		{
-			info->dragscroll = 2;
-			info->mousedownpos -= 8;
-			if (info->firstitem->next)
+			info->dragscroll = 1;
+			info->mousedownpos = mousecursor_y-y;
+		}
+		if (info->dragscroll)
+		{
+			if (info->mousedownpos >= mousecursor_y-y+8)
 			{
-				if (info->firstitem == info->selected)
-					info->selected = info->firstitem->next;
-				info->firstitem = info->firstitem->next;
+				info->dragscroll = 2;
+				info->mousedownpos -= 8;
+				if (info->firstitem->next)
+				{
+					if (info->firstitem == info->selected)
+						info->selected = info->firstitem->next;
+					info->firstitem = info->firstitem->next;
+				}
+			}
+			if (info->mousedownpos+8 <= mousecursor_y-y)
+			{
+				info->dragscroll = 2;
+				info->mousedownpos += 8;
+				if (info->firstitem->prev)
+				{
+					if (ty <= 24)
+						info->selected = info->selected->prev;
+					info->firstitem = info->firstitem->prev;
+				}
 			}
 		}
-		if (info->mousedownpos+8 <= mousecursor_y)
-		{
-			info->dragscroll = 2;
-			info->mousedownpos += 8;
-			if (info->firstitem->prev)
-			{
-				if (ty <= 24)
-					info->selected = info->selected->prev;
-				info->firstitem = info->firstitem->prev;
-			}
-		}
 	}
+	else
+		info->dragscroll = 0;
+
+	control->common.height = vid.height-y;
 
 	item = info->firstitem;
 	while(item)
 	{
-		if (y >= vid.height)
+		if (y >= y+control->common.height)
 			return;
 		if (!item->isdir)
 			text = va("%-32.32s%6iKB", item->name+info->pathlen, item->size/1024);
@@ -739,12 +756,10 @@ static qboolean M_DemoKey(menucustom_t *control, emenu_t *menu, int key, unsigne
 				info->selected = info->selected->next;
 		}
 		break;
-	case K_MOUSE1:
+	case K_MOUSE1:	//this is on release
 		if (info->dragscroll == 2)
-		{
-			info->dragscroll = 0;
 			break;
-		}
+	case K_TOUCHTAP:
 		it = info->firstitem;
 		i = (mousecursor_y - control->common.posy) / 8;
 		while(i > 0 && it && it->next)
@@ -761,17 +776,20 @@ static qboolean M_DemoKey(menucustom_t *control, emenu_t *menu, int key, unsigne
 		//fallthrough
 	case K_ENTER:
 	case K_KP_ENTER:
+	case K_GP_DIAMOND_CONFIRM:
 		if (info->selected)
 		{
 			if (info->selected->isdir)
 				ShowDemoMenu(menu, info->selected->name);
-			else
+			else if (info->numext)
 			{
 				extern int		shift_down;
 				int extnum;
 				const char *ext = COM_GetFileExtension(info->selected->name, NULL);
+				if (!Q_strcasecmp(ext, ".gz") || !Q_strcasecmp(ext, ".xz"))
+					ext = COM_GetFileExtension(info->selected->name, ext);
 				for (extnum = 0; extnum < info->numext; extnum++)
-					if (!stricmp(ext, info->ext[extnum]))
+					if (!Q_strcasecmp(ext, info->ext[extnum]))
 						break;
 
 				if (extnum == info->numext)	//wasn't on our list of extensions.
@@ -814,8 +832,11 @@ static int QDECL DemoAddItem(const char *filename, qofs_t size, time_t modified,
 	i = strchr(filename+menu->pathlen, '/');
 	if (i == NULL)
 	{
+		const char *ext = COM_GetFileExtension(filename, NULL);
+		if (!Q_strcasecmp(ext, ".gz") || !Q_strcasecmp(ext, ".xz"))
+			ext = COM_GetFileExtension(filename, ext);
 		for (extnum = 0; extnum < menu->numext; extnum++)
-			if (!stricmp(COM_GetFileExtension(filename, NULL), menu->ext[extnum]))
+			if (!Q_strcasecmp(ext, menu->ext[extnum]))
 				break;
 
 		if (extnum == menu->numext)	//wasn't on our list of extensions.
@@ -845,7 +866,7 @@ static int QDECL DemoAddItem(const char *filename, qofs_t size, time_t modified,
 			if (link->isdir != isdir)	//bias directories, so they sink
 				side = (link->isdir > isdir)?1:-1;
 			else
-				side = stricmp(link->name, filename);
+				side = Q_strcasecmp(link->name, filename);
 			if (side == 0)
 				return true;	//already got this file
 			else if (side > 0)
@@ -943,6 +964,34 @@ static void M_Demo_Remove (emenu_t *menu)
 {
 	demomenu_t *info = menu->data;
 	M_Demo_Flush(info);
+
+	FS_Manifest_Free(info->man);
+	info->man = NULL;
+}
+
+static void FS_GameDirPrompted(void *ctx, promptbutton_t btn)
+{
+	emenu_t *menu = ctx;
+	if (Menu_IsLinked(&menu->menu))
+	{
+		demomenu_t *info = menu->data;
+		ftemanifest_t *man = info->man;
+		if (!man || info->fs->fsroot != FS_SYSTEM)
+			return;	//erk? no exploits!
+
+		switch(btn)
+		{
+		case PROMPT_CANCEL:
+			return;
+		case PROMPT_YES:
+			info->man = NULL;
+			Menu_Unlink(&menu->menu, true);	//try to kill the dialog menu.
+			FS_ChangeGame(man, true, true);	//switch to that new gamedir
+			break;
+		case PROMPT_NO:
+			return;
+		}
+	}
 }
 
 static void ShowDemoMenu (emenu_t *menu, const char *path)
@@ -1040,6 +1089,15 @@ static void ShowDemoMenu (emenu_t *menu, const char *path)
 //		COM_EnumerateFiles(match, DemoAddItem, info);
 	}
 	M_Demo_Flatten(info);
+
+	if (info->man && FS_DirHasAPackage(info->fs->path, info->man))
+	{
+		if (promptmenu)
+			return	//wut? don't confuse basedirs here...
+		Z_Free(info->man->basedir);
+		info->man->basedir = Z_StrDup(info->fs->path);
+		Menu_Prompt(FS_GameDirPrompted, &menu->menu, va(localtext("Use this directory?\n%s"), info->fs->path), "Yes!", NULL, "No", true);
+	}
 }
 void M_Demo_Reselect(demomenu_t *info, const char *name)
 {
@@ -1124,7 +1182,7 @@ void M_Menu_Demos_f (void)
 		info->ext[info->numext++] = archiveexts[u];
 	}
 
-	MC_AddWhiteText(menu, 24, 170, 8, "Choose a Demo", false);
+	MC_AddWhiteText(menu, 24, 170, 8, localtext("Choose a Demo"), false);
 	MC_AddWhiteText(menu, 16, 170, 24, "^Ue01d^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01f", false);
 
 	info->list = MC_AddCustom(menu, 0, 32, NULL, 0, NULL);
@@ -1191,7 +1249,7 @@ void M_Menu_MediaFiles_f (void)
 #endif
 #endif
 
-	MC_AddWhiteText(menu, 24, 170, 8, "Media List", false);
+	MC_AddWhiteText(menu, 24, 170, 8, localtext("Media List"), false);
 	MC_AddWhiteText(menu, 16, 170, 24, "^Ue01d^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01f", false);
 
 	info->list = MC_AddCustom(menu, 0, 32, NULL, 0, NULL);
@@ -1204,4 +1262,55 @@ void M_Menu_MediaFiles_f (void)
 	M_Demo_Reselect(info, info->fs->selname);
 }
 #endif
+
+#include <stdlib.h>
+void M_Menu_BasedirPrompt(ftemanifest_t *man)
+{
+	demomenu_t *info;
+	emenu_t *menu;
+	char *start = getenv("HOME");
+	size_t l;
+
+	Key_Dest_Remove(kdm_console);
+
+	menu = M_CreateMenu(sizeof(demomenu_t) + sizeof(demoloc_t));
+	menu->remove = M_Demo_Remove;
+	info = menu->data;
+
+	info->man = man;
+
+	info->fs = (demoloc_t*)(info+1);
+	info->fs->fsroot = FS_SYSTEM;
+	if (!start || !*start || (l = strlen(info->fs->path))>=sizeof(info->fs->path))
+		strcpy(info->fs->path, "/");
+	else
+		strcpy(info->fs->path, start);
+	//make sure it has a trailing slash.
+	l = strlen(info->fs->path);
+#ifdef _WIN32
+	if (info->fs->path[l-1] == '\\')
+		info->fs->path[l-1] = '/';
+#endif
+	if (info->fs->path[l-1] != '/')
+	{
+		info->fs->path[l] = '/';
+		info->fs->path[l+1] = 0;
+	}
+
+	info->numext = 0;
+
+	MC_AddWhiteText(menu, 24, 170, 8, va(localtext("Where is %s installed?"), man->formalname), false);
+	MC_AddWhiteText(menu, 16, 170, 24, "^Ue01d^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01f", false);
+
+	info->list = MC_AddCustom(menu, 0, 32, NULL, 0, NULL);
+	info->list->common.width = 320;
+	info->list->draw = M_DemoDraw;
+	info->list->key = M_DemoKey;
+
+	menu->selecteditem = (menuoption_t*)info->list;
+
+	ShowDemoMenu(menu, info->fs->path);
+	M_Demo_Reselect(info, info->fs->selname);
+}
+
 #endif

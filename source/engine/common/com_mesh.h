@@ -62,6 +62,8 @@ typedef struct galiasanimation_s
 	int numposes;
 	//float *poseendtime;	//first starts at 0, anim duration is poseendtime[numposes-1]
 	float rate;				//average framerate of animation.
+	int action;
+	float actionweight;
 #ifdef NONSKELETALMODELS
 	galiaspose_t *poseofs;
 #endif
@@ -73,7 +75,7 @@ typedef struct galiasbone_s galiasbone_t;
 #ifdef SKELETALMODELS
 struct galiasbone_s
 {
-	char name[32];
+	char name[64];
 	int parent;
 //	float radius;
 	float inverse[12];
@@ -203,6 +205,7 @@ typedef struct galiasinfo_s
 #endif
 	vboarray_t vboindicies;
 	vboarray_t vbotexcoords;
+	vboarray_t vbolmtexcoords;
 	vboarray_t vborgba;	//yeah, just you try reading THAT as an actual word.
 	void *vbomem;
 	void *ebomem;
@@ -270,7 +273,7 @@ typedef struct modplugfuncs_s
 	#define plugmodfuncs_name "Models_IDX" STRINGIFY(sizeof_index_t)
 #endif
 } plugmodfuncs_t;
-#define MODPLUGFUNCS_VERSION 2
+#define MODPLUGFUNCS_VERSION 3
 
 #ifdef SKELETALMODELS
 void Alias_TransformVerticies(float *bonepose, galisskeletaltransforms_t *weights, int numweights, vecV_t *xyzout, vec3_t *normout);
@@ -286,7 +289,7 @@ const char *Mod_SkinNameForNum(model_t *model, int surfaceidx, int num);
 const char *Mod_SurfaceNameForNum(model_t *model, int num);
 const char *Mod_FrameNameForNum(model_t *model, int surfaceidx, int num);
 const char *Mod_SkinNameForNum(model_t *model, int surfaceidx, int num);
-qboolean Mod_FrameInfoForNum(model_t *model, int surfaceidx, int num, char **name, int *numframes, float *duration, qboolean *loop);
+qboolean Mod_FrameInfoForNum(model_t *model, int surfaceidx, int num, char **name, int *numframes, float *duration, qboolean *loop, int *act);
 
 qboolean Mod_DoCRC(model_t *mod, char *buffer, int buffersize);
 

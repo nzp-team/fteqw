@@ -29,10 +29,11 @@ void IN_Shutdown (void);
 void IN_Commands (void);
 // oportunity for devices to stick commands on the script buffer
 
-qboolean IN_MouseDevIsTouch(unsigned int devid);	//check if a mouse devid is a touch screen, and thus if we should check the cursor and simulate a ui event or not
-int IN_TranslateMButtonPress(unsigned int devid);	//allow the touchscreen code to swallow mouse1 as a begin-looking event
+void IN_Touch_BlockGestures(unsigned int devid);	//prevents any gestures from being generated from the same touch event.
+int IN_Touch_Fallback(unsigned int devid);		//decides whether a tap should be attack/jump according to m_touchstrafe
+qboolean IN_Touch_MouseIsAbs(unsigned int devid);
 
-void IN_Move (float *movements, int pnum, float frametime);
+void IN_Move (float *nudgemovements, float *absmovements, int pnum, float frametime);
 // add additional movement on top of the keyboard move cmd
 
 extern cvar_t in_xflip;
@@ -68,6 +69,7 @@ void INS_Rumble(int joy, quint16_t amp_low, quint16_t amp_high, quint32_t durati
 void INS_RumbleTriggers(int joy, quint16_t left, quint16_t right, quint32_t duration);
 void INS_SetLEDColor(int id, vec3_t color);
 void INS_SetTriggerFX(int id, const void *data, size_t size);
+qboolean INS_KeyToLocalName(int qkey, char *buf, size_t bufsize);	//returns a name for the key, according to their keyboard layout AND system language(hopefully), or false on unsupported/error. result may change at any time (eg: tap alt+shift on windows)
 
 #define DEVID_UNSET ~0u
 
@@ -76,7 +78,6 @@ extern cvar_t	cl_nodelta;
 extern cvar_t	cl_c2spps;
 extern cvar_t	cl_c2sImpulseBackup;
 extern cvar_t	cl_netfps;
-extern cvar_t	cl_sparemsec;
 extern cvar_t	cl_queueimpulses;
 extern cvar_t	cl_smartjump;
 extern cvar_t	cl_run;

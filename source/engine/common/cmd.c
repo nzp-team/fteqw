@@ -150,7 +150,23 @@ static void Cmd_MacroList_f (void)
 }
 
 
+static void Cmd_MacroCompletion_c(int argn, const char *partial, struct xcommandargcompletioncb_s *ctx)
+{
+	size_t i, len;
+	const char *end = partial;
+	if (*end++ != '$')
+		return;
+	if (*end == '{')
+		end++;
+	len = strlen(end);
 
+	for (i = 0; i < macro_count; i++)
+	{
+		if (len <= strlen(macro_commands[i].name))
+			if (!strncmp(end, macro_commands[i].name, len))
+				ctx->cb(va("${%s}", macro_commands[i].name), NULL, NULL, ctx);
+	}
+}
 
 
 
@@ -673,7 +689,7 @@ static const char *replacementq1binds =
 	"bind		LSHIFT		+speed\n"
 	"bind		RSHIFT		+speed\n"
 
-	"bind		+			sizeup\n"
+	"bind		=			sizeup\n"
 	"bind		-			sizedown\n"
 
 	"bind		1			impulse 1\n"
@@ -699,6 +715,20 @@ static const char *replacementq1binds =
 	"bind		F10	menu_quit\n"
 //	"bind		F11	+zoom\n"
 	"bind		F12	screenshot\n"
+	;
+static const char *defaulttouchcfg =
+	"showpic_removeall\n"
+//	"sv_aim 0.90\n" //quake style, avoid needing to pitch too much
+	"showpic touch_moveforward.tga	fwd		-128	-112 bm	32	32	+forward	5\n"
+	"showpic touch_moveback.tga		back	-128	-80	bm	32	32	+back		5\n"
+	"showpic touch_moveleft.tga		left	-160	-88	bm	32	32	+moveleft	5\n"
+	"showpic touch_moveright.tga	rght	-96		-88	bm	32	32	+moveright	5\n"
+
+	"showpic touch_attack.tga		fire	-160	-160 bm	32	32	+attack		5\n"
+	"showpic touch_jump.tga			jump	128		-80	bm	32	32	+jump		5\n"
+
+	"showpic touch_weapons.tga		weap	80		-80	bm	32	32	+weaponwheel	5\n"
+	"showpic touch_menu.tga			menu	-32		0	tr	32	32	togglemenu 10\n"
 	;
 #endif
 
@@ -732,7 +762,7 @@ static void Cmd_Exec_f (void)
 			f = fs_manifest->mainconfig;
 		if (!*f)
 			f = "config";
-		snprintf(name, sizeof(name)-5, "configs/%s", f);
+		Q_snprintfz(name, sizeof(name)-5, "configs/%s", f);
 		COM_DefaultExtension(name, ".cfg", sizeof(name));
 	}
 	else
@@ -785,9 +815,9 @@ static void Cmd_Exec_f (void)
 	if (!strncmp(name, "../", 3) || !strncmp(name, "..\\", 3) || !strncmp(name, "./", 2) || !strncmp(name, ".\\", 2))
 	{	//filesystem will correctly block this (and more), but it does look dodgy when servers try doing this dodgy shit anyway.
 		if (Cmd_IsInsecure())
-			Con_TPrintf ("exec: %s is an invalid path (from server)\n", name);
+			Con_TPrintf ("%s: %s is an invalid path (from server)\n", Cmd_Argv(0), name);
 		else
-			Con_TPrintf ("exec: %s is an invalid path\n", name);
+			Con_TPrintf ("%s: %s is an invalid path\n", Cmd_Argv(0), name);
 		return;
 	}
 
@@ -796,7 +826,7 @@ static void Cmd_Exec_f (void)
 		file = FS_OpenReadLocation(name, &loc);
 		if (!file)
 		{
-			Con_TPrintf ("couldn't exec %s. check permissions.\n", name);
+			Con_TPrintf ("couldn't %s %s. check permissions.\n", Cmd_Argv(0), name);
 			return;
 		}
 
@@ -812,6 +842,12 @@ static void Cmd_Exec_f (void)
 	else if (!strcmp(name, "default.cfg"))	//the q1 rerelease lacks a default.cfg (which I suppose is kinda handy, but oh well)
 	{
 		f = Z_StrDup(replacementq1binds);
+		untrusted = false;
+		l = 0;
+	}
+	else if (!strcmp(name, "touch.cfg"))	//auto-execed if they touch a touchscreen.
+	{
+		f = Z_StrDup(defaulttouchcfg);
 		untrusted = false;
 		l = 0;
 	}
@@ -840,6 +876,7 @@ static void Cmd_Exec_f (void)
 
 	if (!strcmp(name, "config.cfg") || !strcmp(name, "q3config.cfg") || !strcmp(name, fs_manifest->mainconfig))
 	{
+		char *restart;
 		//if the config is from id1 and the default.cfg was from some mod, make sure the default.cfg overrides the config.
 		//we won't just exec the default instead, because we can at least retain things which are not specified (ie: a few binds)
 		int cfgdepth = COM_FDepthFile(name, true);
@@ -849,17 +886,12 @@ static void Cmd_Exec_f (void)
 
 		//hack to work around the more insideous hacks of other engines.
 		//namely: vid_restart at the end of config.cfg is evil, and NOT desired in FTE as it generally means any saved video settings are wrong.
-		if (l >= 13 && !strcmp(f+l-13, "\nvid_restart\n"))
-		{
+		restart = strstr(f, "\nvid_restart");
+		if (restart && (restart[12] == '\r' || restart[12]=='\n'))
+		{	//convert it to a comment so we don't get fucked over by bad configs.
+			restart[1] = restart[2] = '/';
 			Con_Printf(CON_WARNING "WARNING: %s came from a different engine\n", loc.rawname);
-			l -= 12;
 		}
-		else if (l >= 14 && !strcmp(f+l-14, "\nvid_restart\r\n"))
-		{
-			Con_Printf(CON_WARNING "WARNING: %s came from a different engine\n", loc.rawname);
-			l -= 13;
-		}
-		f[l] = 0;
 	}
 
 	if (*loc.rawname)
@@ -880,8 +912,26 @@ static void Cmd_Exec_f (void)
 			Cbuf_InsertText (fs_manifest->defaultoverrides, level, false);
 
 #if defined(HAVE_LEGACY) && defined(HAVE_CLIENT)
-		if (l == 1914 && Com_BlockChecksum(f, l) == 0x2d7b72b9)
+		if (l == 1914 && CalcHashInt(&hash_md4, f, l) == 0x2d7b72b9)
 			s = (char*)replacementq1binds;
+#ifdef HEXEN2
+		else if (l == 1875 && CalcHashInt(&hash_md4, f, l) == 0x27b4d813)
+		{	//hexen2 has weird stuff in there. just give it wasd.
+			s = va(
+				"%s\n"
+				"bind w +forward\n"
+				"bind a +moveleft\n"
+				"bind s +back\n"
+				"bind d +moveright\n"
+
+				"bind mouse2 +jump\n"
+				"bind mouse3 +forward\n" //mneh
+
+				"bind x +lookup\n"	//moved to x instead of a
+				"cl_forwardspeed 400\n" //hexen2's autorun state.
+			, s);
+		}
+#endif
 #endif
 	}
 #ifndef QUAKETC
@@ -934,7 +984,7 @@ static void Cmd_Exec_f (void)
 		#ifdef HAVE_CLIENT
 		if (!cl_warncmd.ival && foundone && (!strcmp(name, "quake.rc") || !strcmp(name, "default.cfg") || !strcmp(name, "autoexec.cfg")))
 		{
-#if defined(HAVE_LEGACY) && defined(HAVE_CLIENT)
+#if defined(HAVE_LEGACY)
 			if (!strcmp(name, "default.cfg"))
 			{
 				s = (char*)replacementq1binds;
@@ -943,7 +993,7 @@ static void Cmd_Exec_f (void)
 			else
 #endif
 			{
-				Menu_Prompt(NULL, NULL, va("WARNING: nquake %s file detected. The file has been ignored.", name), NULL, NULL, "Argh");
+				Menu_Prompt(NULL, NULL, va(localtext("WARNING: nquake %s file detected. The file has been ignored."), name), NULL, NULL, "Argh", false);
 				*s = 0;
 				foundone = 0;
 			}
@@ -1006,7 +1056,7 @@ static void Cmd_Echo_f (void)
 	Q_strncatz(text, "\n", sizeof(text));
 
 	//echo text is often quoted, so expand the text again now that we're no longer in quotes.
-	t = Cmd_ExpandString(text, extext, sizeof(extext), &level, !Cmd_IsInsecure()?true:false, true);
+	t = Cmd_ExpandString(text, extext, sizeof(extext), &level, false, !Cmd_IsInsecure()?true:false, true);
 
 #ifndef HAVE_CLIENT
 	Con_Printf ("%s", t);
@@ -1154,9 +1204,8 @@ static void Cmd_Alias_f (void)
 	// check for overlap with a command
 	if (Cmd_Exists (s))
 	{	//commands always take precedence over aliases (so mods can't clobber 'quit' etc), so creating an alias with one of these names is stupid. always try to rename them.
-		if (Cmd_IsInsecure())
+		if (Cmd_IsInsecure() && Q_snprintfz(cmd, sizeof(cmd), "%s_a", s) < sizeof(cmd))
 		{
-			snprintf(cmd, sizeof(cmd), "%s_a", s);
 			if (Cmd_Exists (cmd))
 			{
 				Con_Printf (S_COLOR_RED"Can't register alias, %s is a command\n", s);
@@ -1175,9 +1224,8 @@ static void Cmd_Alias_f (void)
 	{	//aliases take precedence over cvars (while cvars can be set via 'set'), so user's choice.
 		if (Cvar_FindVar (s))
 		{
-			if (Cmd_IsInsecure())
+			if (Cmd_IsInsecure() && Q_snprintfz(cmd, sizeof(cmd), "%s_a", s) < sizeof(cmd))
 			{
-				snprintf(cmd, sizeof(cmd), "%s_a", s);
 				Con_Printf (S_COLOR_RED"alias %s: renamed to %s due to cvar conflict\n", s, cmd);
 				s = cmd;
 			}
@@ -1632,7 +1680,7 @@ static const char *Cmd_ExpandCvar(char *cvarterm, int maxaccesslevel, int *newac
 		quotetype = 2;
 	}
 	else if (fixup-cvarterm > 2 && !strncmp(fixup-2, " !", 2))
-	{	//abort is not defined
+	{	//abort if not defined
 		pl = 2;
 		quotetype = 3;
 	}
@@ -1664,8 +1712,9 @@ static const char *Cmd_ExpandCvar(char *cvarterm, int maxaccesslevel, int *newac
 	else
 		cvarname = cvarterm;
 
-	result = strtoul(cvarname, &t, 10);
-	if ((dpcompat_console.ival||fixval) && (*t == 0 || (*t == '-' && t[1] == 0))) //only expand $0 if its actually ${0} - this avoids conflicting with the $0 macro
+	if (!cvarname)
+		;
+	else if ((result = strtoul(cvarname, &t, 10)), (dpcompat_console.ival||fixval) && (*t == 0 || (*t == '-' && t[1] == 0))) //only expand $0 if its actually ${0} - this avoids conflicting with the $0 macro
 	{
 		if (*t == '-')	//pure number with a trailing minus means
 		{				//args starting after that.
@@ -1735,7 +1784,7 @@ If not SERVERONLY, also expands $macro expressions
 Note: dest must point to a 1024 byte buffer
 ================
 */
-char *Cmd_ExpandString (const char *data, char *dest, int destlen, int *accesslevel, qboolean expandcvars, qboolean expandmacros)
+char *Cmd_ExpandString (const char *data, char *dest, int destlen, int *accesslevel, qboolean expandargs, qboolean expandcvars, qboolean expandmacros)
 {
 	unsigned int	c;
 	char	buf[255];
@@ -1743,7 +1792,7 @@ char *Cmd_ExpandString (const char *data, char *dest, int destlen, int *accessle
 	int		quotes = 0;
 	const char	*str;
 	const char	*bestvar;
-	int		name_length, var_length;
+	int		name_length, var_length, best_length;
 	qboolean striptrailing;
 	int		maxaccesslevel = *accesslevel;
 
@@ -1754,7 +1803,7 @@ char *Cmd_ExpandString (const char *data, char *dest, int destlen, int *accessle
 		if (c == '"')
 			quotes++;
 
-		if (c == '%' && !(quotes&1) && !dpcompat_console.ival)
+		if (c == '%' && !(quotes&1) && !dpcompat_console.ival && expandargs)
 		{	//QW262/ezquake does this. kinda annoying.
 			char *end;
 			if (data[1] == '%')
@@ -1772,7 +1821,7 @@ char *Cmd_ExpandString (const char *data, char *dest, int destlen, int *accessle
 				str = Cmd_Args();
 				data+=2;
 			}
-			else if ((i=strtol(data+1, &end, 10)))
+			else if ((i=strtol(data+1, &end, 10)) || (end!=data+1&&(!*end||*end==' '||*end=='\t')))
 			{
 				data = end;
 				str = Cmd_Argv(i);
@@ -1837,7 +1886,7 @@ char *Cmd_ExpandString (const char *data, char *dest, int destlen, int *accessle
 				buf[0] = 0;
 				buf[1] = 0;
 				bestvar = NULL;
-				var_length = 0;
+				var_length = best_length = 0;
 				while((c = *data))
 				{
 					if (c < ' ' || c == '$')
@@ -1848,15 +1897,15 @@ char *Cmd_ExpandString (const char *data, char *dest, int destlen, int *accessle
 					buf[i++] = c;
 					buf[i] = 0;
 					if ((str = Cmd_ExpandCvar(buf+striptrailing, expandcvars?maxaccesslevel:-999, accesslevel, false, &var_length)))
-						bestvar = str;
+						bestvar = str, best_length=var_length;
 					if (expandmacros && (str = TP_MacroString (buf+striptrailing, accesslevel, &var_length)))
-						bestvar = str;
+						bestvar = str, best_length=var_length;
 				}
 
 				if (bestvar)
 				{
 					str = bestvar;
-					name_length = var_length;
+					name_length = best_length;
 				}
 				else
 				{
@@ -1899,7 +1948,7 @@ char *Cmd_ExpandString (const char *data, char *dest, int destlen, int *accessle
 			if (len >= destlen-1)
 				break;
 		}
-	};
+	}
 
 	dest[len] = 0;
 
@@ -2335,8 +2384,8 @@ static void Cmd_Complete_CheckArg(const char *value, const char *desc, const cha
 	char *p;
 	char quoted[8192];
 
-	if (!desc)	//if no arg desc, use the command's.
-		desc = ctx->desc;
+	if (!desc && ctx->desc)	//if no arg desc, use the command's.
+		desc = localtext(ctx->desc);
 
 	if (strchr(value, ' ') || strchr(value, '\t') || strchr(value, '\"') || strchr(value, '\r') || strchr(value, '\n'))
 	{
@@ -2478,8 +2527,9 @@ cmd_completion_t *Cmd_Complete(const char *partial, qboolean caseinsens)
 
 	cvar_group_t	*grp;
 	cvar_t		*cvar;
-	const char *sp;
+	const char *sp, *e;
 	qboolean quoted = false;
+	int arg = 0;
 
 	static cmd_completion_t c;
 
@@ -2495,30 +2545,37 @@ cmd_completion_t *Cmd_Complete(const char *partial, qboolean caseinsens)
 	c.partial = Z_StrDup(partial);
 	c.caseinsens = caseinsens;
 
-	for (sp = partial; *sp; sp++)
+	len = 0;
+	for(e = partial;;)
 	{
-		if (*sp == ' ' || *sp == '\t')
+		sp = e;	//the start of where we're trying to complete...
+		while (*sp == ' ' || *sp == '\t')
+			sp++;	//leading spaces are annoying...
+		e = COM_Parse(sp);
+		if (!arg && e)
+			len = e - partial;
+		if (e && (*e == ' ' || *e == '\t'))
+		{	//there seems to be whitespace after it.
+			arg++;
+			while (*sp == ' ' || *sp == '\t')
+				sp++;
+			//try to handle quotes
+			if (*sp == '\\' && sp[1] == '\"')
+			{
+				sp+=2;
+				quoted = true;
+			}
+			else if (*sp == '\"')
+			{
+				sp++;
+				quoted = true;
+			}
+			else
+				quoted = false;
+		}
+		else
 			break;
 	}
-	len = sp - partial;
-	if (*sp)
-	{
-		while (*sp == ' ' || *sp == '\t')
-			sp++;
-		//try to handle quotes
-		if (*sp == '\\' && sp[1] == '\"')
-		{
-			sp+=2;
-			quoted = true;
-		}
-		else if (*sp == '\"')
-		{
-			sp++;
-			quoted = true;
-		}
-	}
-	else
-		sp = NULL;
 
 //	if (len)
 	{
@@ -2527,7 +2584,7 @@ cmd_completion_t *Cmd_Complete(const char *partial, qboolean caseinsens)
 			for (cmd=cmd_functions ; cmd ; cmd=cmd->next)
 				if (!Q_strncasecmp (partial,cmd->name, len) && (!partial[len] || strlen(cmd->name) == len))
 				{
-					if (sp && cmd->argcompletion)
+					if (arg)
 					{
 						struct cmdargcompletion_ctx_s ctx;
 						ctx.cb.cb = Cmd_Complete_CheckArg;
@@ -2537,7 +2594,10 @@ cmd_completion_t *Cmd_Complete(const char *partial, qboolean caseinsens)
 						ctx.res = &c;
 						ctx.desc = cmd->description;
 						ctx.quoted = quoted;
-						cmd->argcompletion(1, sp, &ctx.cb);
+
+						Cmd_MacroCompletion_c(arg, sp, &ctx.cb);
+						if (cmd->argcompletion)
+							cmd->argcompletion(arg, sp, &ctx.cb);
 					}
 					else
 						Cmd_Complete_Check(cmd->name, &c, cmd->description);
@@ -2622,10 +2682,16 @@ static void Cmd_List_f (void)
 {
 	cmd_function_t	*cmd;
 	int num=0;
+	const char *search = (Cmd_Argc()>1)?Cmd_Argv(1):NULL;
 	for (cmd=cmd_functions ; cmd ; cmd=cmd->next)
 	{
 		if ((cmd->restriction?cmd->restriction:rcon_level.ival) > Cmd_ExecLevel)
 			continue;
+
+		if (search)
+			if (!wildcmp(search, cmd->name))
+				continue;	//nope, no match
+
 		if (!num)
 			Con_TPrintf("Command list:\n");
 		Con_Printf("(%2i) %s\n", (int)(cmd->restriction?cmd->restriction:rcon_level.ival), cmd->name);
@@ -2724,7 +2790,7 @@ void Cmd_ForwardToServer (void)
 #ifdef Q3CLIENT
 	if (cls.protocol == CP_QUAKE3)
 	{
-		CLQ3_SendClientCommand("%s %s", Cmd_Argv(0), Cmd_Args());
+		q3->cl.SendClientCommand("%s %s", Cmd_Argv(0), Cmd_Args());
 		return;
 	}
 #endif
@@ -2804,6 +2870,84 @@ void Cmd_ForwardToServer (void)
 }
 #endif
 
+
+
+static void	Cmd_FindForExecution (const char *name, int level, cmd_function_t **foundcmd, cmdalias_t **foundalias, cvar_t **foundcvar)
+{
+	//WARNING: PF_checkcommand should match the order.
+	cmd_function_t	*cmd;
+	cmdalias_t		*a;
+
+	*foundcmd = NULL;
+	*foundalias = NULL;
+	*foundcvar = NULL;
+
+	for (cmd=cmd_functions ; cmd ; cmd=cmd->next)
+	{
+		if (!Q_strcasecmp (name, cmd->name))
+		{
+			*foundcmd = cmd;
+			if (!strcmp (name, cmd->name))
+				break;	//don't keep looking for others when we get an exact match.
+		}
+	}
+	cmd = *foundcmd;
+	if (!cmd)
+		;
+	else if (level == RESTRICT_TEAMPLAY)
+	{	//extra weirdness so that teamplay macros can only execute certain known commands
+		static char *tpcmds[] =
+		{
+			"if", "wait",						/*would be nice to include alias in here*/
+			"say", "say_team", "echo",			/*display stuff, because it would be useless otherwise*/
+			"set_tp", "set", "set_calc", "inc",	/*because scripting variables is fun. not.*/
+			"tp_point", "tp_pickup", "tp_took"	/*updates what the $took etc macros are allowed to generate*/
+		};
+		size_t i;
+		for (i = 0; i < countof(tpcmds); i++)
+			if (!strcmp(cmd->name, tpcmds[i]))
+				break;
+		if (i == countof(tpcmds))
+			*foundcmd = NULL;
+		else if (cmd->restriction && cmd->restriction > 0)
+		{
+			//warning, these commands would normally be considered to be run at restrict_local, but they're running at a much lower level
+			//which means that if there's ANY restriction on them then they'll fail.
+			//this means we have to ignore the default restriction levels and just do it anyway.
+			Con_TPrintf("'%s' was restricted.\n", cmd_argv[0]);
+			*foundcmd = NULL;
+		}
+	}
+	else if ((cmd->restriction?cmd->restriction:rcon_level.ival) > level)
+	{
+		Con_TPrintf("cmd '%s' was restricted.\n", name);
+		*foundcmd = NULL;
+	}
+
+// check alias
+	for (a=cmd_alias ; a ; a=a->next)
+	{
+		if (!Q_strcasecmp (cmd_argv[0], a->name))
+		{
+			//teamplay restrictions block any execlevel elevations, so the contents are what matter
+			//(there's no reason to restrict aliases other than for exec level promotion)
+			if (level!=RESTRICT_TEAMPLAY)
+			if ((a->restriction?a->restriction:rcon_level.ival) > level)
+			{
+				Con_TPrintf("alias '%s' was restricted.\n", cmd_argv[0]);
+				return;
+			}
+
+			*foundalias = a;
+			if (!strcmp (name, a->name))
+				break;
+		}
+	}
+
+// check cvars
+	*foundcvar = Cvar_FindVar(name);
+}
+
 /*
 ============
 Cmd_ExecuteString
@@ -2812,255 +2956,164 @@ A complete command line has been parsed, so try to execute it
 FIXME: lookupnoadd the token to speed search?
 ============
 */
-static void	Cmd_ExecuteStringGlobalsAreEvil (const char *text, int level)
+void Cmd_ExecuteString (const char *text, int level)
 {
 	//WARNING: PF_checkcommand should match the order.
 	cmd_function_t	*cmd;
 	cmdalias_t		*a;
+	cvar_t			*var;
+	int olev = Cmd_ExecLevel;
 
 	char dest[65536];
-	Cmd_ExecLevel = level;
 
 	while (*text == ' ' || *text == '\n')
 		text++;
 	if (dpcompat_console.ival && !strncmp(text, "alias", 5) && (text[5] == ' ' || text[5] == '\t'))
 		;	//certain commands don't get pre-expanded in dp. evil hack. quote them to pre-expand anyway. double evil.
 	else
-		text = Cmd_ExpandString(text, dest, sizeof(dest), &level, true/*!Cmd_IsInsecure()?true:false*/, true);
+		text = Cmd_ExpandString(text, dest, sizeof(dest), &level, false, true/*!Cmd_IsInsecure()?true:false*/, true);
 	Cmd_TokenizeString (text, (level == RESTRICT_LOCAL&&!dpcompat_console.ival)?true:false, false);
 
 // execute the command line
 	if (!Cmd_Argc())
 		return;		// no tokens
 
-// check functions
-	for (cmd=cmd_functions ; cmd ; cmd=cmd->next)
+	Cmd_FindForExecution (cmd_argv[0], level, &cmd, &a, &var);
+
+//check (explicit) functions
+	if (cmd && cmd->function)
 	{
-		if (!Q_strcasecmp (cmd_argv[0],cmd->name))
-		{
-			if (strcmp (cmd_argv[0],cmd->name))
-				break;	//yes, I know we found it... (but it's the wrong case, go for an alias or cvar instead FIRST)
-
-			if (!level)
-				break;
-
-			if ((cmd->restriction?cmd->restriction:rcon_level.ival) > level)
-				Con_TPrintf("cmd '%s' was restricted.\n", cmd_argv[0]);
-			else if (!cmd->function)
-			{
-#if defined(VM_CG) && defined(HAVE_CLIENT)
-				if (CG_Command())
-					return;
-#endif
-#if defined(Q3SERVER) && defined(HAVE_SERVER)
-				if (SVQ3_Command())
-					return;
-#endif
-#if defined(VM_UI) && defined(HAVE_CLIENT)
-				if (UI_Command())
-					return;
-#endif
-				if (Cmd_AliasExist(cmd_argv[0], level))
-					break;	//server stuffed an alias for a command that it would already have received. use that instead.
-#if defined(CSQC_DAT) && defined(HAVE_CLIENT)
-				if (CSQC_ConsoleCommand(-1, text))
-					return;	//let the csqc handle it if it wants.
-#endif
-#if defined(MENU_DAT) && defined(HAVE_CLIENT)
-				if (MP_ConsoleCommand(text))
-					return;	//let the csqc handle it if it wants.
-#endif
-#if defined(MENU_NATIVECODE) && defined(HAVE_CLIENT)
-				if (mn_entry && mn_entry->ConsoleCommand(text, cmd_argc, (char const*const*)cmd_argv))
-					return;
-#endif
-				Cmd_ForwardToServer ();
-			}
-			else
-				cmd->function ();
-			return;
-		}
+		Cmd_ExecLevel = level;
+		cmd->function();
+		Cmd_ExecLevel = olev;
+		return;
 	}
 
-// check alias
-	for (a=cmd_alias ; a ; a=a->next)
+	//priority is cmd>alias>cvar
+	//but this means that user aliases can override cvars
+	//which means users can use aliases to block cvar access, aka cheat.
+	//so favour the cvar when its a server command (unless the alias was also created by the server)
+	if (a && (!var || Cmd_ExecLevel<RESTRICT_SERVER || a->flags&ALIAS_FROMSERVER))
 	{
-		if (!Q_strcasecmp (cmd_argv[0], a->name))
-		{
-			int execlevel;
+		int execlevel;
 
 #ifdef HAVE_CLIENT	//an emergency escape mechansim, to avoid infinatly recursing aliases.
-			extern unsigned int con_splitmodifier;
+		extern unsigned int con_splitmodifier;
 
-			if (keydown[K_SHIFT] && (keydown[K_LCTRL]||keydown[K_RCTRL]) && (keydown[K_LALT]||keydown[K_RALT]) && !isDedicated)
-				return;
+		if (keydown[K_SHIFT] && (keydown[K_LCTRL]||keydown[K_RCTRL]) && (keydown[K_LALT]||keydown[K_RALT]) && !isDedicated)
+			return;
 #endif
 
-			if (!level)
-				execlevel = level;
+		Cmd_ExecLevel = level;
+
+		if (level == RESTRICT_TEAMPLAY)
+			execlevel = level;	//teamplay aliases can't let the user's settings promote them out of their restrictions.
+		else
+		{
+			if (a->execlevel)
+				execlevel = a->execlevel;
 			else
-			{
-				if ((a->restriction?a->restriction:rcon_level.ival) > level)
+				execlevel = level;
+		}
+
+		// if the alias value is a command or cvar and
+		// the alias is called with parameters, add them
+		//unless we're mimicing dp, or the alias has explicit expansions (or macros) in which case it can do its own damn args
+		if (dpcompat_console.ival)
+		{	//defective double escaping. the following line should sum it up nicely...
+			//set foo 3; alias test "set foo 2; echo $foo==1"; set foo 1; test
+			char *ignoringquoteswasstupid;
+			Cmd_ExpandString(a->value, dest, sizeof(dest), &execlevel, true, !Cmd_IsInsecure()?true:false, true);
+			for (ignoringquoteswasstupid = dest; *ignoringquoteswasstupid; )
+			{	//double up dollars, to prevent expansion when its actually execed.
+				if (*ignoringquoteswasstupid == '$')
 				{
-					Con_TPrintf("alias '%s' was restricted.\n", cmd_argv[0]);
-					return;
-				}
-				if (a->execlevel)
-					execlevel = a->execlevel;
-				else
-					execlevel = level;
-			}
-
-			Cbuf_InsertText ("\n", execlevel, false);
-
-			// if the alias value is a command or cvar and
-			// the alias is called with parameters, add them
-			//unless we're mimicing dp, or the alias has explicit expansions (or macros) in which case it can do its own damn args
-			{
-				char *ignoringquoteswasstupid;
-				Cmd_ExpandString(a->value, dest, sizeof(dest), &execlevel, !Cmd_IsInsecure()?true:false, true);
-				for (ignoringquoteswasstupid = dest; *ignoringquoteswasstupid; )
-				{	//double up dollars, to prevent expansion when its actually execed.
-					if (*ignoringquoteswasstupid == '$')
-					{
-						memmove(ignoringquoteswasstupid+1, ignoringquoteswasstupid, strlen(ignoringquoteswasstupid)+1);
-						ignoringquoteswasstupid++;
-					}
+					memmove(ignoringquoteswasstupid+1, ignoringquoteswasstupid, strlen(ignoringquoteswasstupid)+1);
 					ignoringquoteswasstupid++;
 				}
-				if ((a->restriction?a->restriction:rcon_level.ival) > execlevel)
-					return;
+				ignoringquoteswasstupid++;
 			}
-			if (!dpcompat_console.ival)
+		}
+		else
+		{	//more sane (and ezquake-like)
+			//set foo 3; alias test "set foo 2; echo $foo==2"; set foo 1; test
+			//alias test "echo Args were $qt${* q}$qt"; set foo 1; test Test Args Here
+			Cmd_ExpandString(a->value, dest, sizeof(dest), &execlevel, true, false, false);	//expand args, but not other stuff.
+		}
+		if ((a->restriction?a->restriction:rcon_level.ival) > execlevel)
+			return;	//we expanded something it wasn't meant to see.
+
+		Cbuf_InsertText ("\n", execlevel, false);
+		if (!dpcompat_console.ival)
+		{
+			if (Cmd_Argc() > 1 && (!strncmp(a->value, "cmd ", 4) || (!strchr(a->value, ' ') && !strchr(a->value, '\t')	&&
+				(Cvar_FindVar(a->value) || (Cmd_Exists(a->value) && a->value[0] != '+' && a->value[0] != '-'))))
+				)
 			{
-				if (Cmd_Argc() > 1 && (!strncmp(a->value, "cmd ", 4) || (!strchr(a->value, ' ') && !strchr(a->value, '\t')	&&
-					(Cvar_FindVar(a->value) || (Cmd_Exists(a->value) && a->value[0] != '+' && a->value[0] != '-'))))
-					)
-				{
-					Cbuf_InsertText (Cmd_Args(), execlevel, false);
-					Cbuf_InsertText (" ", execlevel, false);
-				}
+				Cbuf_InsertText (Cmd_Args(), execlevel, false);
+				Cbuf_InsertText (" ", execlevel, false);
 			}
-			Cbuf_InsertText (dest, execlevel, false);
+		}
+		Cbuf_InsertText (dest, execlevel, false);
 
 #ifdef HAVE_CLIENT
-			if (con_splitmodifier > 0)
-			{	//if the alias was execed via p1/p2 etc, make sure that propagates properly (at least for simple aliases like impulses)
-				//fixme: should probably prefix each line. that may have different issues however.
-				//don't need to care about + etc
-				Cbuf_InsertText (va("p %i ", con_splitmodifier), execlevel, false);
-			}
+		if (con_splitmodifier > 0)
+		{	//if the alias was execed via p1/p2 etc, make sure that propagates properly (at least for simple aliases like impulses)
+			//fixme: should probably prefix each line. that may have different issues however.
+			//don't need to care about + etc
+			Cbuf_InsertText (va("p %i ", con_splitmodifier), execlevel, false);
+		}
 #endif
 
-			Con_DPrintf("Execing alias %s ^3%s:\n^1%s\n^2%s\n", a->name, Cmd_Args(), a->value, dest);
-			return;
-		}
+		Con_DPrintf("Execing alias %s ^3%s:\n^1%s\n^2%s\n", a->name, Cmd_Args(), a->value, dest);
+		Cmd_ExecLevel = olev;
+		return;
 	}
 
 // check cvars
-	if (Cvar_Command (level))
-		return;
-
-	if (!level)
-	{
-		//teamplay macros run at level 0, and are restricted to much fewer commands
-		char *tpcmds[] =
-		{
-			"if", "wait",						/*would be nice to include alias in here*/
-			"say", "say_team", "echo",			/*display stuff, because it would be useless otherwise*/
-			"set_tp", "set", "set_calc", "inc",	/*because scripting variables is fun. not.*/
-			"tp_point", "tp_pickup", "tp_took"	/*updates what the $took etc macros are allowed to generate*/
-		};
-		if (cmd)
-		{
-			for (level = 0; level < countof(tpcmds); level++)
-			{
-				if (!strcmp(cmd_argv[0], tpcmds[level]))
-				{
-					if (cmd->restriction && cmd->restriction > 0)
-					{	//warning, these commands would normally be considered to be run at restrict_local, but they're running at a much lower level
-						//which means that if there's ANY restriction on them then they'll fail.
-						//this means we have to ignore the default restriction levels and just do it anyway.
-						Con_TPrintf("'%s' was restricted.\n", cmd_argv[0]);
-						return;
-					}
-					Cmd_ExecLevel = 0;
-					if (!cmd->function)
-						Cmd_ForwardToServer ();
-					else
-						cmd->function();
-					return;
-				}
-			}
-		}
-		Con_TPrintf("'%s' is not permitted in combination with teamplay macros.\n", cmd_argv[0]);
-		return;
-	}
-
-	if (cmd)	//go for skipped ones
-	{
-		if ((cmd->restriction?cmd->restriction:rcon_level.ival) > level)
-			Con_TPrintf("'%s' was restricted.\n", cmd_argv[0]);
-		else if (!cmd->function)
-			Cmd_ForwardToServer ();
-		else
-			cmd->function ();
-		return;
-	}
-
+	Cmd_ExecLevel = level;
+	if (!cmd && Cvar_Command (var, level))
+		;
 #if defined(CSQC_DAT) && defined(HAVE_CLIENT)
-	if (CSQC_ConsoleCommand(-1, text))
-		return;
+	else if (CSQC_ConsoleCommand(-1, text))
+		;
 #endif
 #if defined(MENU_DAT) && defined(HAVE_CLIENT)
-	if (MP_ConsoleCommand(text))
-		return;	//let the csqc handle it if it wants.
+	else if (MP_ConsoleCommand(text))
+		;	//let the csqc handle it if it wants.
 #endif
 #if defined(MENU_NATIVECODE) && defined(HAVE_CLIENT)
 	if (mn_entry && mn_entry->ConsoleCommand(text, cmd_argc, (char const*const*)cmd_argv))
-		return;
-#endif
-
-#ifdef PLUGINS
-	if (Plugin_ExecuteString())
-		return;
+		;
 #endif
 
 #ifdef HAVE_SERVER
-	if (sv.state)
-	{
-		if (PR_ConsoleCmd(text))
-			return;
-	}
+	else if (sv.state && PR_ConsoleCmd(text))
+		;
 #endif
 
 #if defined(VM_CG) && defined(HAVE_CLIENT)
-	if (CG_Command())
-		return;
+	else if (q3 && q3->cg.ConsoleCommand())
+		;
 #endif
 #if defined(Q3SERVER) && defined(HAVE_SERVER)
-	if (SVQ3_Command())
-		return;
+	else if (q3 && q3->sv.ConsoleCommand())
+		;
 #endif
 #if defined(VM_UI) && defined(HAVE_CLIENT)
-	if (UI_Command())
-		return;
+	else if (q3 && q3->ui.ConsoleCommand())
+		;
 #endif
+	else if (cmd
 #if defined(Q2CLIENT) && defined(HAVE_CLIENT)
-	if (cls.protocol == CP_QUAKE2 || cls.protocol == CP_QUAKE3)
+		|| (cls.state!=ca_disconnected && (cls.protocol == CP_QUAKE2 || cls.protocol == CP_QUAKE3))
+#endif
+		)
 	{	//q2 servers convert unknown commands to text.
 		Cmd_ForwardToServer();
-		return;
 	}
-#endif
-	if ((cl_warncmd.value && level <= RESTRICT_LOCAL) || developer.value)
+	else if ((cl_warncmd.value && level <= RESTRICT_LOCAL) || developer.value)
 		Con_TPrintf ("Unknown command \"%s\"\n", Cmd_Argv(0));
-}
-void	Cmd_ExecuteString (const char *text, int level)
-{	//inserted a small wrapper due to all the returns in the original function.
-	//a number of things check for seats if nothing else, and security says is safer to do this than to be in doubt.
-	int olev = Cmd_ExecLevel;
-	Cmd_ExecuteStringGlobalsAreEvil(text, level);
 	Cmd_ExecLevel = olev;
 }
 
@@ -3794,16 +3847,21 @@ static void Cmd_set_f(void)
 	char name[256];
 	const char *desc = NULL;
 
-	if (Cmd_Argc()<3)
-	{
-		Con_TPrintf("%s %s <equation>\n", Cmd_Argv(0), *Cmd_Argv(1)?Cmd_Argv(1):"<var>");
-		return;
-	}
-
 	if (!strcmp(Cmd_Argv(0), "set_calc") || !strcmp(Cmd_Argv(0), "seta_calc"))
 		docalc = true;
 	else
 		docalc = false;
+
+	if (Cmd_Argc()<3)
+	{
+		if (docalc)
+			Con_TPrintf("%s %s <equation>\n", Cmd_Argv(0), *Cmd_Argv(1)?Cmd_Argv(1):"<var>");
+		else if (!strcmp(Cmd_Argv(0), "setfl"))
+			Con_TPrintf("%s %s <value> <a|u|s>\n", Cmd_Argv(0), *Cmd_Argv(1)?Cmd_Argv(1):"<var>");
+		else
+			Con_TPrintf("%s %s <value>\n", Cmd_Argv(0), *Cmd_Argv(1)?Cmd_Argv(1):"<var>");
+		return;
+	}
 
 	if (!strncmp(Cmd_Argv(0), "seta", 4) && !Cmd_FromGamecode())
 		forceflags |= CVAR_ARCHIVE;
@@ -3906,7 +3964,7 @@ static void Cmd_set_f(void)
 		forceflags |= 0;
 	}
 
-	var = Cvar_Get2 (name, text, CVAR_TEAMPLAYTAINT, desc, "Custom variables");
+	var = Cvar_Get2 (name, text, CVAR_TEAMPLAYTAINT|forceflags, desc, "Custom variables");
 
 	mark = If_Token_GetMark();
 
@@ -4082,6 +4140,11 @@ static void Cmd_WriteConfig_f(void)
 	char sysname[MAX_OSPATH];
 	qboolean all = true;
 
+	//special variation that only saves if an archived cvar was actually modified.
+	if (!Q_strcasecmp(Cmd_Argv(0), "cfg_save_ifmodified"))
+		if (!Cvar_UnsavedArchive())
+			return;
+
 	filename = Cmd_Argv(1);
 	if (!*filename)
 	{
@@ -4098,7 +4161,7 @@ static void Cmd_WriteConfig_f(void)
 	else if (!Q_strcasecmp(Cmd_Argv(0), "saveconfig"))
 	{
 		//dpcompat: this variation allows writing to any path. at least force the extension.
-		snprintf(fname, sizeof(fname), "%s", filename);
+		Q_snprintfz(fname, sizeof(fname), "%s", filename);
 		COM_RequireExtension(fname, ".cfg", sizeof(fname));
 
 		if (Cmd_IsInsecure() && strncmp(fname, "data/", 5))
@@ -4126,7 +4189,7 @@ static void Cmd_WriteConfig_f(void)
 			Con_Printf (CON_ERROR "Couldn't write config %s\n",filename);
 			return;
 		}
-		snprintf(fname, sizeof(fname), "configs/%s", filename);
+		Q_snprintfz(fname, sizeof(fname), "configs/%s", filename);
 		COM_DefaultExtension(fname, ".cfg", sizeof(fname));
 
 		FS_NativePath(fname, FS_BASEGAMEONLY, sysname, sizeof(sysname));
@@ -4368,6 +4431,7 @@ void Cmd_Init (void)
 // register our commands
 //
 	Cmd_AddCommandAD ("cfg_save",Cmd_WriteConfig_f, Cmd_Exec_c, NULL);
+	Cmd_AddCommandAD ("cfg_save_ifmodified",Cmd_WriteConfig_f, Cmd_Exec_c, NULL);
 	Cmd_AddCommandAD ("saveconfig",Cmd_WriteConfig_f, Cmd_Exec_c, NULL);	//for dpcompat
 
 	Cmd_AddCommandAD ("cfg_load",Cmd_Exec_f, Cmd_Exec_c, NULL);
@@ -4400,7 +4464,7 @@ void Cmd_Init (void)
 	Cmd_AddCommandAD ("seta_calc", Cmd_set_f, Cmd_Set_c, "Sets the named cvar to the result of a (complex) expression. Also forces the archive flag so that the cvar will always be written into any saved configs.");
 	Cmd_AddCommandD ("vstr", Cmd_Vstr_f, "Executes the string value of the cvar, much like if it were an alias. For compatibility with q3.");
 	Cmd_AddCommandAD ("inc", Cvar_Inc_f, Cmd_Set_c, "Adds a value to the named cvar. Use a negative value if you wish to decrease the cvar's value.");
-	Cmd_AddCommand ("if", Cmd_if_f);
+	Cmd_AddCommandD ("if", Cmd_if_f, "For conditionally executing console commands.");
 
 	Cmd_AddCommand ("cmdlist", Cmd_List_f);
 	Cmd_AddCommand ("aliaslist", Cmd_AliasList_f);

@@ -68,13 +68,13 @@ void M_Menu_MultiPlayer_f (void)
 
 		mgt=32;
 		menu->selecteditem = (menuoption_t*)
-		MC_AddConsoleCommandQBigFont	(menu, 72, mgt,	"Server List ",	"menu_slist\n");mgt+=20;
+		MC_AddConsoleCommandQBigFont	(menu, 72, mgt,	localtext("Server List "),	"menu_slist\n");mgt+=20;
 #ifdef HAVE_PACKET
-		MC_AddConsoleCommandQBigFont	(menu, 72, mgt,	"Quick Connect", "quickconnect qw\n");mgt+=20;
+		MC_AddConsoleCommandQBigFont	(menu, 72, mgt,	localtext("Quick Connect"), "quickconnect qw\n");mgt+=20;
 #endif
-		MC_AddConsoleCommandQBigFont	(menu, 72, mgt,	"New Server  ",	"menu_newmulti\n");mgt+=20;
-		MC_AddConsoleCommandQBigFont	(menu, 72, mgt,	"Player Setup",	"menu_setup\n");mgt+=20;
-		MC_AddConsoleCommandQBigFont	(menu, 72, mgt,	"Demos       ",	"menu_demo\n");mgt+=20;
+		MC_AddConsoleCommandQBigFont	(menu, 72, mgt,	localtext("New Server  "),	"menu_newmulti\n");mgt+=20;
+		MC_AddConsoleCommandQBigFont	(menu, 72, mgt,	localtext("Player Setup"),	"menu_setup\n");mgt+=20;
+		MC_AddConsoleCommandQBigFont	(menu, 72, mgt,	localtext("Demos       "),	"menu_demo\n");mgt+=20;
 
 		menu->cursoritem = (menuoption_t*)MC_AddCursor(menu, &resel, 54, 32);
 		return;
@@ -106,13 +106,13 @@ void M_Menu_MultiPlayer_f (void)
 		b->common.width = width;
 
 		b = MC_AddConsoleCommand(menu, 72, 320, 92, "", "menu_demo\n");
-		MC_AddWhiteText(menu, 72, 0, 92+20/2-6, "^aDemos", false);
+		MC_AddWhiteText(menu, 72, 0, 92+20/2-6, localtext("^aDemos"), false);
 		b->common.height = 20;
 		b->common.width = width;
 
 #ifdef HAVE_PACKET
 		b = MC_AddConsoleCommand(menu, 72, 320, 112, "", "quickconnect qw\n");
-		MC_AddWhiteText(menu, 72, 0, 112+20/2-6, "^aQuick Connect", false);
+		MC_AddWhiteText(menu, 72, 0, 112+20/2-6, localtext("^aQuick Connect"), false);
 		b->common.height = 20;
 		b->common.width = width;
 #endif
@@ -234,7 +234,7 @@ qboolean SetupMenuColour (union menuoption_s *option,struct emenu_s *menu, int k
 	//but we give the top free reign.
 	//unless they hold shift, in which case it switches around
 	//this allows for whatever you want
-	if (key == K_ENTER || key == K_KP_ENTER || key == K_GP_START || key == K_RIGHTARROW || key == K_KP_RIGHTARROW || key == K_MOUSE1 || key == K_GP_DPAD_RIGHT)
+	if (key == K_ENTER || key == K_KP_ENTER || key == K_GP_DIAMOND_CONFIRM || key == K_RIGHTARROW || key == K_KP_RIGHTARROW || key == K_MOUSE1 || key == K_TOUCHTAP || key == K_GP_DPAD_RIGHT)
 	{
 		if ((keydown[K_LSHIFT] || keydown[K_RSHIFT]) ^ (ptr == &info->topcolour))
 		{
@@ -321,13 +321,13 @@ qboolean MSetupQ2_ChangeSkin (struct menucustom_s *option,struct emenu_s *menu, 
 	setupmenu_t *info = menu->data;
 	q2skinsearch_t *s = Z_Malloc(sizeof(*s));
 	COM_EnumerateFiles(va("players/%s/*_i.*", info->modeledit->values[info->modeledit->selectedoption]), q2skin_enumerate, s);
-	if (key == K_ENTER || key == K_KP_ENTER || key == K_GP_START || key == K_RIGHTARROW || key == K_KP_RIGHTARROW || key == K_GP_DPAD_RIGHT)
+	if (key == K_ENTER || key == K_KP_ENTER || key == K_RIGHTARROW || key == K_KP_RIGHTARROW || key == K_GP_DPAD_RIGHT || key == K_GP_DIAMOND_CONFIRM)
 	{
 		s->match ++;
 		if (s->match>=s->entries)
 			s->match=0;
 	}
-	else if (key == K_LEFTARROW || key == K_KP_LEFTARROW || key == K_GP_DPAD_LEFT)
+	else if (key == K_LEFTARROW || key == K_KP_LEFTARROW || key == K_GP_DPAD_LEFT || key == K_GP_DIAMOND_ALTCONFIRM)
 	{
 		s->match --;
 		if (s->match<=0)
@@ -439,6 +439,7 @@ void M_Menu_Setup_f (void)
 	menucustom_t *ci;
 	menubutton_t *b;
 	static menuresel_t resel;
+	int y;
 
 #ifdef Q2CLIENT
 	if (M_GameType() == MGT_QUAKE2)	//quake2 main menu.
@@ -462,14 +463,14 @@ void M_Menu_Setup_f (void)
 		MC_AddCenterPicture(menu, 4, 24, "pics/m_banner_player_setup");
 
 		menu->selecteditem = (menuoption_t*)
-		(info->nameedit = MC_AddEdit(menu, 64, 160, 40, "Your name", name.string));
-		(info->modeledit = MC_AddCvarCombo(menu, 64, 160,72, "model", &skin, (const char **)modeloptions, (const char **)modeloptions));
+		(info->nameedit = MC_AddEdit(menu, 64, 160, 40, localtext("Your name"), name.string));
+		(info->modeledit = MC_AddCvarCombo(menu, 64, 160,72, localtext("model"), &skin, (const char **)modeloptions, (const char **)modeloptions));
 		info->modeledit->selectedoption = !strncmp(skin.string, "female", 6);
 		cu = MC_AddCustom(menu, 64, 88+16, NULL, 0, NULL);
 		cu->draw = MSetupQ2_TransDraw;
 		cu->key = MSetupQ2_ChangeSkin;
 
-		menu->cursoritem = (menuoption_t*)MC_AddCursorSmall(menu, &resel, 54, 32);
+		menu->cursoritem = (menuoption_t*)MC_AddCursorSmall(menu, &resel, 54);
 		return;
 	}
 #endif
@@ -480,9 +481,10 @@ void M_Menu_Setup_f (void)
 
 //	MC_AddPicture(menu, 72, 32, Draw_CachePic ("gfx/mp_menu.lmp") );
 
+	y = 40;
 	menu->selecteditem = (menuoption_t*)
-	(info->nameedit = MC_AddEdit(menu, 64, 160, 40, "Your name", name.string));
-	(info->teamedit = MC_AddEdit(menu, 64, 160, 56, "Your team", team.string));
+	(info->nameedit = MC_AddEdit(menu, 64, 160, y, localtext("Your name"), name.string)); y+= info->nameedit->common.height;
+	(info->teamedit = MC_AddEdit(menu, 64, 160, y, localtext("Your team"), team.string)); y+= info->teamedit->common.height;
 #ifdef HEXEN2
 	info->ticlass = -1;
 	if (M_GameType() == MGT_HEXEN2)
@@ -497,7 +499,11 @@ void M_Menu_Setup_f (void)
 			NULL
 		};
 		cvar_t *pc = Cvar_Get("cl_playerclass", "1", CVAR_USERINFO|CVAR_ARCHIVE, "Hexen2");
-		(info->classedit = MC_AddCombo(menu, 64, 160, 72, "Your class", (const char **)classnames, pc->ival-1));
+		(info->classedit = MC_AddCombo(menu, 64, 160, y, localtext("Your class"), (const char **)classnames, pc->ival-1)); y+= info->classedit->common.height;
+
+		//trim options if the artwork is missing.
+		while (info->classedit->numoptions && !COM_FCheckExists(va("gfx/menu/netp%i.lmp", info->classedit->numoptions)))
+			info->classedit->numoptions--;
 	}
 	else
 #endif
@@ -505,21 +511,25 @@ void M_Menu_Setup_f (void)
 		MC_AddPicture(menu, 16, 4, 32, 144, "gfx/qplaque.lmp");
 		MC_AddCenterPicture(menu, 4, 24, "gfx/p_multi.lmp");
 
-		(info->skinedit = MC_AddEdit(menu, 64, 160, 72, "Your skin", skin.string));
+		(info->skinedit = MC_AddEdit(menu, 64, 160, y, localtext("Your skin"), skin.string)); y+= info->skinedit->common.height;
 	}
 
-	ci = MC_AddCustom(menu, 172+32, 88, NULL, 0, NULL);
+	ci = MC_AddCustom(menu, 172+32, y, NULL, 0, NULL);
 	ci->draw = MSetup_TransDraw;
 	ci->key = NULL;
 
-	MC_AddCommand(menu, 64, 160, 96, "Top colour", SetupMenuColour);
-	MC_AddCommand(menu, 64, 160, 120, "Lower colour", SetupMenuColour);
+	MC_AddCommand(menu, 64, 160, y+8, localtext("Top colour"), SetupMenuColour);
+	MC_AddCommand(menu, 64, 160, y+32, localtext("Lower colour"), SetupMenuColour);
+	y+= 16;
+	y+=4;
 
-	b = MC_AddConsoleCommand(menu, 64, 204, 168, "Network Settings", "menu_network\n");
-	b->common.tooltip = "Change network and client prediction settings.";
-	b = MC_AddConsoleCommand(menu, 64, 204, 176, "Teamplay Settings", "menu_teamplay\n");
-	b->common.tooltip = "Change teamplay macro settings.";
-	menu->cursoritem = (menuoption_t*)MC_AddCursorSmall(menu, &resel, 54, 32);
+	b = MC_AddConsoleCommand(menu, 64, 204, 168, localtext("Network Settings"), "menu_network\n");
+	b->common.tooltip = localtext("Change network and client prediction settings.");
+	y += b->common.height;
+	b = MC_AddConsoleCommand(menu, 64, 204, 176, localtext("Teamplay Settings"), "menu_teamplay\n");
+	b->common.tooltip = localtext("Change teamplay macro settings.");
+	y += b->common.height;
+	menu->cursoritem = (menuoption_t*)MC_AddCursorSmall(menu, &resel, 54);
 
 
 	info->lowercolour = bottomcolor.value;
@@ -546,7 +556,7 @@ typedef struct {
 	menucombo_t *skill;
 	menucombo_t *timelimit;
 	menucombo_t *fraglimit;
-	menuedit_t *mapnameedit;
+	menucombo_t *mapname;
 	menucheck_t *rundedicated;
 
 	int topcolour;
@@ -569,7 +579,8 @@ static const char *numplayeroptions[] = {
 qboolean MultiBeginGame (union menuoption_s *option,struct emenu_s *menu, int key)
 {
 	newmultimenu_t *info = menu->data;
-	if (key != K_ENTER && key != K_KP_ENTER && key != K_GP_START && key != K_MOUSE1)
+	char quoted[1024];
+	if (key != K_ENTER && key != K_KP_ENTER && key != K_GP_DIAMOND_CONFIRM && key != K_MOUSE1 && key != K_TOUCHTAP)
 		return false;
 
 	if (cls.state)
@@ -579,7 +590,7 @@ qboolean MultiBeginGame (union menuoption_s *option,struct emenu_s *menu, int ke
 	Cbuf_AddText(va("maxclients \"%s\"\n", numplayeroptions[info->numplayers->selectedoption]), RESTRICT_LOCAL);
 	if (info->rundedicated->value)
 		Cbuf_AddText("setrenderer dedicated\n", RESTRICT_LOCAL);
-	Cbuf_AddText(va("hostname \"%s\"\n", info->hostnameedit->text), RESTRICT_LOCAL);
+	Cbuf_AddText(va("hostname %s\n", COM_QuotedString(info->hostnameedit->text, quoted, sizeof(quoted), false)), RESTRICT_LOCAL);
 	Cbuf_AddText(va("deathmatch %i\n", info->deathmatch->selectedoption), RESTRICT_LOCAL);
 	if (!info->deathmatch->selectedoption)
 		Cbuf_AddText("coop 1\n", RESTRICT_LOCAL);
@@ -589,8 +600,32 @@ qboolean MultiBeginGame (union menuoption_s *option,struct emenu_s *menu, int ke
 	Cbuf_AddText(va("skill %i\n", info->skill->selectedoption), RESTRICT_LOCAL);
 	Cbuf_AddText(va("timelimit %i\n", info->timelimit->selectedoption*5), RESTRICT_LOCAL);
 	Cbuf_AddText(va("fraglimit %i\n", info->fraglimit->selectedoption*10), RESTRICT_LOCAL);
-	Cbuf_AddText(va("sv_public %i\n", info->publicgame->selectedoption-1), RESTRICT_LOCAL);
-	Cbuf_AddText(va("map \"%s\"\n", info->mapnameedit->text), RESTRICT_LOCAL);
+
+	if (info->publicgame->selectedoption-1 == 2)
+	{
+		const char *hostname = info->hostnameedit->text;
+		const char *shn;
+		for (shn = hostname; *shn; shn++)
+		{
+			if (*shn >= 'a' && *shn <= 'z')
+				continue;
+			if (*shn >= 'A' && *shn <= 'Z')
+				continue;
+			if (*shn >= '0' && *shn <= '9')
+				continue;
+			if (*shn == '-' || *shn <= '_')
+				continue;
+			break;
+		}
+		if (*shn || !*hostname || !strcasecmp(hostname, "player") || !strcasecmp(hostname, "unnamed"))	//not simple enough...
+			Cbuf_AddText(va("sv_public \"/\"\n"), RESTRICT_LOCAL);
+		else
+			Cbuf_AddText(va("sv_public \"/%s\"\n", info->hostnameedit->text), RESTRICT_LOCAL);
+	}
+	else
+		Cbuf_AddText(va("sv_public %i\n", info->publicgame->selectedoption-1), RESTRICT_LOCAL);
+
+	Cbuf_AddText(va("map \"%s\"\n", info->mapname->options[info->mapname->selectedoption]), RESTRICT_LOCAL);
 
 	if (info->rundedicated->value)
 	{
@@ -601,6 +636,41 @@ qboolean MultiBeginGame (union menuoption_s *option,struct emenu_s *menu, int ke
 
 	return true;
 }
+
+struct mapopts_s
+{
+	size_t max, count;
+	const char **maps;
+};
+static int QDECL M_Menu_GameOptions_AddMap(const char *fname, qofs_t fsize, time_t mtime, void *parm, searchpathfuncs_t *spath)
+{
+	struct mapopts_s *ctx = parm;
+	size_t i;
+	char *ext;
+	char trimmedfname[MAX_QPATH];
+	if (Q_strncasecmp(fname, "maps/", 5))
+		return true; //o.O
+	fname += 5;
+	if (fname[0] == 'b' && fname[1] == '_')
+		return true;	//stoopid ammo boxes.
+	ext = strrchr(fname, '.');
+	if (ext && !strcmp(ext, ".bsp") && ext-fname<sizeof(trimmedfname))
+	{
+		memcpy(trimmedfname, fname, ext-fname);
+		trimmedfname[ext-fname] = 0;
+		fname = trimmedfname;
+	}
+
+	for (i = 0; i < ctx->count; i++)
+		if (!Q_strcasecmp(ctx->maps[i], fname))
+			return true; //don't do dupes.
+	if (ctx->count+1 >= ctx->max)
+		Z_ReallocElements((void**)&ctx->maps, &ctx->max, ctx->count + 64, sizeof(char*));
+	ctx->maps[ctx->count++] = Z_StrDup(fname);
+	return true;
+}
+
+
 void M_Menu_GameOptions_f (void)
 {
 	static const char *deathmatchoptions[] = {
@@ -617,6 +687,16 @@ void M_Menu_GameOptions_f (void)
 		"no self+team fire",	//don't hurt same-team (with bugs in coop)
 		"friendly fire",	//scoreboard shows teams, gamecode doesn't care
 		"no team fire (qw-only)",	//like 1, except you still hurt yourself.
+		NULL
+	};
+	static const char *teamplayoptions_rogue[] = {
+		"off",				//no teams at all
+		"no self+team fire",	//don't hurt same-team (with bugs in coop)
+		"friendly fire",	//scoreboard shows teams, gamecode doesn't care
+		"tag",
+		"Capture The Flag",
+		"One Flag CTF",
+		"Three Team CTF",
 		NULL
 	};
 	static const char *skilloptions[] = {
@@ -657,7 +737,7 @@ void M_Menu_GameOptions_f (void)
 		NULL
 	};
 	static const char *publicoptions[] = {
-		"Disabled",
+		"Splitscreen Only",
 		"Private/LAN",
 		"Public (Manual)",
 		"Public (Holepunch)",
@@ -669,6 +749,7 @@ void M_Menu_GameOptions_f (void)
 	int y = 40;
 	int mgt;
 	int players;
+	struct mapopts_s mapopts = {0};
 
 	menu = M_CreateMenu(sizeof(newmultimenu_t));
 	info = menu->data;
@@ -692,11 +773,24 @@ void M_Menu_GameOptions_f (void)
 //	MC_AddPicture(menu, 72, 32, ("gfx/mp_menu.lmp") );
 
 	menu->selecteditem = (menuoption_t*)
-	MC_AddCommand						(menu, 64, 160, y,	"Start game", MultiBeginGame);y+=16;
+	MC_AddCommand						(menu, 64, 160, y,	localtext("Start game"), MultiBeginGame);y+=16;
 
 	y+=4;
-	info->hostnameedit	= MC_AddEdit	(menu, 64, 160, y,			"Hostname", name.string);y+=16;
-	info->publicgame	= MC_AddCombo	(menu, 64, 160, y,			"Public", publicoptions, bound(0, sv_public.ival+1, 4));y+=8;
+	info->hostnameedit	= MC_AddEdit	(menu, 64, 160, y,			localtext("Hostname"), name.string);y+=info->hostnameedit->common.height;
+	info->publicgame	= MC_AddCombo	(menu, 64, 160, y,			localtext("Public"), publicoptions, bound(0, sv_public.ival+1, 4));y+=8;
+#if !defined(FTE_TARGET_WEB) && defined(HAVE_DTLS)
+	{
+		static const char *encoptions[] =
+		{
+			"Disabled",
+			"Accept",
+			"Request",
+			"Require",
+			NULL
+		};
+		MC_AddCvarCombo (menu, 64, 160, y,		localtext("DTLS Encryption"), &net_enable_dtls, encoptions, NULL);y+=8;
+	}
+#endif
 	y+=4;
 
 	for (players = 0; players < sizeof(numplayeroptions)/ sizeof(numplayeroptions[0]); players++)
@@ -705,20 +799,40 @@ void M_Menu_GameOptions_f (void)
 			break;
 	}
 
-	info->numplayers	= MC_AddCombo	(menu, 64, 160, y,			"Max players", (const char **)numplayeroptions,	players);y+=8;
+	info->numplayers	= MC_AddCombo	(menu, 64, 160, y,			localtext("Max players"), (const char **)numplayeroptions,	players);y+=8;
 
-	info->deathmatch	= MC_AddCombo	(menu, 64, 160, y,			"Deathmatch", (const char **)deathmatchoptions,	deathmatch.value);y+=8;
-	info->teamplay		= MC_AddCombo	(menu, 64, 160, y,			"Teamplay", (const char **)teamplayoptions,		teamplay.value);y+=8;
-	info->skill			= MC_AddCombo	(menu, 64, 160, y,			"Skill", (const char **)skilloptions,			skill.value);y+=8;
-	info->rundedicated	= MC_AddCheckBox(menu, 64, 160, y,			"dedicated", NULL, 0);y+=8;
+	info->deathmatch	= MC_AddCombo	(menu, 64, 160, y,			localtext("Deathmatch"), (const char **)deathmatchoptions,	deathmatch.value);y+=8;
+	info->teamplay		= MC_AddCombo	(menu, 64, 160, y,			localtext("Teamplay"), (!strcasecmp(FS_GetGamedir(true), "rogue")?(const char **)teamplayoptions_rogue:(const char **)teamplayoptions),		teamplay.value);y+=8;
+	info->skill			= MC_AddCombo	(menu, 64, 160, y,			localtext("Skill"), (const char **)skilloptions,			skill.value);y+=8;
+	info->rundedicated	= MC_AddCheckBox(menu, 64, 160, y,			localtext("dedicated"), NULL, 0);y+=8;
 	y+=8;
-	info->timelimit		= MC_AddCombo	(menu, 64, 160, y,			"Time Limit", (const char **)timelimitoptions,		timelimit.value/5);y+=8;
-	info->fraglimit		= MC_AddCombo	(menu, 64, 160, y,			"Frag Limit", (const char **)fraglimitoptions,		fraglimit.value/10);y+=8;
+	info->timelimit		= MC_AddCombo	(menu, 64, 160, y,			localtext("Time Limit"), (const char **)timelimitoptions,		timelimit.value/5);y+=8;
+	info->fraglimit		= MC_AddCombo	(menu, 64, 160, y,			localtext("Frag Limit"), (const char **)fraglimitoptions,		fraglimit.value/10);y+=8;
 	y+=8;
-	if (mgt == MGT_QUAKE2)
-		info->mapnameedit	= MC_AddEdit	(menu, 64, 160, y,			"map", "base1");
-	else
-		info->mapnameedit	= MC_AddEdit	(menu, 64, 160, y,			"map", "start");
+
+	//populate it with an appropriate default. its a shame it won't change with the deathmatch/coop options
+	switch(mgt)
+	{
+	case MGT_QUAKE2:
+		M_Menu_GameOptions_AddMap("maps/base1.bsp", 0, 0, &mapopts, NULL);
+		break;
+	case MGT_HEXEN2:
+		M_Menu_GameOptions_AddMap("maps/demo1.bsp", 0, 0, &mapopts, NULL);
+		break;
+	case MGT_QUAKE1:
+		M_Menu_GameOptions_AddMap("maps/start.bsp", 0, 0, &mapopts, NULL);
+		break;
+	default:
+		break;
+	}
+	COM_EnumerateFiles("maps/*.bsp",	M_Menu_GameOptions_AddMap, &mapopts);
+	COM_EnumerateFiles("maps/*.bsp.gz",	M_Menu_GameOptions_AddMap, &mapopts);
+	COM_EnumerateFiles("maps/*.bsp.xz",	M_Menu_GameOptions_AddMap, &mapopts);
+	COM_EnumerateFiles("maps/*.map",	M_Menu_GameOptions_AddMap, &mapopts);
+	COM_EnumerateFiles("maps/*.map.gz",	M_Menu_GameOptions_AddMap, &mapopts);
+	COM_EnumerateFiles("maps/*.cm",		M_Menu_GameOptions_AddMap, &mapopts);
+	COM_EnumerateFiles("maps/*.hmp",	M_Menu_GameOptions_AddMap, &mapopts);
+	info->mapname		= MC_AddCombo	(menu, 64, 160, y,			localtext("Map"), (const char **)mapopts.maps,		0);y+=8;
 	y += 16;
 
 	menu->cursoritem = (menuoption_t*)MC_AddWhiteText(menu, 54, 0, menu->selecteditem->common.posy, NULL, false);
@@ -1027,6 +1141,15 @@ void M_Menu_Network_f (void)
 		"Smooth Demos Only",
 		NULL
 	};
+#ifdef HAVE_DTLS
+	static const char *dtlsopts[] = {
+		"Disabled",
+		"Accept",
+		"Request",
+		"Require",
+		NULL
+	};
+#endif
 	static const char *smoothingvalues[] = {"0", "1", "2", NULL};
 	extern cvar_t cl_download_csprogs, cl_download_redirection, requiredownloads, cl_solid_players;
 	extern cvar_t cl_predict_players, cl_lerp_smooth, cl_predict_extrapolate;
@@ -1039,8 +1162,11 @@ void M_Menu_Network_f (void)
 		MB_EDITCVARSLIM("Network FPS", "cl_netfps", "Sets ammount of FPS used to communicate with server (sent and received)"),
 		MB_EDITCVARSLIM("Rate", "rate", "Maximum bytes per second that the server should send to the client"),
 		MB_EDITCVARSLIM("Download Rate", "drate", "Maximum bytes per second that the server should send maps and demos to the client"),
+#ifdef HAVE_DTLS
+		MB_COMBOCVAR("DTLS Encryption", net_enable_dtls, dtlsopts, NULL, "Use this to avoid snooping. Certificates will be pinned."),
+#endif
 		MB_SPACING(4),
-		MB_CHECKBOXCVARTIP("Require Download", requiredownloads, 0, "Ignore downloaded content sent to the client and connect immediately"),
+		MB_CHECKBOXCVARTIP("Wait for Downloads", requiredownloads, 0, "Ignore downloaded content sent to the client and connect immediately"),
 		MB_CHECKBOXCVARTIP("Redirect Download", cl_download_redirection, 0, "Whether the client will ignore download redirection from servers"),
 		MB_CHECKBOXCVARTIP("Download CSQC", cl_download_csprogs, 0, "Whether to allow the client to download CSQC (client-side QuakeC) progs from servers"),
 		MB_SPACING(4),

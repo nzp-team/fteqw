@@ -23,7 +23,7 @@ This file came to FTE via EzQuake.
 typedef struct
 {
     unsigned int state[5];
-    size_t count[2];
+    unsigned int count[2];
     unsigned char buffer[64];
 } SHA1_CTX;
 #define SHA1_DIGEST_SIZE 20
@@ -194,7 +194,7 @@ unsigned int hashfunc_terminate_uint(const hashfunc_t *func, void *context)
 		r ^= digest[l]<<((l%sizeof(r))*8);
 	return r;
 }
-unsigned int CalcHashInt(const hashfunc_t *func, const unsigned char *data, size_t datasize)
+unsigned int CalcHashInt(const hashfunc_t *func, const void *data, size_t datasize)
 {
 	void *ctx = alloca(func->contextsize);
 	func->init(ctx);

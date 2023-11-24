@@ -90,7 +90,11 @@ void VidMode_Clear(void)
 }
 void VidMode_Add(int w, int h)
 {
+	extern cvar_t vid_minsize;
 	size_t m;
+
+	if (w < vid_minsize.vec4[0] || h < vid_minsize.vec4[1])
+		return;	//would be too small. ignore it.
 	for (m = 0; m < nummodes; m++)
 	{
 		if (vidmodes[m].w == w && vidmodes[m].h == h)
@@ -124,7 +128,7 @@ qboolean M_Vid_GetMode(qboolean forfullscreen, int num, int *w, int *h)
 			rf->VID_EnumerateVideoModes("", vid_devicename.string, VidMode_Add);
 
 		if (!nummodes)
-		{
+		{	//failed to query, use internal fallbacks (may be too big).
 			for (a = 0; a < countof(resaspects); a++)
 			{
 				const char **v = resaspects[a];
@@ -184,16 +188,28 @@ emenu_t *M_Options_Title(int *y, int infosize)
 //these are awkward/strange
 static qboolean M_Options_AlwaysRun (menucheck_t *option, struct emenu_s *menu, chk_set_t set)
 {
-	if (M_GameType() == MGT_QUAKE2)
+	extern cvar_t cl_run;
+	switch (M_GameType())
 	{
-		extern cvar_t cl_run;
+	case MGT_HEXEN2:
+		//hexen2 uses forwardspeed's magnitude as an 'isrunning' boolean check, with all else hardcoded.
+		if (set != CHK_CHECKED)
+		{
+			if (cl_forwardspeed.value > 200 || cl_run.ival)
+				Cvar_SetValue(&cl_forwardspeed, 200);
+			else
+				Cvar_SetValue(&cl_forwardspeed, 400);
+			Cvar_Set(&cl_backspeed, "");
+			Cvar_SetValue(&cl_run, 0);
+		}
+		return cl_forwardspeed.value > 200;
+	default:
+	case MGT_QUAKE2:
 		//quake2 mods have a nasty tendancy to hack at the various cvars, which breaks everything
 		if (set != CHK_CHECKED)
 			Cvar_SetValue(&cl_run, !cl_run.ival);
 		return cl_run.ival;
-	}
-	else
-	{
+	case MGT_QUAKE1:
 		//for better compat with other quake engines, we just ignore the cl_run cvar, at least for the menu.
 		if (set == CHK_CHECKED)
 			return cl_forwardspeed.value > 200;
@@ -415,23 +431,26 @@ void M_Menu_Options_f (void)
 			"3",
 			NULL
 		};
-		MC_AddCvarCombo(menu, 16, 216, y, "Use Hud Plugin", &plug_sbar, hudplugopts, hudplugvalues);			y += 8;
+		MC_AddCvarCombo(menu, 16, 216, y, localtext("Use Hud Plugin"), &plug_sbar, hudplugopts, hudplugvalues);			y += 8;
 	}
 #endif
 	MC_AddFrameEnd(menu, framey);
 
 	menu->predraw = M_Options_Predraw;
-	o = NULL;
-	if (!o && !m_preset_chosen.ival)
-		o = M_FindButton(menu, "fps_preset\n");
-#ifdef PACKAGEMANAGER
-	if (!o && PM_AreSourcesNew(false))
-		o = M_FindButton(menu, "menu_download\n");
-#endif
-	if (o)
+	if (!resel.x)
 	{
-		menu->selecteditem = (menuoption_t*)o;
-		menu->cursoritem->common.posy = o->common.posy;
+		o = NULL;
+		if (!o && !m_preset_chosen.ival)
+			o = M_FindButton(menu, "fps_preset\n");
+#ifdef PACKAGEMANAGER
+		if (!o && PM_AreSourcesNew(false))
+			o = M_FindButton(menu, "menu_download\n");
+#endif
+		if (o)
+		{
+			menu->selecteditem = (menuoption_t*)o;
+			menu->cursoritem->common.posy = o->common.posy + (o->common.height-menu->cursoritem->common.height)/2;
+		}
 	}
 }
 
@@ -446,7 +465,7 @@ typedef struct {
 	soundcardinfo_t *card;
 } audiomenuinfo_t;
 
-qboolean M_Audio_Key (int key, struct emenu_s *menu)
+qboolean M_Audio_Key (struct emenu_s *menu, int key, unsigned int unicode)
 {
 	int i;
 	audiomenuinfo_t *info = menu->data;
@@ -1025,7 +1044,7 @@ const char *presetexec[] =
 	"r_part_classic_expgrav 10;"	//gives a slightly more dynamic feel to them
 	"r_part_classic_opaque 0;"
 	"gl_load24bit 1;"
-	"r_replacemodels \"md3 md2\";"
+	"r_replacemodels \"md3 md2 md5mesh\";"
 	"r_coronas 1;"
 	"r_dynamic 1;"
 	"r_softwarebanding 0;"
@@ -1052,7 +1071,7 @@ const char *presetexec[] =
 	"r_particledesc \"high tsshaft\";"
 #endif
 	"gl_specular 1;"
-//	"r_loadlit 2;"
+//	"r_loadlit 3;"
 	"r_waterstyle 2;"
 	"gl_blendsprites 1;"
 //	"r_fastsky -1;"
@@ -1078,17 +1097,18 @@ const char *presetexec[] =
 struct
 {
 	const char *name;
+	qboolean dorestart;
 	const char *desc;
 	const char *settings;
 } builtinpresets[] =
 {
-	{	"hdr",
+	{	"hdr", true,
 		"Don't let colour depth stop you!",
 
 		"set vid_srgb 2\n"
 		"set r_hdr_irisadaptation 1\n"
 	},
-	{	"shib",
+	{	"shib", true,
 		"Performance optimisations for large/detailed maps.",
 
 		"set r_temporalscenecache 1\n"	//the main speedup.
@@ -1096,7 +1116,7 @@ struct
 		"set sv_autooffload 1\n"		//Needs polish still.
 		"set gl_pbolightmaps 1\n"		//FIXME: this needs to be the default eventually.
 	},
-	{	"dm",
+	{	"dm", false,
 		"Various settings to make you more competitive."
 
 		"set cl_yieldcpu 0\n"
@@ -1110,20 +1130,42 @@ struct
 		"set sys_clockprecision 1\n"	//windows kinda sucks otherwise
 #endif
 	},
-	{	"qw",
-		"Enable QuakeWorld-isms, for better gameplay.",
+	{	"qw", false,
+		"Enable QuakeWorld physics, for better gameplay.",
 
 		"set sv_nqplayerphysics 0\n"
 		"set sv_gameplayfix_multiplethinks 1\n"
+		"cvarreset pm_bunnyfriction\n"
+		"cvarreset pm_edgefriction\n"
+		"cvarreset pm_slidefix\n"
+		"cvarreset pm_slidyslopes\n"
 	},
-	{	"nq"
-		"Disable QuakeWorld-isms, for nq mod compat.",
+	{	"hybridphysics", false,
+		"Tweak QuakeWorld player physics to feel like nq physics, while still supporting prediction.",
+
+		"set sv_nqplayerphysics 0\n"
+		"set sv_gameplayfix_multiplethinks 1\n"
+		"set pm_bunnyfriction 1\n"	//don't need bunnyspeedcap with this.
+		"set pm_edgefriction 2\n"	//forces traceline instead of tracebox, to match nq (applies earlier, making it more aggressive)
+		"set pm_slidefix 1\n"		//smoother running down slopes
+		"set pm_slidyslopes 1\n"	//*sigh*
+		"set pm_noround 1\n"		//lame
+		"set sv_maxtic 0\n"			//fixed tick rates.
+	},
+	{	"nq", false,
+		"Disable QuakeWorld physics, for nq mod compat.",
 
 		"set sv_nqplayerphysics 1\n"
 		"set sv_gameplayfix_multiplethinks 0\n"
+		//*also* set these, in case they use nqplayerphysics 2 after, which should give better hints.
+		"set pm_bunnyfriction 1\n"	//don't need bunnyspeedcap with this.
+		"set pm_edgefriction 2\n"	//forces traceline instead of tracebox, to match nq (applies earlier, making it more aggressive)
+		"set pm_slidefix 1\n"		//smoother running down slopes
+		"set pm_slidyslopes 1\n"	//*sigh*
+		"set pm_noround 1\n"		//lame
 	},
 
-	{	"dp",
+	{	"dp", false,
 		"Reconfigures FTE to mimic DP for compat reasons.",
 
 		"if $server then echo Be sure to restart your server\n"
@@ -1153,7 +1195,7 @@ struct
 //		"sv_listen_dp 1\nsv_listen_nq 0\nsv_listen_qw 0\ncl_loopbackprotocol dpp7\ndpcompat_nopreparse 1\n"
 	},
 
-	{	"tenebrae",
+	{	"tenebrae", true,
 		"Reconfigures FTE to mimic Tenebrae for compat/style reasons.",
 		//for the luls. combine with the tenebrae mod for maximum effect.
 		"fps_preset nq\n"
@@ -1169,7 +1211,7 @@ struct
 		"set r_nolerp 1\n"	//well, that matches tenebrae. for the luls, right?
 	},
 
-	{	"timedemo",
+	{	"timedemo", false,
 		"Reconfigure some stuff to get through timedemos really fast. Some people might consider this cheating.",
 		//some extra things to pwn timedemos.
 		"fps_preset fast\n"
@@ -1277,17 +1319,18 @@ static void M_Menu_Preset_Predraw(emenu_t *menu)
 			if (!strcmp(op->button.command, "menupop\n"))
 			{
 				if (m_preset_chosen.ival)
-					op->button.text = "^sAccept";
+					op->button.text = localtext("^sAccept");
 			}
 			else if (!strncmp(op->button.command, "fps_preset ", 11))
 			{
-				((char*)op->button.text)[1] = (preset==0)?'m':'7';
+				if (((char*)op->button.text)[0] == '^' && ((char*)op->button.text)[1] == ((preset!=0)?'m':'7'))
+					((char*)op->button.text)[1] = (preset==0)?'m':'7';
 				preset--;
 			}
 #if defined(WEBCLIENT) && defined(PACKAGEMANAGER)
 			else if (!strcmp(op->button.command, "menu_download\n"))
 			{
-				op->button.text = PM_AreSourcesNew(false)?"^bPackages (New!)":"Packages";
+				op->button.text = PM_AreSourcesNew(false)?localtext("^bPackages (New!)"):localtext("Packages");
 				op->common.posx = op->common.next->common.posx;
 				op->common.width = 216-op->common.posx;
 			}
@@ -1321,7 +1364,7 @@ static void M_Menu_Preset_Predraw(emenu_t *menu)
 		}
 	}
 	M_Menu_ApplyGravity(menu->options);
-	menu->cursoritem->common.posy = menu->selecteditem->common.posy;	//make sure it shows the right place still
+	menu->cursoritem->common.posy = menu->selecteditem->common.posy + (menu->selecteditem->common.height-menu->cursoritem->common.height)/2;
 
 	if (forcereload)
 		Cbuf_InsertText("\nfs_restart\nvid_reload\n", RESTRICT_LOCAL, true);
@@ -1333,7 +1376,7 @@ void M_Menu_Preset_f (void)
 	emenu_t *menu;
 	int y;
 	menuoption_t *presetoption[7];
-	extern cvar_t r_nolerp, sv_nqplayerphysics;
+	extern cvar_t r_nolerp, sv_nqplayerphysics, r_loadlits;
 #if defined(RTLIGHTS) && (defined(GLQUAKE) || defined(VKQUAKE))
 	extern cvar_t r_bloom, r_shadow_realtime_world_importlightentitiesfrommap;
 #endif
@@ -1342,6 +1385,16 @@ void M_Menu_Preset_f (void)
 		"Off",
 		"Auto",
 		"Force",
+		NULL
+	};
+	static const char *litopts[] = {
+		"Off",
+		"Auto",
+		NULL
+	};
+	static const char *litvals[] = {
+		"1",
+		"3",
 		NULL
 	};
 	menubulk_t bulk[] =
@@ -1362,7 +1415,8 @@ void M_Menu_Preset_f (void)
 #endif
 		MB_CONSOLECMDRETURN("^7normal    (faithful)",	"fps_preset normal\n",		"An updated but still faithful appearance, using content replacements where applicable", presetoption[4]),
 		MB_CONSOLECMDRETURN("^7nice       (dynamic)",	"fps_preset nice\n",		"For people who like nice things, but still want to actually play", presetoption[5]),
-			MB_COMBOCVAR("gen deluxemaps", r_deluxemapping_cvar, deluxeopts, NULL, NULL),
+			MB_COMBOCVAR("rgb lighting", r_loadlits, litopts, litvals, NULL),
+			MB_COMBOCVAR("deluxemaps", r_deluxemapping_cvar, deluxeopts, NULL, NULL),
 #if defined(RTLIGHTS) && (defined(GLQUAKE) || defined(VKQUAKE))
 		MB_CONSOLECMDRETURN("^7realtime    (all on)",	"fps_preset realtime\n",	"For people who value pretty over fast/smooth. Not viable for deathmatch.", presetoption[6]),
 			MB_CHECKBOXCVAR("bloom", r_bloom, 1),
@@ -1404,7 +1458,7 @@ void M_Menu_Preset_f (void)
 	if (presetoption[item])
 	{
 		menu->selecteditem = presetoption[item];
-		menu->cursoritem->common.posy = menu->selecteditem->common.posy;
+		menu->cursoritem->common.posy = menu->selecteditem->common.posy + (menu->selecteditem->common.height-menu->cursoritem->common.height)/2;
 	}
 
 	//so they can actually see the preset they're picking.
@@ -1457,7 +1511,7 @@ void FPS_Preset_f (void)
 	{
 		if (!stricmp(builtinpresets[i].name, arg))
 		{
-			if (doreload)
+			if (doreload && builtinpresets[i].dorestart)
 				Cbuf_InsertText("\nfs_restart\nvid_reload\n", RESTRICT_LOCAL, false);
 			Cbuf_InsertText(builtinpresets[i].settings, RESTRICT_LOCAL, false);
 			return;
@@ -1510,7 +1564,7 @@ qboolean M_PresetApply (union menuoption_s *op, struct emenu_s *menu, int key)
 {
 	fpsmenuinfo_t *info = (fpsmenuinfo_t*)menu->data;
 
-	if (key != K_ENTER && key != K_KP_ENTER && key != K_GP_START && key != K_MOUSE1)
+	if (key != K_ENTER && key != K_KP_ENTER && key != K_GP_DIAMOND_CONFIRM && key != K_MOUSE1 && key != K_TOUCHTAP)
 		return false;
 
 	Cbuf_AddText("fps_preset ", RESTRICT_LOCAL);
@@ -1663,14 +1717,18 @@ void M_Menu_Textures_f (void)
 {
 	static const char *texturefilternames[] =
 	{
-		"Nearest",
+		"Nearest (noise)",
+		"Nearest (harsh)",
+		"Nearest (soft)",
 		"Bilinear",
 		"Trilinear",
 		NULL
 	};
 	static const char *texturefiltervalues[] =
 	{
+		"GL_NEAREST",
 		"GL_NEAREST_MIPMAP_NEAREST",
+		"nll",
 		"GL_LINEAR_MIPMAP_NEAREST",
 		"GL_LINEAR_MIPMAP_LINEAR",
 		NULL
@@ -1767,7 +1825,7 @@ qboolean M_VideoApplyShadowLighting (union menuoption_s *op,struct emenu_s *menu
 {
 	lightingmenuinfo_t *info = (lightingmenuinfo_t*)menu->data;
 
-	if (key != K_ENTER && key != K_KP_ENTER && key != K_GP_START && key != K_MOUSE1)
+	if (key != K_ENTER && key != K_KP_ENTER && key != K_GP_DIAMOND_CONFIRM && key != K_MOUSE1 && key != K_TOUCHTAP)
 		return false;
 
 #ifdef RTLIGHTS
@@ -1885,18 +1943,20 @@ void M_Menu_Lighting_f (void)
 		NULL
 	};
 
-	static const char *loadlitopts[] =
+	static const char *loaddeluxeopts[] =
 	{
 		"Disabled",
 		"Enabled",
 		"Generate",
 		NULL
 	};
-	static const char *loadlitvalues[] =
+
+	static const char *loadlitopts[] =
 	{
-		"0",
-		"1",
-		"2",
+		"Disabled",
+		"Enabled",
+		"Generate LDR",
+		"Generate HDR",
 		NULL
 	};
 
@@ -1948,6 +2008,9 @@ void M_Menu_Lighting_f (void)
 	static const char *lightmapformatopts[] =
 	{
 		"Automatic",
+		"4bit",
+		"5bit (5551)",
+		"5bit (565)",
 		"8bit (Greyscale)",
 		"8bit (Misaligned)",
 		"8bit (Aligned)",
@@ -1960,6 +2023,9 @@ void M_Menu_Lighting_f (void)
 	static const char *lightmapformatvalues[] =
 	{
 		"",
+		"rgba4",
+		"rgb5a1",
+		"rgb565",
 		"l8",
 		"rgb8",
 		"bgrx8",
@@ -1967,9 +2033,6 @@ void M_Menu_Lighting_f (void)
 		"rgb9e5",
 		"rgba16f",
 		"rgba32f",
-//		"rgb4",
-//		"rgb565",
-//		"rgba5551",
 		NULL
 	};
 
@@ -2028,8 +2091,8 @@ void M_Menu_Lighting_f (void)
 			MB_SPACING(4),
 #endif
 			MB_COMBOCVAR("Lightmap Format", r_lightmap_format, lightmapformatopts, lightmapformatvalues, "Selects which format to use for lightmaps."),
-			MB_COMBOCVAR("LIT Loading", r_loadlits, loadlitopts, loadlitvalues, "Determines if the engine should use external colored lighting for maps. The generated setting will cause the engine to generate colored lighting for maps that don't have the associated data."),
-			MB_COMBOCVAR("Deluxemapping", r_deluxemapping_cvar, loadlitopts, loadlitvalues, "Controls whether static lighting should respond to lighting directions."),
+			MB_COMBOCVAR("LIT Loading", r_loadlits, loadlitopts, NULL, "Determines if the engine should use external colored lighting for maps. The generated setting will cause the engine to generate colored lighting for maps that don't have the associated data."),
+			MB_COMBOCVAR("Deluxemapping", r_deluxemapping_cvar, loaddeluxeopts, NULL, "Controls whether static lighting should respond to lighting directions."),
 			MB_CHECKBOXCVAR("Lightstyle Lerp", r_lightstylesmooth, 0),
 			MB_SPACING(4),
 			MB_COMBOCVAR("Flash Blend", r_flashblend, fbopts, fbvalues, "Disables or enables the spherical light effect for dynamic lights. Traced means the sphere effect will be line of sight checked before displaying the effect."),
@@ -2223,7 +2286,7 @@ qboolean M_Apply_SP_Cheats (union menuoption_s *op,struct emenu_s *menu,int key)
 {
 	singleplayerinfo_t *info = menu->data;
 
-	if (key != K_ENTER && key != K_KP_ENTER && key != K_GP_START && key != K_MOUSE1)
+	if (key != K_ENTER && key != K_KP_ENTER && key != K_GP_DIAMOND_CONFIRM && key != K_MOUSE1 && key != K_TOUCHTAP)
 		return false;
 
 	switch(info->skillcombo->selectedoption)
@@ -2341,7 +2404,7 @@ qboolean M_Apply_SP_Cheats_Q2 (union menuoption_s *op,struct emenu_s *menu,int k
 {
 	singleplayerq2info_t *info = menu->data;
 
-	if (key != K_ENTER && key != K_KP_ENTER && key != K_GP_START && key != K_MOUSE1)
+	if (key != K_ENTER && key != K_KP_ENTER && key != K_GP_DIAMOND_CONFIRM && key != K_MOUSE1 && key != K_TOUCHTAP)
 		return false;
 
 	switch(info->skillcombo->selectedoption)
@@ -2547,7 +2610,7 @@ qboolean M_Apply_SP_Cheats_H2 (union menuoption_s *op,struct emenu_s *menu,int k
 {
 	singleplayerh2info_t *info = menu->data;
 
-	if (key != K_ENTER && key != K_KP_ENTER && key != K_GP_START && key != K_MOUSE1)
+	if (key != K_ENTER && key != K_KP_ENTER && key != K_GP_DIAMOND_CONFIRM && key != K_MOUSE1 && key != K_TOUCHTAP)
 		return false;
 
 #ifdef HAVE_SERVER
@@ -2803,7 +2866,7 @@ qboolean M_VideoApply (union menuoption_s *op, struct emenu_s *menu, int key)
 	extern cvar_t vid_desktopsettings;
 	videomenuinfo_t *info = (videomenuinfo_t*)menu->data;
 
-	if (key != K_ENTER && key != K_KP_ENTER && key != K_GP_START && key != K_MOUSE1)
+	if (key != K_ENTER && key != K_KP_ENTER && key != K_GP_DIAMOND_CONFIRM && key != K_MOUSE1 && key != K_TOUCHTAP)
 		return false;
 
 	// force update display options
@@ -3305,6 +3368,7 @@ typedef struct
 	int skingroup;
 	int framegroup;
 	int boneidx;
+	int bonebias;	//shift the bones menu down to ensure the boneidx stays visible
 	int textype;
 	double framechangetime;
 	double skinchangetime;
@@ -3317,7 +3381,7 @@ typedef struct
 	float dist;
 
 	char modelname[MAX_QPATH];
-	char forceshader[MAX_QPATH];
+	char skinname[MAX_QPATH];
 
 	char shaderfile[MAX_QPATH];
 	char *shadertext;
@@ -3365,7 +3429,7 @@ static unsigned int genhsv(float h_, float s, float v)
 
 #include "com_mesh.h"
 #ifdef SKELETALMODELS
-static void M_BoneDisplayLame(entity_t *e, int *y, int depth, int parent, int first, int last, int sel)
+static int M_BoneDisplayLame(modelview_t *mods, entity_t *e, int topy, int y, int depth, int parent, int first, int last)
 {
 	int i;
 	for (i = first; i < last;  i++)
@@ -3378,20 +3442,34 @@ static void M_BoneDisplayLame(entity_t *e, int *y, int depth, int parent, int fi
 			if (!bname)
 				bname = "NULL";
 			memset(result, 0, sizeof(result));
-			if (Mod_GetTag(e->model, i+1, &e->framestate, result))
+			if (i == mods->boneidx)
 			{
-#if 0//def _DEBUG
-				Draw_FunString(depth*16, *y, va("%s%i: %s (%g %g %g)", (i==sel)?"^1":"", i+1, bname, result[3], result[7], result[11]));
-#else
-				Draw_FunString(depth*16, *y, va("%s%i: %s", (i==sel)?"^1":"", i+1, bname));
-#endif
+				if (y < 0)
+					mods->bonebias+=8;
+				else if (topy+y+8 >= vid.height)
+					mods->bonebias-=8;
 			}
-			else
-				Draw_FunString(depth*16, *y, va("%s%i: %s (err)", (i==sel)?"^1":"", i, bname));
-			*y += 8;
-			M_BoneDisplayLame(e, y, depth+1, i+1, i+1, last, sel);
+			if (y >= 0 && y+8 < vid.height)
+			{
+				if (Mod_GetTag(e->model, i+1, &e->framestate, result))
+				{
+					if (developer.ival)
+					{
+						float scale = sqrt(result[0]*result[0] + result[1]*result[1] + result[2]*result[2]);
+						float scale2 = sqrt(result[0]*result[0] + result[4]*result[4] + result[8]*result[8]);
+						Draw_FunString(depth*16, topy+y, va("%s%i: %s (%g %g %g, %g %g)", (i==mods->boneidx)?"^1":"", i+1, bname, result[3], result[7], result[11], scale, scale2));
+					}
+					else
+						Draw_FunString(depth*16, topy+y, va("%s%i: %s", (i==mods->boneidx)?"^1":"", i+1, bname));
+				}
+				else
+					Draw_FunString(depth*16, topy+y, va("%s%i: %s (err)", (i==mods->boneidx)?"^1":"", i, bname));
+			}
+			y += 8;
+			y += M_BoneDisplayLame(mods, e, topy, y, depth+1, i+1, i+1, last)-y;
 		}
 	}
+	return y;
 }
 #endif
 
@@ -3528,7 +3606,18 @@ static void M_ModelViewerDraw(int x, int y, struct menucustom_s *c, struct emenu
 	ent.framestate.g[FS_REG].frame[0] = mods->framegroup;
 	ent.framestate.g[FS_REG].frametime[0] = ent.framestate.g[FS_REG].frametime[1] = realtime - mods->framechangetime;
 	ent.framestate.g[FS_REG].endbone = 0x7fffffff;
-	ent.customskin = Mod_RegisterSkinFile(va("%s_%i.skin", mods->modelname, ent.skinnum));
+	if (*mods->skinname)
+		ent.customskin = Mod_RegisterSkinFile(mods->skinname);	//explicit .skin file to use
+	else
+	{
+		ent.customskin = Mod_RegisterSkinFile(va("%s_%i.skin", mods->modelname, ent.skinnum));
+		if (ent.customskin == 0)
+		{
+			char haxxor[MAX_QPATH];
+			COM_StripExtension(mods->modelname, haxxor, sizeof(haxxor));
+			ent.customskin = Mod_RegisterSkinFile(va("%s_default.skin", haxxor));	//fall back to some default
+		}
+	}
 	skin = Mod_LookupSkin(ent.customskin);
 
 	ent.light_avg[0] = ent.light_avg[1] = ent.light_avg[2] = 0.66;
@@ -3799,9 +3888,13 @@ static void M_ModelViewerDraw(int x, int y, struct menucustom_s *c, struct emenu
 		int numframes = 0;
 		float duration = 0;
 		qboolean loop = false;
-		if (!Mod_FrameInfoForNum(ent.model, mods->surfaceidx, mods->framegroup, &fname, &numframes, &duration, &loop))
+		int act = -1;
+		if (!Mod_FrameInfoForNum(ent.model, mods->surfaceidx, mods->framegroup, &fname, &numframes, &duration, &loop, &act))
 			fname = "Unknown Sequence";
-		Draw_FunString(0, y, va("Frame%i: %s (%i poses, %f of %f secs, %s)", mods->framegroup, fname, numframes, ent.framestate.g[FS_REG].frametime[0], duration, loop?"looped":"unlooped"));
+		if (act != -1)
+			Draw_FunString(0, y, va("Frame%i[%i]: %s (%i poses, %f of %f secs, %s)", mods->framegroup, act, fname, numframes, ent.framestate.g[FS_REG].frametime[0], duration, loop?"looped":"unlooped"));
+		else
+			Draw_FunString(0, y, va("Frame%i: %s (%i poses, %f of %f secs, %s)", mods->framegroup, fname, numframes, ent.framestate.g[FS_REG].frametime[0], duration, loop?"looped":"unlooped"));
 		y+=8;
 	}
 
@@ -3909,9 +4002,13 @@ static void M_ModelViewerDraw(int x, int y, struct menucustom_s *c, struct emenu
 			int bonecount = Mod_GetNumBones(ent.model, true);
 			if (bonecount)
 			{
+				if (mods->boneidx >= bonecount)
+					mods->boneidx = bonecount-1;
+				if (mods->boneidx < 0)
+					mods->boneidx = 0;
 				Draw_FunString(0, y, va("Bones: "));
 				y+=8;
-				M_BoneDisplayLame(&ent, &y, 0, 0, 0, bonecount, mods->boneidx);
+				M_BoneDisplayLame(mods, &ent, y, mods->bonebias, 0, 0, 0, bonecount);
 			}
 			else
 				R_DrawTextField(r_refdef.grect.x, r_refdef.grect.y+y, r_refdef.grect.width, r_refdef.grect.height-y, "No bones in model", CON_WHITEMASK, CPRINT_TALIGN|CPRINT_LALIGN, font_default, fs);
@@ -4238,7 +4335,7 @@ void M_Menu_ModelViewer_f(void)
 	mv->yaw = 180;// + crandom()*45;
 	mv->dist = 150;
 	Q_strncpyz(mv->modelname, Cmd_Argv(1), sizeof(mv->modelname));
-	Q_strncpyz(mv->forceshader, Cmd_Argv(2), sizeof(mv->forceshader));
+	Q_strncpyz(mv->skinname, Cmd_Argv(2), sizeof(mv->skinname));
 
 	mv->framechangetime = realtime;
 	mv->skinchangetime = realtime;
@@ -4308,7 +4405,7 @@ static void Mods_Draw(int x, int y, struct menucustom_s *c, struct emenu_s *m)
 		R_DrawTextField(0, y, vid.width, vid.height - y,
 					va(
 					"No games or mods known.\n"
-#if defined(FTE_TARGET_WEB) || defined(NACL)
+#if defined(FTE_TARGET_WEB)
 					"Connection issue or bad server config.\n"
 #else
 	#ifndef ANDROID
@@ -4340,7 +4437,7 @@ static void Mods_Draw(int x, int y, struct menucustom_s *c, struct emenu_s *m)
 static qboolean Mods_Key(struct menucustom_s *c, struct emenu_s *m, int key, unsigned int unicode)
 {
 	int gameidx = c->dint;
-	if (key == K_MOUSE1 || key == K_ENTER || key == K_GP_A)
+	if (key == K_ENTER || key == K_KP_ENTER || key == K_GP_DIAMOND_CONFIRM || key == K_MOUSE1 || key == K_TOUCHTAP)
 	{
 		qboolean wasgameless = !*FS_GetGamedir(false);
 		if (!Mods_GetMod(c->dint))
@@ -4378,7 +4475,8 @@ void M_Menu_Mods_f (void)
 	MC_AddFrameStart(menu, 32);
 	for (i = 0; i<1 || Mods_GetMod(i); i++)
 	{
-		c = MC_AddCustom(menu, 64, 32+i*8, menu->data, i, NULL);
+		struct modlist_s *mod = Mods_GetMod(i);
+		c = MC_AddCustom(menu, 64, 32+i*8, menu->data, i, (mod&&mod->manifest)?mod->manifest->basedir:NULL);
 //		if (!menu->selecteditem)
 //			menu->selecteditem = (menuoption_t*)c;
 		c->common.height = 8;
@@ -4406,7 +4504,7 @@ static qboolean Installer_Go(menuoption_t *opt, menu_t *menu, int key)
 {
 	struct installermenudata *md = menu->data;
 	
-	if (key == K_MOUSE1 || key == K_ENTER || key == K_GP_START)
+	if (key == K_ENTER || key == K_KP_ENTER || key == K_GP_DIAMOND_CONFIRM || key == K_MOUSE1 || key == K_TOUCHTAP)
 	{
 		extern int startuppending;
 		vfsfile_t *f;

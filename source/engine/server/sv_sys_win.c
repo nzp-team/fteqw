@@ -753,6 +753,38 @@ int Sys_EnumerateFiles (const char *gpath, const char *match, int (QDECL *func)(
 	return Sys_EnumerateFiles2(fullmatch, start, start, func, parm, spath);
 }
 
+//wide only. we let the windows api sort out the mess of file urls. system-wide consistancy.
+qboolean Sys_ResolveFileURL(const char *inurl, int inlen, char *out, int outlen)
+{
+	char *cp;
+	wchar_t wurl[MAX_PATH];
+	wchar_t local[MAX_PATH];
+	DWORD grr;
+	static HRESULT (WINAPI *pPathCreateFromUrlW)(PCWSTR pszUrl, PWSTR pszPath, DWORD *pcchPath, DWORD dwFlags);
+	if (!pPathCreateFromUrlW)
+		pPathCreateFromUrlW = Sys_GetAddressForName(Sys_LoadLibrary("Shlwapi.dll", NULL), "PathCreateFromUrlW");
+	if (!pPathCreateFromUrlW)
+		return false;
+
+	//need to make a copy, because we can't terminate the inurl easily.
+	cp = malloc(inlen+1);
+	memcpy(cp, inurl, inlen);
+	cp[inlen] = 0;
+	widen(wurl, sizeof(wurl), cp);
+	free(cp);
+	grr = sizeof(local)/sizeof(wchar_t);
+	if (FAILED(pPathCreateFromUrlW(wurl, local, &grr, 0)))
+		return false;
+	narrowen(out, outlen, local);
+	while(*out)
+	{
+		if (*out == '\\')
+			*out = '/';
+		out++;
+	}
+	return true;
+}
+
 /*
 ================
 Sys_Error
@@ -921,46 +953,7 @@ char *Sys_ConsoleInput (void)
 
 #ifdef SUBSERVERS
 	if (SSV_IsSubServer())
-	{
-		DWORD avail;
-		static char	text[1024];
-		static int textpos = 0;
-
-		HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
-		if (!PeekNamedPipe(input, NULL, 0, NULL, &avail, NULL))
-		{
-			SV_FinalMessage("Cluster shut down\n");
-			Cmd_ExecuteString("quit force", RESTRICT_LOCAL);
-		}
-		else if (avail)
-		{
-			if (avail > sizeof(text)-1-textpos)
-				avail = sizeof(text)-1-textpos;
-			if (ReadFile(input, text+textpos, avail, &avail, NULL))
-			{
-				textpos += avail;
-				while(textpos >= 2)
-				{
-					unsigned short len = text[0] | (text[1]<<8);
-					if (textpos >= len && len >= 2)
-					{
-						memcpy(net_message.data, text+2, len-2);
-						net_message.cursize = len-2;
-						MSG_BeginReading (msg_nullnetprim);
-
-						SSV_ReadFromControlServer();
-						
-						memmove(text, text+len, textpos - len);
-						textpos -= len;
-					}
-					else
-						break;
-				}
-			}
-
-		}
 		return NULL;
-	}
 #endif
 
 	if (isPlugin)
@@ -1670,6 +1663,8 @@ int main (int argc, char **argv)
 
 #ifdef SUBSERVERS
 		isClusterSlave = COM_CheckParm("-clusterslave");
+		if (isClusterSlave)
+            SSV_SetupControlPipe(Sys_GetStdInOutStream());
 #endif
 #ifdef USESERVICE
 		if (!SSV_IsSubServer() && StartServiceCtrlDispatcher( DispatchTable))

@@ -303,6 +303,8 @@ static void GenerateXMPData(char *blob, size_t blobsize, int width, int height, 
 			"</rdf:RDF>"
 		"</x:xmpmeta>"
 		);
+#else
+	blob[blobsize] = 0;
 #endif
 }
 #endif
@@ -514,7 +516,7 @@ void *ReadTargaFile(qbyte *buf, int length, int *width, int *height, uploadfmt_t
 
 	if (greyonly)	//grey only, load as 8 bit..
 	{
-		if (!(tgaheader.version == 1) && !(tgaheader.version == 3))
+		if (!(tgaheader.version == 1) && !(tgaheader.version == 3) && !(tgaheader.version == 11))
 			return NULL;
 	}
 	if (tgaheader.version == 1 || tgaheader.version == 3)
@@ -1565,12 +1567,10 @@ static void VARGS png_onerror(png_structp png_ptr, png_const_charp error_msg)
 static void VARGS png_onwarning(png_structp png_ptr, png_const_charp warning_msg)
 {
 	struct pngerr *err = qpng_get_error_ptr(png_ptr);
-#ifndef NPFTE
 	Con_DPrintf("libpng %s: %s\n", err->fname, warning_msg);
-#endif
 }
 
-qbyte *ReadPNGFile(const char *fname, qbyte *buf, int length, int *width, int *height, uploadfmt_t *format)
+qbyte *ReadPNGFile(const char *fname, qbyte *buf, int length, int *width, int *height, uploadfmt_t *format, qboolean force_rgb32)
 {
 	qbyte header[8], **rowpointers = NULL, *data = NULL;
 	png_structp png;
@@ -1638,7 +1638,7 @@ error:
 		int numpal = 0, numtrans = 0;
 		png_colorp pal = NULL;
 		png_bytep trans = NULL;
-		if (bitdepth==8 && format)
+		if (bitdepth==8 && !force_rgb32)
 		{
 			qpng_get_tRNS(png, pnginfo, &trans, &numtrans, NULL);
 			qpng_get_PLTE(png, pnginfo, &pal, &numpal);
@@ -1691,7 +1691,7 @@ error:
 		qpng_set_filler(png, ~0u, PNG_FILLER_AFTER);
 
 	//expand greyscale to rgb when we're forcing 32bit output (with padding, as appropriate).
-	if ((colortype == PNG_COLOR_TYPE_GRAY || colortype == PNG_COLOR_TYPE_GRAY_ALPHA)&&!format)
+	if ((colortype == PNG_COLOR_TYPE_GRAY || colortype == PNG_COLOR_TYPE_GRAY_ALPHA)&&force_rgb32)
 	{
 		qpng_set_gray_to_rgb( png );
 		if (colortype == PNG_COLOR_TYPE_GRAY)
@@ -1700,7 +1700,7 @@ error:
 
 	if (bitdepth < 8)
 		qpng_set_expand (png);
-	else if (bitdepth == 16 && (!format || colortype!=PNG_COLOR_TYPE_RGB_ALPHA))
+	else if (bitdepth == 16 && (force_rgb32 || colortype!=PNG_COLOR_TYPE_RGB_ALPHA))
 		qpng_set_strip_16(png);
 	else if (bitdepth == 16)
         qpng_set_swap(png);
@@ -1712,27 +1712,24 @@ error:
 
 	if (colortype == PNG_COLOR_TYPE_PALETTE)
 		*format = PTI_P8;
-	else if (bitdepth == 8 && channels == 1 && format)
+	else if (bitdepth == 8 && channels == 1 && !force_rgb32)
 		*format = PTI_L8;
-	else if (bitdepth == 8 && channels == 2 && format)
+	else if (bitdepth == 8 && channels == 2 && !force_rgb32)
 		*format = (colortype == PNG_COLOR_TYPE_GRAY_ALPHA)?PTI_L8A8:PTI_RG8;
-	else if (bitdepth == 8 && channels == 3 && format)
+	else if (bitdepth == 8 && channels == 3 && !force_rgb32)
 		*format = PTI_RGB8;
 	else if (bitdepth == 8 && channels == 4)
 	{
-		if (format)
-		{
-			if (colortype == PNG_COLOR_TYPE_GRAY)
-				*format = PTI_LLLX8;
-			else if (colortype == PNG_COLOR_TYPE_GRAY_ALPHA)
-				*format = PTI_LLLA8;
-			else if (colortype == PNG_COLOR_TYPE_RGB)
-				*format = PTI_RGBX8;
-			else //if (colortype == PNG_COLOR_TYPE_RGB_ALPHA)
-				*format = PTI_RGBA8;
-		}
+		if (colortype == PNG_COLOR_TYPE_GRAY)
+			*format = PTI_LLLX8;
+		else if (colortype == PNG_COLOR_TYPE_GRAY_ALPHA)
+			*format = PTI_LLLA8;
+		else if (colortype == PNG_COLOR_TYPE_RGB)
+			*format = PTI_RGBX8;
+		else //if (colortype == PNG_COLOR_TYPE_RGB_ALPHA)
+			*format = PTI_RGBA8;
 	}
-	else if (bitdepth == 16 && channels == 4 && format)
+	else if (bitdepth == 16 && channels == 4 && !force_rgb32)
 		*format = PTI_RGBA16;
 	else
 	{
@@ -1793,7 +1790,6 @@ error:
 
 
 
-#ifndef NPFTE
 int Image_WritePNG (const char *filename, enum fs_relative fsroot, int compression, void **buffers, int numbuffers, qintptr_t bufferstride, int width, int height, enum uploadfmt fmt, qboolean writemetadata)
 {
 	char name[MAX_OSPATH];
@@ -2036,7 +2032,6 @@ err:
 	Con_Printf("File error writing %s\n", filename);
 	return false;
 }
-#endif
 
 
 #endif
@@ -2454,7 +2449,6 @@ badjpeg:
 
 }
 /*end read*/
-#ifndef NPFTE
 /*begin write*/
 
 
@@ -2664,7 +2658,6 @@ qboolean screenshotJPEG(char *filename, enum fs_relative fsroot, int compression
 	BZ_Free(tmpdata);
 	return ret;
 }
-#endif
 #endif
 
 #ifdef IMAGEFMT_PCX
@@ -3352,7 +3345,7 @@ static qbyte *ReadICOFile(const char *fname, qbyte *buf, int length, int *width,
 		qbyte *indata = buf + (bestimg->dwOffset_low | (bestimg->dwOffset_high<<16));
 		size_t insize = (bestimg->dwSize_low | (bestimg->dwSize_high<<16));
 #ifdef AVAIL_PNGLIB
-		if (insize > 4 && (indata[0] == 137 && indata[1] == 'P' && indata[2] == 'N' && indata[3] == 'G') && (ret = ReadPNGFile(fname, indata, insize, width, height, fmt)))
+		if (insize > 4 && (indata[0] == 137 && indata[1] == 'P' && indata[2] == 'N' && indata[3] == 'G') && (ret = ReadPNGFile(fname, indata, insize, width, height, fmt, true)))
 		{
 			TRACE(("dbg: Read32BitImageFile: icon png\n"));
 			return ret;
@@ -4634,8 +4627,10 @@ static void *ReadEXRFile(qbyte *buf, size_t len, const char *fname, int *outwidt
 	fd = mkstemp(tname);	//bsd4.3/posix1-2001
 	if (fd >= 0)
 	{
-		write(fd, buf, len);
-		ctx = exr.OpenInputFile(tname);
+		if (write(fd, buf, len) == len)
+			ctx = exr.OpenInputFile(tname);
+		else
+			ctx = NULL;
 		close(fd);	//we don't need the input file now.
 		unlink(tname);
 #endif
@@ -5146,12 +5141,12 @@ qboolean Image_WriteKTXFile(const char *filename, enum fs_relative fsroot, struc
 		case PTI_ANY:
 			VFS_CLOSE(file);
 			return false;
-		case PTI_2D:
-		case PTI_2D_ARRAY:
-		case PTI_CUBE:
-		case PTI_CUBE_ARRAY:
+		case PTI_CUBE:	//special case, size is per-face
 			sz = (browbytes+padbytes) * brows;
 			break;
+		case PTI_2D:
+		case PTI_2D_ARRAY:
+		case PTI_CUBE_ARRAY:
 		case PTI_3D:
 			sz = (browbytes+padbytes) * brows * blayers;
 			break;
@@ -7298,7 +7293,7 @@ qbyte *ReadRawImageFile(qbyte *buf, int len, int *width, int *height, uploadfmt_
 #endif
 
 #ifdef AVAIL_PNGLIB
-	if (len > 4 && (buf[0] == 137 && buf[1] == 'P' && buf[2] == 'N' && buf[3] == 'G') && (data = ReadPNGFile(fname, buf, len, width, height, force_rgba8?NULL:format)))
+	if (len > 4 && (buf[0] == 137 && buf[1] == 'P' && buf[2] == 'N' && buf[3] == 'G') && (data = ReadPNGFile(fname, buf, len, width, height, format, force_rgba8)))
 		return data;
 #endif
 #ifdef AVAIL_JPEGLIB
@@ -7441,7 +7436,9 @@ qbyte *ReadRawImageFile(qbyte *buf, int len, int *width, int *height, uploadfmt_
 		int w = LittleLong(((int*)buf)[0]);
 		int h = LittleLong(((int*)buf)[1]);
 		int i;
-		if (w >= 3 && h	>= 4 && w*h+sizeof(int)*2 == len)
+		if (((w >= 3 && h >= 4)
+			||(w==26&&h==1) //hack for hexen2. stupid lack of a magic.
+			) && w*h+sizeof(int)*2 == len)
 		{	//quake lmp
 			if (force_rgba8)
 			{
@@ -7487,6 +7484,22 @@ qbyte *ReadRawImageFile(qbyte *buf, int len, int *width, int *height, uploadfmt_
 			*width = w;
 			*height = h;
 			*format = foundalpha?PTI_RGBA8:PTI_RGBX8;
+			return data;
+		}
+		else if (len == 128*128 || len == 128*256)
+		{	//conchars lump (or h2). 0 is transparent.
+			qbyte *in = buf;
+			h = 128;
+			w = len/h;
+			data = BZ_Malloc(w * h * sizeof(int));
+			for (i = 0; i < w * h; i++)
+			{
+				((unsigned int*)data)[i] = d_8to24rgbtable[in[i]];
+				data[i*4+3] = (in[i] == 0)?0:255;
+			}
+			*width = w;
+			*height = h;
+			*format = PTI_RGBA8;
 			return data;
 		}
 	}
@@ -13395,7 +13408,7 @@ struct pendingtextureinfo *Image_LoadMipsFromMemory(int flags, const char *iname
 	}
 #endif
 	else
-		Con_Printf("Unable to read file %s (format unsupported)\n", fname);
+		Con_TPrintf("Unable to load file %s (format unsupported)\n", fname);
 
 	BZ_Free(filedata);
 	return NULL;
@@ -13709,6 +13722,7 @@ qboolean Image_LocateHighResTexture(image_t *tex, flocation_t *bestloc, char *be
 	char *altname;
 	char *nextalt;
 	qboolean exactext = !!(tex->flags & IF_EXACTEXTENSION);
+	qboolean exactpath = false;
 
 	int locflags = FSLF_DEPTH_INEXPLICIT|FSLF_DEEPONFAILURE;
 	int bestdepth = 0x7fffffff, depth;
@@ -13719,7 +13733,13 @@ qboolean Image_LocateHighResTexture(image_t *tex, flocation_t *bestloc, char *be
 	if (strncmp(tex->ident, "http:", 5) && strncmp(tex->ident, "https:", 6))
 	for(altname = tex->ident;altname;altname = nextalt)
 	{
-		nextalt = strchr(altname, ':');
+		if (!strncmp(altname, "file:", 5))
+		{
+			nextalt = strchr(altname+5, ':');
+			exactpath = true;
+		}
+		else
+			nextalt = strchr(altname, ':');
 		if (nextalt)
 		{
 			nextalt++;
@@ -13757,18 +13777,21 @@ qboolean Image_LocateHighResTexture(image_t *tex, flocation_t *bestloc, char *be
 		if (!tex->fallbackdata || (gl_load24bit.ival && !(tex->flags & IF_NOREPLACE)))
 		{
 #ifdef IMAGEFMT_DDS
-			Q_snprintfz(fname, sizeof(fname), "dds/%s.dds", nicename);
-			depth = FS_FLocateFile(fname, locflags, &loc);
-			if (depth < bestdepth)
+			if (!exactpath)
 			{
-				Q_strncpyz(bestname, fname, bestnamesize);
-				bestdepth = depth;
-				*bestloc = loc;
-				*bestflags = 0;
+				Q_snprintfz(fname, sizeof(fname), "dds/%s.dds", nicename);
+				depth = FS_FLocateFile(fname, locflags, &loc);
+				if (depth < bestdepth)
+				{
+					Q_strncpyz(bestname, fname, bestnamesize);
+					bestdepth = depth;
+					*bestloc = loc;
+					*bestflags = 0;
+				}
 			}
 #endif
 
-			if (strchr(nicename, '/') || strchr(nicename, '\\'))	//never look in a root dir for the pic
+			if (exactpath || strchr(nicename, '/') || strchr(nicename, '\\'))	//never look in a root dir for the pic
 				i = 0;
 			else
 				i = 1;
@@ -13777,6 +13800,8 @@ qboolean Image_LocateHighResTexture(image_t *tex, flocation_t *bestloc, char *be
 			{
 				if (!tex_path[i].enabled)
 					continue;
+				if (exactpath && i)
+					break;
 				if (tex_path[i].args >= 3)
 				{	//this is a path that needs subpaths
 					char subpath[MAX_QPATH];
@@ -13884,8 +13909,6 @@ qboolean Image_LocateHighResTexture(image_t *tex, flocation_t *bestloc, char *be
 							if (!strcmp(tex_extensions[e].name, ".tga"))
 							{
 								Q_snprintfz(fname, sizeof(fname), tex_path[i].path, bumpname, tex_extensions[e].name);
-
-								Q_snprintfz(fname, sizeof(fname), tex_path[i].path, nicename, tex_extensions[e].name);
 								depth = FS_FLocateFile(fname, locflags, &loc);
 								if (depth < bestdepth)
 								{
@@ -14076,6 +14099,8 @@ static void Image_LoadHiResTextureWorker(void *ctx, void *data, size_t a, size_t
 							return;
 						}
 					}
+					else
+						Con_Printf(CON_WARNING "%s: bumpmaps must be greyscale tga.\n", fname);
 					//guess not, fall back to normalmaps
 				}
 #endif
@@ -14151,18 +14176,18 @@ image_t *Image_FindTexture(const char *identifier, const char *subdir, unsigned 
 	image_t *tex;
 	if (!subdir)
 		subdir = "";
-	tex = Hash_Get(&imagetable, identifier);
+	tex = Hash_GetInsensitive(&imagetable, identifier);
 	while(tex)
 	{
 		if (!((tex->flags ^ flags) & (IF_CLAMP|IF_PALETTIZE|IF_PREMULTIPLYALPHA)))
 		{
-			if (r_ignoremapprefixes.ival || !strcmp(subdir, tex->subpath?tex->subpath:"") || ((flags|tex->flags) & IF_INEXACT))
+			if (r_ignoremapprefixes.ival || !Q_strcasecmp(subdir, tex->subpath?tex->subpath:"") || ((flags|tex->flags) & IF_INEXACT))
 			{
 				tex->regsequence = r_regsequence;
 				return tex;
 			}
 		}
-		tex = Hash_GetNext(&imagetable, identifier, tex);
+		tex = Hash_GetNextInsensitive(&imagetable, identifier, tex);
 	}
 	return NULL;
 }
@@ -14201,7 +14226,7 @@ static image_t *Image_CreateTexture_Internal (const char *identifier, const char
 	tex->fallbackheight = 0;
 	tex->fallbackfmt = TF_INVALID;
 	if (*tex->ident)
-		Hash_Add(&imagetable, tex->ident, tex, buck);
+		Hash_AddInsensitive(&imagetable, tex->ident, tex, buck);
 	return tex;
 }
 
@@ -14538,7 +14563,7 @@ void Image_DestroyTexture(image_t *tex)
 	Sys_UnlockMutex(com_resourcemutex);
 #endif
 	if (*tex->ident)
-		Hash_RemoveData(&imagetable, tex->ident, tex);
+		Hash_RemoveDataInsensitive(&imagetable, tex->ident, tex);
 	Z_Free(tex);
 }
 
@@ -14776,7 +14801,7 @@ void Image_Shutdown(void)
 	{
 		tex = imagelist;
 		if (*tex->ident)
-			Hash_RemoveData(&imagetable, tex->ident, tex);
+			Hash_RemoveDataInsensitive(&imagetable, tex->ident, tex);
 		imagelist = tex->next;
 		if (tex->status == TEX_LOADED)
 			j++;

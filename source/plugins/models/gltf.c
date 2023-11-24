@@ -74,480 +74,6 @@ void VARGS Q_snprintfcat (char *dest, size_t size, const char *fmt, ...)
 }
 
 
-typedef struct json_s
-{
-	const char *bodystart;
-	const char *bodyend;
-
-	struct json_s *parent;
-	struct json_s *child;
-	struct json_s *sibling;
-	struct json_s **childlink;
-	qboolean used;	//set to say when something actually read/walked it, so we can flag unsupported things gracefully
-	char name[1];
-} json_t;
-
-//node destruction
-static void JSON_Orphan(json_t *t)
-{
-	if (t->parent)
-	{
-		json_t *p = t->parent, **l = &p->child;
-		while (*l)
-		{
-			if (*l == t)
-			{
-				*l = t->sibling;
-				if (*l)
-					p->childlink = l;
-				break;
-			}
-			l = &(*l)->sibling;
-		}
-		t->parent = NULL;
-		t->sibling = NULL;
-	}
-}
-static void JSON_Destroy(json_t *t)
-{
-	if (t)
-	{
-		while(t->child)
-			JSON_Destroy(t->child);
-		JSON_Orphan(t);
-		free(t);
-	}
-}
-
-//node creation
-static json_t *JSON_CreateNode(json_t *parent, const char *namestart, const char *nameend, const char *bodystart, const char *bodyend)
-{
-	json_t *j;
-	qboolean dupbody = false;
-	if (namestart && !nameend)
-		nameend = namestart+strlen(namestart);
-	if (bodystart && !bodyend)
-	{
-		dupbody = true;
-		bodyend = bodystart+strlen(bodystart);
-	}
-	j = malloc(sizeof(*j) + nameend-namestart + (dupbody?1+bodyend-bodystart:0));
-	memcpy(j->name, namestart, nameend-namestart);
-	j->name[nameend-namestart] = 0;
-	j->bodystart = bodystart;
-	j->bodyend = bodyend;
-
-	j->child = NULL;
-	j->sibling = NULL;
-	j->childlink = &j->child;
-	j->parent = parent;
-	if (parent)
-	{
-		*parent->childlink = j;
-		parent->childlink = &j->sibling;
-		j->used = false;
-	}
-	else
-		j->used = true;
-
-	if (dupbody)
-	{
-		char *bod = j->name + (nameend-namestart)+1;
-		j->bodystart = bod;
-		j->bodyend = j->bodystart + (bodyend-bodystart);
-		memcpy(bod, bodystart, bodyend-bodystart);
-		bod[bodyend-bodystart] = 0;
-	}
-	return j;
-}
-
-//node parsing
-static void JSON_SkipWhite(const char *msg, int *pos, int max)
-{
-	while (*pos < max)
-	{
-		//if its simple whitespace then keep skipping over it
-		if (msg[*pos] == ' ' ||
-			msg[*pos] == '\t' ||
-			msg[*pos] == '\r' ||
-			msg[*pos] == '\n' )
-		{
-			*pos+=1;
-			continue;
-		}
-
-		//BEGIN NON-STANDARD - Note that comments are NOT part of json, but people insist on using them anyway (c-style, like javascript).
-		else if (msg[*pos] == '/' && *pos+1 < max)
-		{
-			if (msg[*pos+1] == '/')
-			{	//C++ style single-line comments that continue till the next line break
-				*pos+=2;
-				while (*pos < max)
-				{
-					if (msg[*pos] == '\r' || msg[*pos] == '\n')
-						break;	//ends on first line break (the break is then whitespace will will be skipped naturally)
-					*pos+=1;	//not yet
-				}
-				continue;
-			}
-			else if (msg[*pos+1] == '*')
-			{	/*C style multi-line comment*/
-				*pos+=2;
-				while (*pos+1 < max)
-				{
-					if (msg[*pos] == '*' && msg[*pos+1] == '/')
-					{
-						*pos+=2;	//skip past the terminator ready for whitespace or trailing comments directly after
-						break;
-					}
-					*pos+=1;	//not yet
-				}
-				continue;
-			}
-		}
-		//END NON-STANDARD
-		break;	//not whitespace/comment/etc.
-	}
-}
-//writes the body to a null-terminated string, handling escapes as needed.
-//returns required body length (without terminator) (NOTE: return value is not escape-aware, so this is an over-estimate).
-static size_t JSON_ReadBody(json_t *t, char *out, size_t outsize)
-{
-//	size_t bodysize;
-	if (!t)
-	{
-		if (out)
-			*out = 0;
-		return 0;
-	}
-	if (out && outsize)
-	{
-		char *outend = out+outsize-1;	//compensate for null terminator
-		const char *in = t->bodystart;
-		while (in < t->bodyend && out < outend)
-		{
-			if (*in == '\\')
-			{
-				if (++in < t->bodyend)
-				{
-					switch(*in++)
-					{
-					case '\"':	*out++ = '\"'; break;
-					case '\\':	*out++ = '\\'; break;
-					case '/':	*out++ =  '/'; break;	//json is not C...
-					case 'b':	*out++ = '\b'; break;
-					case 'f':	*out++ = '\f'; break;
-					case 'n':	*out++ = '\n'; break;
-					case 'r':	*out++ = '\r'; break;
-					case 't':	*out++ = '\t'; break;
-//					case 'u':
-//						out += utf8_encode(out, code, outend-out);
-//						break;
-					default:
-						//unknown escape. will warn when actually reading it.
-						*out++ = '\\';
-						if (out < outend)
-							*out++ = in[-1];
-						break;
-					}
-				}
-				else
-					*out++ = '\\';	//error...
-			}
-			else
-				*out++ = *in++;
-		}
-		*out = 0;
-	}
-	return t->bodyend-t->bodystart;
-}
-
-static qboolean JSON_ParseString(char const*msg, int *pos, int max, char const**start, char const** end)
-{
-	if (*pos < max && msg[*pos] == '\"')
-	{	//quoted string
-		//FIXME: no handling of backslash followed by one of "\/bfnrtu
-		*pos+=1;
-		*start = msg+*pos;
-		while (*pos < max)
-		{
-			if (msg[*pos] == '\"')
-				break;
-			if (msg[*pos] == '\\')
-			{	//escapes are expanded elsewhere, we're just skipping over them here.
-				switch(msg[*pos+1])
-				{
-				case '\"':
-				case '\\':
-				case '/':
-				case 'b':
-				case 'f':
-				case 'n':
-				case 'r':
-				case 't':
-					*pos+=2;
-					break;
-				case 'u':
-					*pos+=2;
-					//*pos+=4; //4 hex digits, not escapes so just wait till later before parsing them properly.
-					break;
-				default:
-					//unknown escape. will warn when actually reading it.
-					*pos+=1;
-					break;
-				}
-			}
-			else
-				*pos+=1;
-		}
-		if (*pos < max && msg[*pos] == '\"')
-		{
-			*end = msg+*pos;
-			*pos+=1;
-			return true;
-		}
-	}
-	else
-	{	//name
-		*start = msg+*pos;
-		while (*pos < max
-			&& msg[*pos] != ' '
-			&& msg[*pos] != '\t'
-			&& msg[*pos] != '\r'
-			&& msg[*pos] != '\n'
-			&& msg[*pos] != ':'
-			&& msg[*pos] != ','
-			&& msg[*pos] != '}'
-			&& msg[*pos] != '{'
-			&& msg[*pos] != '['
-			&& msg[*pos] != ']')
-		{
-			*pos+=1;
-		}
-		*end = msg+*pos;
-		if (*start != *end)
-			return true;
-	}
-	*end = *start;
-	return false;
-}
-static json_t *JSON_Parse(json_t *t, const char *namestart, const char *nameend, const char *json, int *jsonpos, int jsonlen)
-{
-	const char *childstart, *childend;
-	JSON_SkipWhite(json, jsonpos, jsonlen);
-
-	if (*jsonpos < jsonlen)
-	{
-		if (json[*jsonpos] == '{')
-		{
-			*jsonpos+=1;
-			JSON_SkipWhite(json, jsonpos, jsonlen);
-
-			t = JSON_CreateNode(t, namestart, nameend, NULL, NULL);
-
-			while (*jsonpos < jsonlen && json[*jsonpos] == '\"')
-			{
-				if (!JSON_ParseString(json, jsonpos, jsonlen, &childstart, &childend))
-					break;
-				JSON_SkipWhite(json, jsonpos, jsonlen);
-				if (*jsonpos < jsonlen && json[*jsonpos] == ':')
-				{
-					*jsonpos+=1;
-					if (!JSON_Parse(t, childstart, childend, json, jsonpos, jsonlen))
-						break;
-				}
-				JSON_SkipWhite(json, jsonpos, jsonlen);
-
-				if (*jsonpos < jsonlen && json[*jsonpos] == ',')
-				{
-					*jsonpos+=1;
-					JSON_SkipWhite(json, jsonpos, jsonlen);
-					continue;
-				}
-				break;
-			}
-
-			if (*jsonpos < jsonlen && json[*jsonpos] == '}')
-			{
-				*jsonpos+=1;
-				return t;
-			}
-			JSON_Destroy(t);
-		}
-		else if (json[*jsonpos] == '[')
-		{
-			char idxname[MAX_QPATH];
-			unsigned int idx = 0;
-			*jsonpos+=1;
-			JSON_SkipWhite(json, jsonpos, jsonlen);
-
-			t = JSON_CreateNode(t, namestart, nameend, NULL, NULL);
-
-			for(;;)
-			{
-				Q_snprintf(idxname, sizeof(idxname), "%u", idx++);
-				if (!JSON_Parse(t, idxname, NULL, json, jsonpos, jsonlen))
-					break;
-
-				if (*jsonpos < jsonlen && json[*jsonpos] == ',')
-				{
-					*jsonpos+=1;
-					JSON_SkipWhite(json, jsonpos, jsonlen);
-					continue;
-				}
-				break;
-			}
-
-			JSON_SkipWhite(json, jsonpos, jsonlen);
-			if (*jsonpos < jsonlen && json[*jsonpos] == ']')
-			{
-				*jsonpos+=1;
-				return t;
-			}
-			JSON_Destroy(t);
-		}
-		else
-		{
-			if (JSON_ParseString(json, jsonpos, jsonlen, &childstart, &childend))
-				return JSON_CreateNode(t, namestart, nameend, childstart, childend);
-		}
-	}
-	return NULL;
-}
-
-//we don't understand arrays here (we just treat them as tables) so eg "foo.0.bar" to find t->foo[0]->bar
-static json_t *JSON_FindChild(json_t *t, const char *child)
-{
-	if (t)
-	{
-		size_t nl;
-		const char *dot = strchr(child, '.');
-		if (dot)
-			nl = dot-child;
-		else
-			nl = strlen(child);
-		for (t = t->child; t; t = t->sibling)
-		{
-			if (!strncmp(t->name, child, nl) && (t->name[nl] == '.' || !t->name[nl]))
-			{
-				child+=nl;
-				t->used = true;
-				if (*child == '.')
-					return JSON_FindChild(t, child+1);
-				if (!*child)
-					return t;
-				break;
-			}
-		}
-	}
-	return NULL;
-}
-static json_t *JSON_FindIndexedChild(json_t *t, const char *child, unsigned int idx)
-{
-	char idxname[MAX_QPATH];
-	if (child)
-		Q_snprintf(idxname, sizeof(idxname), "%s.%u", child, idx);
-	else
-		Q_snprintf(idxname, sizeof(idxname), "%u", idx);
-	return JSON_FindChild(t, idxname);
-}
-static qboolean JSON_Equals(json_t *t, const char *child, const char *expected)
-{
-	if (child)
-		t = JSON_FindChild(t, child);
-	if (t && t->bodyend-t->bodystart == strlen(expected))
-		return !strncmp(t->bodystart, expected, t->bodyend-t->bodystart);
-	return false;
-}
-static quintptr_t JSON_GetUInteger(json_t *t, const char *child, unsigned int fallback)
-{
-	if (child)
-		t = JSON_FindChild(t, child);
-	if (t)
-	{	//copy it to another buffer. can probably skip that tbh.
-		char tmp[MAX_QPATH];
-		char *trail;
-		size_t l = t->bodyend-t->bodystart;
-		quintptr_t r;
-		if (l > MAX_QPATH-1)
-			l = MAX_QPATH-1;
-		memcpy(tmp, t->bodystart, l);
-		tmp[l] = 0;
-		if (!strcmp(tmp, "false"))	//special cases, for booleans
-			return 0u;
-		if (!strcmp(tmp, "true"))	//special cases, for booleans
-			return 1u;
-		r = (quintptr_t)strtoull(tmp, &trail, 0);
-		if (!*trail)
-			return r;
-	}
-	return fallback;
-}
-static qintptr_t JSON_GetInteger(json_t *t, const char *child, int fallback)
-{
-	if (child)
-		t = JSON_FindChild(t, child);
-	if (t)
-	{	//copy it to another buffer. can probably skip that tbh.
-		char tmp[MAX_QPATH];
-		char *trail;
-		size_t l = t->bodyend-t->bodystart;
-		qintptr_t r;
-		if (l > MAX_QPATH-1)
-			l = MAX_QPATH-1;
-		memcpy(tmp, t->bodystart, l);
-		tmp[l] = 0;
-		if (!strcmp(tmp, "false"))	//special cases, for booleans
-			return 0;
-		if (!strcmp(tmp, "true"))	//special cases, for booleans
-			return 1;
-		r = (qintptr_t)strtoll(tmp, &trail, 0);
-		if (!*trail)
-			return r;
-	}
-	return fallback;
-}
-#ifndef SERVERONLY//ffs
-static qintptr_t JSON_GetIndexedInteger(json_t *t, unsigned int idx, int fallback)
-{
-	char idxname[MAX_QPATH];
-	Q_snprintf(idxname, sizeof(idxname), "%u", idx);
-	return JSON_GetInteger(t, idxname, fallback);
-}
-#endif
-static double JSON_GetFloat(json_t *t, const char *child, double fallback)
-{
-	if (child)
-		t = JSON_FindChild(t, child);
-	if (t)
-	{	//copy it to another buffer. can probably skip that tbh.
-		char tmp[MAX_QPATH];
-		size_t l = t->bodyend-t->bodystart;
-		if (l > MAX_QPATH-1)
-			l = MAX_QPATH-1;
-		memcpy(tmp, t->bodystart, l);
-		tmp[l] = 0;
-		return atof(tmp);
-	}
-	return fallback;
-}
-static double JSON_GetIndexedFloat(json_t *t, unsigned int idx, double fallback)
-{
-	char idxname[MAX_QPATH];
-	Q_snprintf(idxname, sizeof(idxname), "%u", idx);
-	return JSON_GetFloat(t, idxname, fallback);
-}
-static const char *JSON_GetString(json_t *t, const char *child, char *buffer, size_t buffersize, const char *fallback)
-{
-	if (child)
-		t = JSON_FindChild(t, child);
-	if (t)
-	{	//copy it to another buffer. can probably skip that tbh.
-		JSON_ReadBody(t, buffer, buffersize);
-		return buffer;
-	}
-	return fallback;
-}
 
 static void JSON_GetPath(json_t *t, qboolean ignoreroot, char *buffer, size_t buffersize)
 {
@@ -717,8 +243,8 @@ typedef struct gltf_s
 	int *bonemap;//[MAX_BONES];	//remap skinned bones. I hate that we have to do this.
 	struct gltfbone_s
 	{
-		char name[32];
-		char jointname[32];	//gltf1 only
+		char name[64];
+		char jointname[64];	//gltf1 only
 		int parent;
 		int camera;
 		double amatrix[16];
@@ -992,6 +518,13 @@ static qboolean GLTF_GetAccessor(gltf_t *gltf, json_t *accessorid, struct gltf_a
 	offset = JSON_GetUInteger(a, "byteOffset", 0);
 	if (offset > bv.length)
 		return false;
+
+	if (JSON_FindChild(a, "sparse"))
+	{	//0-initialised, with separate index+values tables for ones that need an actual value.
+		if (gltf->warnlimit --> 0)
+			Con_Printf(CON_WARNING"%s: sparse accessors are not supported\n", gltf->mod->name);
+		return false;
+	}
 	out->length = bv.length - offset;
 	if (gltf->ver <= 1)
 		out->bytestride = JSON_GetInteger(a, "byteStride", 0);
@@ -1052,7 +585,6 @@ static qboolean GLTF_GetAccessor(gltf_t *gltf, json_t *accessorid, struct gltf_a
 		out->maxs[j] = JSON_GetIndexedFloat(maxs, j, 0);
 	}
 
-//	JSON_WarnIfChild(a, "sparse");
 //	JSON_WarnIfChild(a, "name");
 	GLTF_FlagExtras(a);
 
@@ -2223,6 +1755,8 @@ static void GLTF_LoadMaterial(gltf_t *gltf, json_t *materialid, galiasskin_t *re
 			ret->frame->texnums.base     = GLTF_LoadTexture(gltf, albedo, 0);
 		if (mrt)
 			ret->frame->texnums.specular = GLTF_LoadTexture(gltf, mrt, IF_NOSRGB);
+		else	//else depend upon specularfactor
+			ret->frame->texnums.specular = modfuncs->GetTexture("$whiteimage", NULL, IF_NOMIPMAP|IF_NOPICMIP|IF_NEAREST|IF_NOGAMMA, NULL, NULL, 0, 0, TF_INVALID);
 
 		Q_snprintf(shader, sizeof(shader),
 			"{\n"
@@ -2269,13 +1803,164 @@ static void GLTF_LoadMaterial(gltf_t *gltf, json_t *materialid, galiasskin_t *re
 	Q_strlcpy(ret->name, ret->frame->shadername, sizeof(ret->name));
 }
 #endif
+
+#ifdef HAVE_DRACO
+	#define DRACO_API_ONLY
+	#include "draco.cpp"
+#endif
+typedef struct {
+	gltf_t *gltf;
+	json_t *prim;
+	json_t *primattrs;
+#ifdef HAVE_DRACO
+	json_t *dracoattrs;
+	struct ftedracofuncs_s *draco;
+#endif
+} gltf_prim_t;
+static qboolean GLTF_GetAttributeAccessor(gltf_prim_t *state, char *attributename, struct gltf_accessor *out)
+{
+	json_t *primaccessor = JSON_FindChild(state->primattrs, attributename);
+#ifdef HAVE_DRACO
+	if (state->draco && primaccessor)
+	{
+		json_t *da = JSON_FindChild(state->dracoattrs, attributename);
+		if (da)
+		{	//comes from compressed data instead.
+			//we're still meant to require some attributes match the original accessors.
+			struct ftedracoattr_s *dattr;
+			json_t *a, *mins, *maxs;
+			unsigned int j, attridx;
+			memset(out, 0, sizeof(*out));
+
+			if (!strcmp(attributename, "NORMAL") || !strcmp(attributename, "TANGENT"))
+				return false; //these come out shite. don't use.
+
+			a = GLTF_FindJSONID(state->gltf, "accessors", primaccessor, NULL);
+			if (!a)
+				return false;
+			j = JSON_GetInteger(da, NULL, -1);
+			for (attridx = 0; attridx < state->draco->num_attribs; attridx++)
+				if (state->draco->attrib[attridx].uniqueid == j)
+					break;
+			if (attridx >= state->draco->num_attribs)
+			{
+				if (state->gltf->warnlimit --> 0)
+					Con_Printf(CON_WARNING"%s: draco lacks specified uniqueid %i\n", state->gltf->mod->name, j);
+				return false;
+			}
+
+			JSON_FlagAsUsed(a, "name");
+
+			out->bytestride = 0; //
+			out->componentType = JSON_GetInteger(a, "componentType", 0);
+			out->normalized = JSON_GetInteger(a, "normalized", false);
+			out->count = JSON_GetInteger(a, "count", 0);
+			if (JSON_Equals(a, "type", "SCALAR"))
+				out->type = (1<<8) | 1;
+			else if (JSON_Equals(a, "type", "VEC2"))
+				out->type = (1<<8) | 2;
+			else if (JSON_Equals(a, "type", "VEC3"))
+				out->type = (1<<8) | 3;
+			else if (JSON_Equals(a, "type", "VEC4"))
+				out->type = (1<<8) | 4;
+			else if (JSON_Equals(a, "type", "MAT2"))
+				out->type = (2<<8) | 2;
+			else if (JSON_Equals(a, "type", "MAT3"))
+				out->type = (3<<8) | 3;
+			else if (JSON_Equals(a, "type", "MAT4"))
+				out->type = (4<<8) | 4;
+			else
+			{
+				if (state->gltf->warnlimit --> 0)
+					Con_Printf(CON_WARNING"%s: glTF2 unsupported type\n", state->gltf->mod->name);
+				out->type = 1;
+			}
+
+			if (!out->bytestride)
+			{
+				out->bytestride = (out->type & 0xff) * (out->type>>8);
+				switch(out->componentType)
+				{
+				default:
+					if (state->gltf->warnlimit --> 0)
+						Con_Printf(CON_WARNING"GLTF_GetAccessor: %s: glTF2 unsupported componentType (%i)\n", state->gltf->mod->name, out->componentType);
+				case 5120:	//BYTE
+				case 5121:	//UNSIGNED_BYTE
+					break;
+				case 5122: //SHORT
+				case 5123: //UNSIGNED_SHORT
+					out->bytestride *= 2;
+					break;
+				case 5125: //UNSIGNED_INT
+				case 5126: //FLOAT
+					out->bytestride *= 4;
+					break;
+				}
+			}
+
+
+			mins = JSON_FindChild(a, "min");
+			maxs = JSON_FindChild(a, "max");
+			for (j = 0; j < (out->type>>8)*(out->type&0xff); j++)
+			{	//'must' be set in various situations.
+				out->mins[j] = JSON_GetIndexedFloat(mins, j, 0);
+				out->maxs[j] = JSON_GetIndexedFloat(maxs, j, 0);
+			}
+
+			GLTF_FlagExtras(a);
+
+			dattr = &state->draco->attrib[attridx];
+
+			if (out->count < state->draco->num_vertexes)
+				out->count = state->draco->num_vertexes;	//hack. seems to be needed for one of our test models.
+			if (out->count != state->draco->num_vertexes ||
+				!out->normalized != !dattr->isnormalised ||
+				out->componentType != dattr->type ||
+				out->type != ((1<<8)|dattr->components) ||
+				out->bytestride != dattr->bytestride)
+			{
+				if (state->gltf->warnlimit --> 0)
+					Con_Printf(CON_WARNING"%s: %s (%i) draco/accessor mismatch\n", state->gltf->mod->name, attributename, dattr->usage);
+				memset(out, 0, sizeof(*out));	//abort! abort!
+				return false;
+			}
+
+			out->data = dattr->ptr;
+			out->length = out->bytestride*out->count;
+			return true;
+		}
+	}
+#endif
+	return GLTF_GetAccessor(state->gltf, primaccessor, out);
+}
+static void GLTF_GetIndiciesAccessor(gltf_prim_t *state, struct gltf_accessor *out)
+{
+#ifdef HAVE_DRACO
+	if (state->draco)
+	{
+		memset(out->mins, 0, sizeof(out->mins));
+		memset(out->maxs, 0, sizeof(out->maxs));
+		out->componentType = 5125;	//unsigned int
+		out->normalized = false;
+		out->type = (1<<8) | 1; //'scaler'
+		out->bytestride = sizeof(*state->draco->ptr_indexes);
+
+		out->count = state->draco->num_indexes;
+		out->data = state->draco->ptr_indexes;
+		out->length = out->bytestride*out->count;
+		return;
+	}
+#endif
+	GLTF_GetAccessor(state->gltf, JSON_FindChild(state->prim, "indices"), out);
+}
+
 static const float *QDECL GLTF_AnimateMorphs(const galiasinfo_t *surf, const framestate_t *framestate);
 static qboolean GLTF_ProcessMesh(gltf_t *gltf, json_t *meshid, int basebone, double skinmatrix[])
 {
 	model_t *mod = gltf->mod;
 	quintptr_t meshidx;
 	json_t *mesh = GLTF_FindJSONID(gltf, "meshes", meshid, &meshidx);
-	json_t *prim;
+	json_t *primnode;
 	json_t *meshname = JSON_FindChild(mesh, "name");
 	json_t *target = NULL;
 	float	morphweights[MAX_MORPHWEIGHTS];
@@ -2287,26 +1972,66 @@ static qboolean GLTF_ProcessMesh(gltf_t *gltf, json_t *meshid, int basebone, dou
 	morphtargets = ~0;
 	GLTF_FlagExtras(mesh);
 
-	for(prim = JSON_FindIndexedChild(mesh, "primitives", 0); prim; prim = prim->sibling)
+	for(primnode = JSON_FindIndexedChild(mesh, "primitives", 0); primnode; primnode = primnode->sibling)
 	{
-		int mode  = JSON_GetInteger(prim, "mode", 4);
-		json_t *attr = JSON_FindChild(prim, "attributes");
+		int mode  = JSON_GetInteger(primnode, "mode", 4);
+		json_t *attr = JSON_FindChild(primnode, "attributes");
 		struct gltf_accessor tc_0, tc_1, norm, tang, vpos, col0, idx, sidx, swgt;
 		struct gltf_accessor morph_vpos[MAX_MORPHWEIGHTS], morph_norm[MAX_MORPHWEIGHTS], morph_tang[MAX_MORPHWEIGHTS];
 		galiasinfo_t *surf;
 		size_t i, j;
+		index_t maxvert;
 
-		prim->used = true;
+		gltf_prim_t prim = {gltf, primnode, attr};
 
-		if (mode != 4)
+#ifdef HAVE_DRACO
+ #define PRIMCLEANUP() do{if (prim.draco) prim.draco->Release(prim.draco);}while(0)		//frees memory allocations from inside this loop
+		json_t *draconode = JSON_FindChild(primnode, "extensions.KHR_draco_mesh_compression");
+		if (draconode)
+		{	//decompress the ext.bufferview and replace matching primative.attributes[n] with any listed ext.attributes[n] entries, and the indicies
+			//accessor's componentType, type, count should match that from draco.
+			struct gltf_bufferview bv;
+			if (!GLTF_GetBufferViewData(gltf, JSON_FindChild(draconode, "bufferView"), &bv))
+			{
+				if (gltf->warnlimit --> 0)
+					Con_Printf(CON_WARNING "%s: KHR_draco_mesh_compression without bufferview\n", gltf->mod->name);
+				continue;
+			}
+			prim.draco = Draco_Decode(bv.data, bv.length);
+			if (!prim.draco)
+			{
+				if (gltf->warnlimit --> 0)
+					Con_Printf(CON_WARNING "%s: KHR_draco_mesh_compression decompression failure\n", gltf->mod->name);	//in case a model tries supplying more. we ought to renormalise the weights in this case.
+				continue;
+			}
+			prim.dracoattrs = JSON_FindChild(draconode, "attributes");
+		}
+#else
+ #define PRIMCLEANUP() do{}while(0)
+#endif
+
+		primnode->used = true;
+
+		switch(mode)
 		{
-			Con_Printf("Primitive mode %i not supported\n", mode);
+		case 4:
+			break;
+		case 0: //points
+		case 1: //lines
+		case 2: //line loop
+		case 3: //line strip
+		case 5: //triangle strip -- FIXME: probably relevant (with degenerates)
+		case 6: //triangle fan
+		default:
+			if (gltf->warnlimit --> 0)
+				Con_Printf("Primitive mode %i not supported\n", mode);
+			PRIMCLEANUP();
 			continue;
 		}
 
 		for (i = 0; ; i++)
 		{
-			target = JSON_FindIndexedChild(prim, "targets", i);
+			target = JSON_FindIndexedChild(primnode, "targets", i);
 			if (!target)
 				break;
 			GLTF_GetAccessor(gltf, JSON_FindChild(target, "POSITION"), &morph_vpos[i]);
@@ -2327,42 +2052,44 @@ static qboolean GLTF_ProcessMesh(gltf_t *gltf, json_t *meshid, int basebone, dou
 			}
 		}
 
-		GLTF_FlagExtras(prim);
+		GLTF_FlagExtras(primnode);
 
-		GLTF_GetAccessor(gltf, JSON_FindChild(attr, "TEXCOORD_0"),	&tc_0);	//float, ubyte, ushort
-		GLTF_GetAccessor(gltf, JSON_FindChild(attr, "TEXCOORD_1"),	&tc_1);	//float, ubyte, ushort
-		GLTF_GetAccessor(gltf, JSON_FindChild(attr, "NORMAL"),		&norm);	//float
-		GLTF_GetAccessor(gltf, JSON_FindChild(attr, "TANGENT"),		&tang);	//float
-		GLTF_GetAccessor(gltf, JSON_FindChild(attr, "POSITION"),	&vpos);	//float
-		GLTF_GetAccessor(gltf, JSON_FindChild(attr, "COLOR_0"),		&col0);	//float, ubyte, ushort
-		GLTF_GetAccessor(gltf, JSON_FindChild(prim, "indices"),		&idx);
+		GLTF_GetAttributeAccessor(&prim, "POSITION",		&vpos);	//float
+		if (!vpos.count)
+		{
+			PRIMCLEANUP();
+			continue;
+		}
+		GLTF_GetAttributeAccessor(&prim, "TEXCOORD_0",		&tc_0);	//float, ubyte, ushort
+		GLTF_GetAttributeAccessor(&prim, "TEXCOORD_1",		&tc_1);	//float, ubyte, ushort
+		GLTF_GetAttributeAccessor(&prim, "NORMAL",			&norm);	//float
+		GLTF_GetAttributeAccessor(&prim, "TANGENT",		&tang);	//float
+		GLTF_GetAttributeAccessor(&prim, "COLOR_0",		&col0);	//float, ubyte, ushort
+		GLTF_GetIndiciesAccessor(&prim, &idx);
 		if (gltf->ver <= 1)
 		{
-			GLTF_GetAccessor(gltf, JSON_FindChild(attr, "JOINT"),	&sidx);	//ubyte, ushort
-			GLTF_GetAccessor(gltf, JSON_FindChild(attr, "WEIGHT"),	&swgt);	//float, ubyte, ushort
+			GLTF_GetAttributeAccessor(&prim, "JOINT",	&sidx);	//ubyte, ushort
+			GLTF_GetAttributeAccessor(&prim, "WEIGHT",	&swgt);	//float, ubyte, ushort
 		}
 		else
 		{	//potentially multiple, each a vec4.
-			GLTF_GetAccessor(gltf, JSON_FindChild(attr, "JOINTS_0"),	&sidx);	//ubyte, ushort
-			GLTF_GetAccessor(gltf, JSON_FindChild(attr, "WEIGHTS_0"),	&swgt);	//float, ubyte, ushort
+			GLTF_GetAttributeAccessor(&prim, "JOINTS_0",	&sidx);	//ubyte, ushort
+			GLTF_GetAttributeAccessor(&prim, "WEIGHTS_0",	&swgt);	//float, ubyte, ushort
 		}
 
 		if (JSON_GetInteger(attr, "JOINTS_1",	-1) != -1 || JSON_GetInteger(attr, "WEIGHTS_1",	-1) != -1)
 			if (gltf->warnlimit --> 0)
 				Con_Printf(CON_WARNING "%s: only 4 bones supported per vert\n", gltf->mod->name);	//in case a model tries supplying more. we ought to renormalise the weights in this case.
 
-		if (!vpos.count)
-			continue;
-
 		surf = plugfuncs->GMalloc(&mod->memgroup, sizeof(*surf) + (morphtargets*sizeof(float)));
 
-		surf->surfaceid = JSON_GetInteger(prim, "extras.fte.surfaceid", meshidx);
-		surf->contents = JSON_GetInteger(prim, "extras.fte.contents", FTECONTENTS_BODY);
-		surf->csurface.flags = JSON_GetInteger(prim, "extras.fte.surfaceflags", 0);
-		surf->geomset = JSON_GetInteger(prim, "extras.fte.geomset", ~0u);
-		surf->geomid = JSON_GetInteger(prim, "extras.fte.geomid", 0);
-		surf->mindist = JSON_GetInteger(prim, "extras.fte.mindist", 0);
-		surf->maxdist = JSON_GetInteger(prim, "extras.fte.maxdist", 0);
+		surf->surfaceid = JSON_GetInteger(primnode, "extras.fte.surfaceid", meshidx);
+		surf->contents = JSON_GetInteger(primnode, "extras.fte.contents", FTECONTENTS_BODY);
+		surf->csurface.flags = JSON_GetInteger(primnode, "extras.fte.surfaceflags", 0);
+		surf->geomset = JSON_GetInteger(primnode, "extras.fte.geomset", ~0u);
+		surf->geomid = JSON_GetInteger(primnode, "extras.fte.geomid", 0);
+		surf->mindist = JSON_GetInteger(primnode, "extras.fte.mindist", 0);
+		surf->maxdist = JSON_GetInteger(primnode, "extras.fte.maxdist", 0);
 
 		surf->shares_bones = gltf->numsurfaces;
 		surf->shares_verts = gltf->numsurfaces;
@@ -2384,12 +2111,15 @@ static qboolean GLTF_ProcessMesh(gltf_t *gltf, json_t *meshid, int basebone, dou
 					surf->ofs_indexes[i] = *(unsigned char *)((char*)idx.data + i*idx.bytestride);
 			}
 			else if (idx.componentType == 5125)
-			{	//unsigned ints
+			{	//unsigned ints. -- FIXME: catch overflows.
 				for (i = 0; i < idx.count; i++)
 					surf->ofs_indexes[i] = *(unsigned int *)((char*)idx.data + i*idx.bytestride);	//FIXME: bounds check.
 			}
 			else
+			{
+				PRIMCLEANUP();
 				continue;
+			}
 		}
 		else
 		{
@@ -2405,6 +2135,16 @@ static qboolean GLTF_ProcessMesh(gltf_t *gltf, json_t *meshid, int basebone, dou
 			index_t t = surf->ofs_indexes[i+0];
 			surf->ofs_indexes[i+0] = surf->ofs_indexes[i+2];
 			surf->ofs_indexes[i+2] = t;
+		}
+
+		for (maxvert = 0, i = 0; i < idx.count; i++)
+			if (maxvert < surf->ofs_indexes[i])
+				maxvert = surf->ofs_indexes[i];
+		if (maxvert >= surf->numverts)
+		{
+			Con_Printf(CON_WARNING "%s: %s Index list exceeds vertex count range\n", gltf->mod->name, surf->surfacename);	//in case a model tries supplying more. we ought to renormalise the weights in this case.
+			PRIMCLEANUP();
+			continue;
 		}
 
 		surf->AnimateMorphs = GLTF_AnimateMorphs;
@@ -2494,11 +2234,11 @@ static qboolean GLTF_ProcessMesh(gltf_t *gltf, json_t *meshid, int basebone, dou
 			json_t *mapping, *var;
 			surf->numskins = 1+gltf->variations;
 			surf->ofsskins = plugfuncs->GMalloc(&gltf->mod->memgroup, sizeof(*surf->ofsskins)*surf->numskins);
-			GLTF_LoadMaterial(gltf, JSON_FindChild(prim, "material"), surf->ofsskins, surf->ofs_rgbaub||surf->ofs_rgbaf);
+			GLTF_LoadMaterial(gltf, JSON_FindChild(primnode, "material"), surf->ofsskins, surf->ofs_rgbaub||surf->ofs_rgbaf);
 			for (i = 0; i < gltf->variations; i++)
 				surf->ofsskins[1+i] = surf->ofsskins[0];	//unspecified matches defaults...
 
-			for (mapping=JSON_FindIndexedChild(prim, "extensions.KHR_materials_variants.mappings", 0); mapping; mapping = mapping->sibling)
+			for (mapping=JSON_FindIndexedChild(primnode, "extensions.KHR_materials_variants.mappings", 0); mapping; mapping = mapping->sibling)
 			{
 				i = 0;
 				for(var = JSON_FindIndexedChild(mapping, "variants", 0); var; var = var->sibling)
@@ -2525,6 +2265,8 @@ static qboolean GLTF_ProcessMesh(gltf_t *gltf, json_t *meshid, int basebone, dou
 		gltf->numsurfaces++;
 		surf->nextsurf = mod->meshinfo;
 		mod->meshinfo = surf;
+
+		PRIMCLEANUP();
 	}
 	return true;
 }
@@ -2692,7 +2434,7 @@ static qboolean GLTF_ProcessNode(gltf_t *gltf, json_t *nodeid, double pmatrix[16
 			joints->used = true;
 			if (gltf->ver <= 1)
 			{	//urgh
-				char jointname[64];
+				char jointname[sizeof(gltf->bones[b].jointname)];
 				JSON_ReadBody(joints, jointname, sizeof(jointname));	//this is matched to nodes[b].jointName rather than (textual) b, so we can't use our helpers.
 				for (b = 0; b < gltf->numbones; b++)
 				{
@@ -3215,13 +2957,17 @@ static qboolean GLTF_LoadModel(struct model_s *mod, char *json, size_t jsonsize,
 		{"KHR_materials_pbrSpecularGlossiness",		true,   false},
 //		{"KHR_materials_cmnBlinnPhong",				true,   true},
 		{"KHR_materials_unlit",						true,	false},
-		{"KHR_mesh_quantization",					true,	true},
+		{"KHR_mesh_quantization",					true,	false},
 		{"MSFT_texture_dds",						true,	false},
 		{"MSFT_packing_occlusionRoughnessMetallic", true,	false},
 		{"KHR_materials_variants",					true,	false},
 		{"KHR_materials_ior",						true,	false},
 
-		{"KHR_draco_mesh_compression",				false,	true},	//probably fatal
+#ifdef HAVE_DRACO
+		{"KHR_draco_mesh_compression",				true,	false},	//probably fatal
+#else
+		{"KHR_draco_mesh_compression",				false,	false},	//probably fatal
+#endif
 		{"KHR_texture_transform",					false,	false},	//requires glsl tweaks, per texmap. can't use tcmod if its only on the bumpmap etc.
 		{"KHR_materials_sheen",						false,	false},	//requires glsl tweaks, extra brdf layer in the middle for velvet.
 		{"KHR_materials_clearcoat",					false,	false},	//requires glsl tweaks, extra brdf layer over the top for varnish etc.
@@ -3243,7 +2989,7 @@ static qboolean GLTF_LoadModel(struct model_s *mod, char *json, size_t jsonsize,
 	gltf.bonemap = malloc(sizeof(*gltf.bonemap)*MAX_BONES);
 	gltf.bones = malloc(sizeof(*gltf.bones)*MAX_BONES);
 	memset(gltf.bones, 0, sizeof(*gltf.bones)*MAX_BONES);
-	gltf.r = JSON_Parse(NULL, mod->name, NULL, json, &pos, jsonsize);
+	gltf.r = JSON_ParseNode(NULL, mod->name, NULL, json, &pos, jsonsize);
 	gltf.mod = mod;
 	gltf.buffers[0].data = buffer;
 	gltf.buffers[0].length = buffersize;
@@ -3428,6 +3174,8 @@ static qboolean GLTF_LoadModel(struct model_s *mod, char *json, size_t jsonsize,
 				}
 				fg->loop = !!mod_gltf_loop->ival;
 				fg->skeltype = SKEL_RELATIVE;
+				fg->action = -1;
+				fg->actionweight = 0;
 				for(chan = JSON_FindIndexedChild(anim, "channels", 0); chan; chan = chan->sibling)
 				{
 					struct gltf_animsampler s;

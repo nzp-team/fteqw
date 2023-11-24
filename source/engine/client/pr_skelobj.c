@@ -380,7 +380,7 @@ static qboolean rag_dollline(dollcreatectx_t *ctx, int linenum)
 	//create a new body
 	else if (argc == 3 && !stricmp(cmd, "body"))
 	{
-		int boneidx = Mod_TagNumForName(d->model, Cmd_Argv(2))-1;
+		int boneidx = Mod_TagNumForName(d->model, Cmd_Argv(2), 0)-1;
 		ctx->joint = NULL;
 		ctx->body = NULL;
 		if (boneidx >= 0)
@@ -576,7 +576,7 @@ static qboolean rag_dollline(dollcreatectx_t *ctx, int linenum)
 		//the origin is specified in base-frame model space
 		//we need to make it relative to the joint's bodies
 		char *bone = val;
-		i = Mod_TagNumForName(d->model, bone)-1;
+		i = Mod_TagNumForName(d->model, bone, 0)-1;
 		if (argc > 2)
 		{
 			ctx->joint->offset[0] = atof(Cmd_Argv(2));
@@ -903,7 +903,8 @@ void skel_generateragdoll_f(void)
 		int numframes;
 		float duration;
 		qboolean loop;
-		if (!Mod_FrameInfoForNum(mod, 0, i, &fname, &numframes, &duration, &loop))
+		int act;
+		if (!Mod_FrameInfoForNum(mod, 0, i, &fname, &numframes, &duration, &loop, &act))
 			break;
 		VFS_PUTS(f, va("//%i %s (%i frames) (%f secs)%s", i, fname, numframes, duration, loop?" (loop)":""));
 	}
@@ -2255,7 +2256,7 @@ void QCBUILTIN PF_skel_find_bone (pubprogfuncs_t *prinst, struct globalvars_s *p
 	if (!skelobj)
 		G_FLOAT(OFS_RETURN) = 0;
 	else
-		G_FLOAT(OFS_RETURN) = Mod_TagNumForName(skelobj->model, bname);
+		G_FLOAT(OFS_RETURN) = Mod_TagNumForName(skelobj->model, bname, 0);
 }
 
 //vector(float skel, float bonenum) skel_get_bonerel (FTE_CSQC_SKELETONOBJECTS) (sets v_forward etc)
@@ -2660,7 +2661,7 @@ void QCBUILTIN PF_gettagindex (pubprogfuncs_t *prinst, struct globalvars_s *pr_g
 	const char *tagname = PR_GetStringOfs(prinst, OFS_PARM1);
 	model_t *mod = *tagname?w->Get_CModel(w, ent->v->modelindex):NULL;
 	if (mod)
-		G_FLOAT(OFS_RETURN) = Mod_TagNumForName(mod, tagname);
+		G_FLOAT(OFS_RETURN) = Mod_TagNumForName(mod, tagname, 0);
 	else
 		G_FLOAT(OFS_RETURN) = 0;
 }
@@ -2669,7 +2670,7 @@ void QCBUILTIN PF_gettagindex (pubprogfuncs_t *prinst, struct globalvars_s *pr_g
 void QCBUILTIN PF_frametoname (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	world_t *w = prinst->parms->user;
-	unsigned int modelindex = G_FLOAT(OFS_PARM0);
+	int modelindex = G_FLOAT(OFS_PARM0);
 	unsigned int skinnum = G_FLOAT(OFS_PARM1);
 	int surfaceidx = 0;
 	model_t *mod = w->Get_CModel(w, modelindex);
@@ -2684,7 +2685,7 @@ void QCBUILTIN PF_frametoname (pubprogfuncs_t *prinst, struct globalvars_s *pr_g
 void QCBUILTIN PF_frameforname (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	world_t *w = prinst->parms->user;
-	unsigned int modelindex = G_FLOAT(OFS_PARM0);
+	int modelindex = G_FLOAT(OFS_PARM0);
 	int surfaceidx = 0;
 	const char *str = PF_VarString(prinst, 1, pr_globals);
 	model_t *mod = w->Get_CModel(w, modelindex);
@@ -2694,10 +2695,23 @@ void QCBUILTIN PF_frameforname (pubprogfuncs_t *prinst, struct globalvars_s *pr_
 	else
 		G_FLOAT(OFS_RETURN) = -1;
 }
+void QCBUILTIN PF_frameforaction (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	world_t *w = prinst->parms->user;
+	int modelindex = G_FLOAT(OFS_PARM0);
+	int surfaceidx = 0;
+	int actionid = G_INT(OFS_PARM1);
+	model_t *mod = w->Get_CModel(w, modelindex);
+
+	if (mod)
+		G_FLOAT(OFS_RETURN) = Mod_FrameNumForAction(mod, surfaceidx, actionid);
+	else
+		G_FLOAT(OFS_RETURN) = -1;
+}
 void QCBUILTIN PF_frameduration (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	world_t *w = prinst->parms->user;
-	unsigned int modelindex = G_FLOAT(OFS_PARM0);
+	int modelindex = G_FLOAT(OFS_PARM0);
 	unsigned int framenum = G_FLOAT(OFS_PARM1);
 	int surfaceidx = 0;
 	model_t *mod = w->Get_CModel(w, modelindex);
@@ -2723,7 +2737,7 @@ void QCBUILTIN PF_modelframecount (pubprogfuncs_t *prinst, struct globalvars_s *
 void QCBUILTIN PF_processmodelevents (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	world_t *w = prinst->parms->user;
-	unsigned int modelindex = G_FLOAT(OFS_PARM0);
+	int modelindex = G_FLOAT(OFS_PARM0);
 	unsigned int frame = G_FLOAT(OFS_PARM1);
 	float basetime = G_FLOAT(OFS_PARM2);
 	float targettime = G_FLOAT(OFS_PARM3);
@@ -2786,8 +2800,9 @@ void QCBUILTIN PF_processmodelevents (pubprogfuncs_t *prinst, struct globalvars_
 			char *data;
 			float loopduration;
 			qboolean looping;
+			int act;
 
-			if (Mod_FrameInfoForNum(mod, 0, frame, &data, &code, &loopduration, &looping))
+			if (Mod_FrameInfoForNum(mod, 0, frame, &data, &code, &loopduration, &looping, &act))
 			{
 				if (looping && loopduration)
 					starttime = loopduration*(unsigned int)(basetime/loopduration);
@@ -2891,8 +2906,9 @@ void QCBUILTIN PF_getnextmodelevent (pubprogfuncs_t *prinst, struct globalvars_s
 			char *data;
 			float loopduration;
 			qboolean looping;
+			int act;
 
-			if (!Mod_FrameInfoForNum(mod, 0, frame, &data, &code, &loopduration, &looping))
+			if (!Mod_FrameInfoForNum(mod, 0, frame, &data, &code, &loopduration, &looping, &act))
 				return; //invalid frame
 
 			if (looping && loopduration)

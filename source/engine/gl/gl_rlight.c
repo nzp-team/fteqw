@@ -26,6 +26,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 extern cvar_t r_shadow_realtime_world, r_shadow_realtime_world_lightmaps;
 extern cvar_t r_hdr_irisadaptation, r_hdr_irisadaptation_multiplier, r_hdr_irisadaptation_minvalue, r_hdr_irisadaptation_maxvalue, r_hdr_irisadaptation_fade_down, r_hdr_irisadaptation_fade_up;
+extern cvar_t mod_lightpoint_distance;
 
 int	r_dlightframecount;
 int		d_lightstylevalue[MAX_NET_LIGHTSTYLES];	// 8.8 fraction of base light value
@@ -447,10 +448,6 @@ void R_RenderDlights (void)
 
 			switch(method)
 			{
-			case 2:
-				if (TraceLineR(r_refdef.vieworg, l->origin, waste1, waste2))
-					continue;
-				break;
 			case 0:
 				break;
 			case 3:
@@ -533,8 +530,9 @@ void R_RenderDlights (void)
 #endif
 				//other renderers fall through
 			default:
-			case 1:
-				if (CL_TraceLine(r_refdef.vieworg, l->origin, waste1, NULL, NULL) < 1)
+			case 1:	//bsp-only
+			case 2:	//non-bsp too
+				if (TraceLineR(r_refdef.vieworg, l->origin, waste1, waste2, method!=2))
 					continue;
 				break;
 			}
@@ -728,7 +726,7 @@ void R_PushDlights (void)
 	int		i;
 	dlight_t	*l;
 
-	r_dlightframecount = r_framecount + 1;	// because the count hasn't
+	r_dlightframecount++;	// because the count hasn't
 											//  advanced yet for this frame
 
 #ifdef RTLIGHTS
@@ -755,6 +753,10 @@ void R_PushDlights (void)
 	{
 		if (!l->radius || !(l->flags & LFLAG_LIGHTMAP))
 			continue;
+		if ((l->flags & LFLAG_NORMALMODE) && r_shadow_realtime_dlight.ival)
+			continue;	//don't draw both. its redundant and a waste of cpu.
+		if ((l->flags & LFLAG_REALTIMEMODE) && r_shadow_realtime_world.ival)
+			continue;	//also don't draw both.
 		currentmodel->funcs.MarkLights( l, (dlightbitmask_t)1u<<i, currentmodel->nodes );
 	}
 }
@@ -871,7 +873,10 @@ qboolean R_ImportRTLights(const char *entlump, int importmode)
 	}
 
 	if (!importmode && !rerelease)
+	{
+		InfoBuf_Clear(&targets, true);
 		return false;	//don't make it up from legacy ents.
+	}
 
 	for (entnum = 0; ;entnum++)
 	{
@@ -1118,6 +1123,7 @@ qboolean R_ImportRTLights(const char *entlump, int importmode)
 					if (atoi(value))
 					{
 						okay = true;
+						InfoBuf_Clear(&targets, true);
 						return okay;
 					}
 				}
@@ -1186,7 +1192,10 @@ qboolean R_ImportRTLights(const char *entlump, int importmode)
 		}
 		
 		if (rerelease)
-			r_shadow_realtime_world_lightmaps_force = 1;
+		{
+			if (r_shadow_realtime_world_lightmaps_force < 0)
+				r_shadow_realtime_world_lightmaps_force = 1;
+		}
 		else if (radius < 50)	//some mappers insist on many tiny lights. such lights can usually get away with no shadows..
 			pflags |= PFLAGS_NOSHADOW;
 
@@ -1204,7 +1213,7 @@ qboolean R_ImportRTLights(const char *entlump, int importmode)
 			dl->radius = radius;
 			VectorCopy(color, dl->color);
 			dl->flags = 0;
-			dl->flags |= LFLAG_REALTIMEMODE;
+			dl->flags |= rerelease?LFLAG_REALTIMEMODE|LFLAG_NORMALMODE:LFLAG_REALTIMEMODE;
 			dl->flags |= (pflags & PFLAGS_CORONA)?LFLAG_FLASHBLEND:0;
 			dl->flags |= (pflags & PFLAGS_NOSHADOW)?LFLAG_NOSHADOWS:0;
 			dl->style = style;
@@ -1675,7 +1684,7 @@ static int R_EditLight(dlight_t *dl, const char *cmd, int argc, const char *x, c
 		VectorInverse(dl->axis[1]);
 	}
 
-	else if (!strcmp(cmd, "avel"))
+	else if (!strcmp(cmd, "avel") || !strcmp(cmd, "spin"))
 	{
 		dl->rotation[0] = atof(x);
 		dl->rotation[1] = atof(y);
@@ -1688,7 +1697,7 @@ static int R_EditLight(dlight_t *dl, const char *cmd, int argc, const char *x, c
 	else if (!strcmp(cmd, "avelz"))
 		dl->rotation[2] = atof(x);
 
-	else if (!strcmp(cmd, "outercone") || !strcmp(cmd, "fov"))
+	else if (!strcmp(cmd, "outercone") || !strcmp(cmd, "fov") || !strcmp(cmd, "cone"))
 		dl->fov = atof(x);
 	else if (!strcmp(cmd, "nearclip"))
 		dl->nearclip = atof(x);
@@ -2671,7 +2680,7 @@ int R_LightPoint (vec3_t p)
 
 	end[0] = p[0];
 	end[1] = p[1];
-	end[2] = p[2] - 2048;
+	end[2] = p[2] - mod_lightpoint_distance.value;
 
 	r = GLRecursiveLightPoint (cl.worldmodel->rootnode, p, end);
 	
@@ -2696,7 +2705,7 @@ static float *GLRecursiveLightPoint3C (model_t *mod, mnode_t *node, const vec3_t
 	msurface_t	*surf;
 	int			s, t, ds, dt;
 	int			i;
-	mtexinfo_t	*tex;
+	vec4_t	*lmvecs;
 	qbyte		*lightmap, *deluxmap;
 	float	scale, overbright;
 	int			maps;
@@ -2743,10 +2752,13 @@ static float *GLRecursiveLightPoint3C (model_t *mod, mnode_t *node, const vec3_t
 		if (surf->flags & SURF_DRAWTILED)
 			continue;	// no lightmaps
 
-		tex = surf->texinfo;
+		if (mod->facelmvecs)
+			lmvecs = mod->facelmvecs[surf-mod->surfaces].lmvecs;
+		else
+			lmvecs = surf->texinfo->vecs;
 		
-		s = DotProduct (mid, tex->vecs[0]) + tex->vecs[0][3];
-		t = DotProduct (mid, tex->vecs[1]) + tex->vecs[1][3];
+		s = DotProduct (mid, lmvecs[0]) + lmvecs[0][3];
+		t = DotProduct (mid, lmvecs[1]) + lmvecs[1][3];
 
 		if (s < surf->texturemins[0] ||
 		t < surf->texturemins[1])
@@ -2913,6 +2925,246 @@ static float *GLRecursiveLightPoint3C (model_t *mod, mnode_t *node, const vec3_t
 
 #endif
 
+typedef struct
+{
+	vec3_t gridscale;
+	unsigned int count[3];
+	vec3_t mins;
+	unsigned int styles;
+
+	unsigned int rootnode;
+
+	unsigned int numnodes;
+	struct bspxlgnode_s
+	{	//this uses an octtree to trim samples.
+		int mid[3];
+		unsigned int child[8];
+#define LGNODE_LEAF		(1u<<31)
+#define LGNODE_MISSING	(1u<<30)
+	} *nodes;
+	unsigned int numleafs;
+	struct bspxlgleaf_s
+	{
+		int mins[3];
+		int size[3];
+		struct bspxlgsamp_s
+		{
+			struct
+			{
+				qbyte style;
+				qbyte rgb[3];
+			} map[4];
+		} *rgbvalues;
+	} *leafs;
+} bspxlightgrid_t;
+struct rctx_s {qbyte *data; int ofs, size;};
+static qbyte ReadByte(struct rctx_s *ctx)
+{
+	if (ctx->ofs >= ctx->size)
+	{
+		ctx->ofs++;
+		return 0;
+	}
+	return ctx->data[ctx->ofs++];
+}
+static int ReadInt(struct rctx_s *ctx)
+{
+	int r = (int)ReadByte(ctx)<<0;
+		r|= (int)ReadByte(ctx)<<8;
+		r|= (int)ReadByte(ctx)<<16;
+		r|= (int)ReadByte(ctx)<<24;
+	return r;
+}
+static float ReadFloat(struct rctx_s *ctx)
+{
+	union {float f; int i;} u;
+	u.i = ReadInt(ctx);
+	return u.f;
+}
+void BSPX_LightGridLoad(model_t *model, bspx_header_t *bspx, qbyte *mod_base)
+{
+	vec3_t step, mins;
+	int size[3];
+	bspxlightgrid_t *grid;
+	unsigned int numstyles, numnodes, numleafs, rootnode;
+	unsigned int nodestart, leafsamps = 0, i, j, k, s;
+	struct bspxlgsamp_s *samp;
+	struct rctx_s ctx = {0};
+	ctx.data = BSPX_FindLump(bspx, mod_base, "LIGHTGRID_OCTREE", &ctx.size);
+	model->lightgrid = NULL;
+	if (!ctx.data)
+		return;
+
+	for (j = 0; j < 3; j++)
+		step[j] = ReadFloat(&ctx);
+	for (j = 0; j < 3; j++)
+		size[j] = ReadInt(&ctx);
+	for (j = 0; j < 3; j++)
+		mins[j] = ReadFloat(&ctx);
+
+	numstyles = ReadByte(&ctx);	//urgh, misaligned the entire thing
+	rootnode = ReadInt(&ctx);
+	numnodes = ReadInt(&ctx);
+	nodestart = ctx.ofs;
+	ctx.ofs += (3+8)*4*numnodes;
+	numleafs = ReadInt(&ctx);
+	for (i = 0; i < numleafs; i++)
+	{
+		unsigned int lsz[3];
+		ctx.ofs += 3*4;
+		for (j = 0; j < 3; j++)
+			lsz[j] = ReadInt(&ctx);
+		j = lsz[0]*lsz[1]*lsz[2];
+		leafsamps += j;
+		while (j --> 0)
+		{	//this loop is annonying, memcpy dreams...
+			s = ReadByte(&ctx);
+			if (s == 255)
+				continue;
+			ctx.ofs += s*4;
+		}
+	}
+
+	grid = ZG_Malloc(&model->memgroup, sizeof(*grid) + sizeof(*grid->leafs)*numleafs + sizeof(*grid->nodes)*numnodes + sizeof(struct bspxlgsamp_s)*leafsamps);
+	memset(grid, 0xcc, sizeof(*grid) + sizeof(*grid->leafs)*numleafs + sizeof(*grid->nodes)*numnodes + sizeof(struct bspxlgsamp_s)*leafsamps);
+	grid->leafs = (void*)(grid+1);
+	grid->nodes = (void*)(grid->leafs + numleafs);
+	samp = (void*)(grid->nodes+numnodes);
+
+	for (j = 0; j < 3; j++)
+		grid->gridscale[j] = 1/step[j];	//prefer it as a multiply
+	VectorCopy(mins, grid->mins);
+	VectorCopy(size, grid->count);
+	grid->numnodes = numnodes;
+	grid->numleafs = numleafs;
+	grid->rootnode = rootnode;
+	(void)numstyles;
+
+	//rewind to the nodes. *sigh*
+	ctx.ofs = nodestart;
+	for (i = 0; i < numnodes; i++)
+	{
+		for (j = 0; j < 3; j++)
+			grid->nodes[i].mid[j] = ReadInt(&ctx);
+		for (j = 0; j < 8; j++)
+			grid->nodes[i].child[j] = ReadInt(&ctx);
+	}
+	ctx.ofs += 4;
+	for (i = 0; i < numleafs; i++)
+	{
+		for (j = 0; j < 3; j++)
+			grid->leafs[i].mins[j] = ReadInt(&ctx);
+		for (j = 0; j < 3; j++)
+			grid->leafs[i].size[j] = ReadInt(&ctx);
+
+		grid->leafs[i].rgbvalues = samp;
+
+		j = grid->leafs[i].size[0]*grid->leafs[i].size[1]*grid->leafs[i].size[2];
+		while (j --> 0)
+		{
+			s = ReadByte(&ctx);
+			if (s == 0xff)
+				memset(samp, 0xff, sizeof(*samp));
+			else
+			{
+				for (k = 0; k < s; k++)
+				{
+					if (k >= 4)
+						ReadInt(&ctx);
+					else
+					{
+						samp->map[k].style = ReadByte(&ctx);
+						samp->map[k].rgb[0] = ReadByte(&ctx);
+						samp->map[k].rgb[1] = ReadByte(&ctx);
+						samp->map[k].rgb[2] = ReadByte(&ctx);
+					}
+				}
+				for (; k < 4; k++)
+				{
+					samp->map[k].style = (qbyte)~0u;
+					samp->map[k].rgb[0] =
+					samp->map[k].rgb[1] =
+					samp->map[k].rgb[2] = 0;
+				}
+			}
+			samp++;
+		}
+	}
+
+	if (ctx.ofs != ctx.size)
+		grid = NULL;
+
+	model->lightgrid = (void*)grid;
+}
+static int BSPX_LightGridSingleValue(bspxlightgrid_t *grid, int x, int y, int z, vec3_t res_diffuse)
+{
+	int i;
+	unsigned int node;
+	struct bspxlgsamp_s *samp;
+	float lev;
+
+	node = grid->rootnode;
+	while (!(node & LGNODE_LEAF))
+	{
+		struct bspxlgnode_s *n;
+		if (node & LGNODE_MISSING)
+			return 0;	//failure
+		n = grid->nodes + node;
+		node = n->child[
+				((x>=n->mid[0])<<2)|
+				((y>=n->mid[1])<<1)|
+				((z>=n->mid[2])<<0)];
+	}
+
+	{
+		struct bspxlgleaf_s *leaf = &grid->leafs[node & ~LGNODE_LEAF];
+		x -= leaf->mins[0];
+		y -= leaf->mins[1];
+		z -= leaf->mins[2];
+		if (x >= leaf->size[0] ||
+			y >= leaf->size[1] ||
+			z >= leaf->size[2])
+			return 0;	//sample we're after is out of bounds...
+
+		i = x + leaf->size[0]*(y + leaf->size[1]*z);
+		samp = leaf->rgbvalues + i;
+
+		//no hdr support
+		for (i = 0; i < 4; i++)
+		{
+			if (samp->map[i].style == ((qbyte)(~0u)))
+				break;	//no more
+			lev = d_lightstylevalue[samp->map[i].style]*(1/255.0);
+			res_diffuse[0] += samp->map[i].rgb[0] * lev * cl_lightstyle[samp->map[i].style].colours[0];
+			res_diffuse[1] += samp->map[i].rgb[1] * lev * cl_lightstyle[samp->map[i].style].colours[1];
+			res_diffuse[2] += samp->map[i].rgb[2] * lev * cl_lightstyle[samp->map[i].style].colours[2];
+		}
+	}
+	return 1;
+}
+static void BSPX_LightGridValue(void *lightgridinfo, const vec3_t point, vec3_t res_diffuse, vec3_t res_ambient, vec3_t res_dir)
+{
+	bspxlightgrid_t *grid = lightgridinfo;
+	int tile[3];
+	int i;
+	int s;
+
+	VectorSet(res_diffuse, 0, 0, 0);	//assume worst
+	VectorSet(res_ambient, 0, 0, 0);	//assume worst
+	VectorSet(res_dir, 1, 0, 1);		//super lame
+
+	for (i = 0; i < 3; i++)
+		tile[i] = (point[i] - grid->mins[i]) * grid->gridscale[i];
+
+	for (i = 0, s = 0; i < 8; i++)
+		s += BSPX_LightGridSingleValue(grid,	tile[0]+!!(i&1),
+												tile[1]+!!(i&2),
+												tile[2]+!!(i&4), res_diffuse);
+
+	VectorScale(res_diffuse, 1.0/s, res_diffuse);	//average the successful ones
+	VectorScale(res_diffuse, 0.5, res_ambient);	//and fix up ambients.
+}
+
 void GLQ1BSP_LightPointValues(model_t *model, const vec3_t point, vec3_t res_diffuse, vec3_t res_ambient, vec3_t res_dir)
 {
 	vec3_t		end;
@@ -2940,9 +3192,12 @@ void GLQ1BSP_LightPointValues(model_t *model, const vec3_t point, vec3_t res_dif
 		return;
 	}
 
+	if (model->lightgrid)
+		return BSPX_LightGridValue(model->lightgrid, point, res_diffuse, res_ambient, res_dir);
+
 	end[0] = point[0];
 	end[1] = point[1];
-	end[2] = point[2] - 2048;
+	end[2] = point[2] - mod_lightpoint_distance.value;
 
 	r = GLRecursiveLightPoint3C(model, model->rootnode, point, end);
 	if (r == NULL)

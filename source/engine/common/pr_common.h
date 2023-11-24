@@ -1,6 +1,9 @@
+#ifndef PR_COMMON_H
+#define PR_COMMON_H
 #ifdef __cplusplus
 extern "C" {
 #endif
+
 #include "progtype.h"
 #include "progslib.h"
 
@@ -315,6 +318,7 @@ void QCBUILTIN PF_setattachment(pubprogfuncs_t *prinst, struct globalvars_s *pr_
 	void QCBUILTIN PF_frametoname (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 	void QCBUILTIN PF_skintoname (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 	void QCBUILTIN PF_frameforname (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
+	void QCBUILTIN PF_frameforaction (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 	void QCBUILTIN PF_frameduration (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 	void QCBUILTIN PF_modelframecount (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 	void QCBUILTIN PF_skinforname (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
@@ -352,6 +356,7 @@ void QCBUILTIN PF_brush_findinvolume(pubprogfuncs_t *prinst, struct globalvars_s
 void QCBUILTIN PF_patch_getcp(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 void QCBUILTIN PF_patch_getmesh(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 void QCBUILTIN PF_patch_create(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
+void QCBUILTIN PF_patch_evaluate(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 #endif
 
 void QCBUILTIN PF_touchtriggers(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
@@ -559,6 +564,19 @@ void QCBUILTIN PF_hash_getcb	(pubprogfuncs_t *prinst, struct globalvars_s *pr_gl
 void QCBUILTIN PF_hash_delete	(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 void QCBUILTIN PF_hash_getkey	(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 
+void QCBUILTIN PF_json_parse				(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
+void QCBUILTIN PF_json_get_value_type		(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
+void QCBUILTIN PF_json_get_integer			(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
+void QCBUILTIN PF_json_get_float			(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
+void QCBUILTIN PF_json_get_string			(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
+void QCBUILTIN PF_json_find_object_child	(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
+void QCBUILTIN PF_json_get_length			(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
+void QCBUILTIN PF_json_get_child_at_index	(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
+void QCBUILTIN PF_json_get_name				(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
+void QCBUILTIN PF_js_run_script				(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
+void QCBUILTIN PF_base64encode(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
+void QCBUILTIN PF_base64decode(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
+
 void QCBUILTIN PF_memalloc	(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 void QCBUILTIN PF_memfree	(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 void QCBUILTIN PF_memcpy	(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
@@ -583,6 +601,7 @@ const void *PR_GetReadQCPtr(pubprogfuncs_t *prinst, int qcptr, int qcsize);
 void *PR_GetWriteQCPtr(pubprogfuncs_t *prinst, int qcptr, int qcsize);
 
 uploadfmt_t PR_TranslateTextureFormat(int qcformat);
+int PR_UnTranslateTextureFormat(uploadfmt_t fteformat);
 
 //FIXME
 pbool PR_RunWarning (pubprogfuncs_t *ppf, char *error, ...);
@@ -652,7 +671,7 @@ unsigned int FTEToDPContents(unsigned int contents);
 #define	SOLID_BBOX				2		// touch on edge, block
 #define	SOLID_SLIDEBOX			3		// touch on edge, but not an onground
 #define	SOLID_BSP				4		// bsp clip, touch on edge, block
-#define	SOLID_PHASEH2			5		// hexen2 flag - these ents can be freely walked through or something
+#define	SOLID_PHASEH2			5		// hexen2 flag - this is apparently a modifier for movetype rather than solidity - passes through FL_MONSTER or MOVETYPE_WALK ents
 #define	SOLID_CORPSE			5		// non-solid to solid_slidebox entities and itself.
 #define SOLID_LADDER			20		//spike: legacy. forces FTECONTENTS_LADDER.
 #define SOLID_PORTAL			21		//1: traces always use point-size. 2: various movetypes automatically transform entities. 3: traces that impact portal bbox use a union. 4. traces ignore part of the world within the portal's box
@@ -1159,4 +1178,5 @@ enum
 
 #ifdef __cplusplus
 };
+#endif
 #endif

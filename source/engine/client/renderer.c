@@ -117,6 +117,7 @@ cvar_t gl_shadeq1_name						= CVARD  ("gl_shadeq1_name", "*", "Rename all surfac
 extern cvar_t r_vertexlight;
 extern cvar_t r_forceprogramify;
 extern cvar_t r_glsl_precache;
+extern cvar_t r_halfrate;
 extern cvar_t dpcompat_nopremulpics;
 #ifdef PSKMODELS
 cvar_t dpcompat_psa_ungroup					= CVAR  ("dpcompat_psa_ungroup", "0");
@@ -277,6 +278,9 @@ cvar_t vid_conautoscale						= CVARAF ("vid_conautoscale", "2",
 cvar_t vid_conautoscale						= CVARAFD ("vid_conautoscale", "0",
 												"scr_conscale"/*qs*/ /*"vid_conscale"ez*/, CVAR_ARCHIVE | CVAR_RENDERERCALLBACK, "Changes the 2d scale, including hud, console, and fonts. To specify an explicit font size, divide the desired 'point' size by 8 to get the scale. High values will be clamped to maintain at least a 320*200 virtual size.");
 #endif
+cvar_t vid_baseheight						= CVARD ("vid_baseheight", "", "Specifies a mod's target height and used only when the 2d scale is not otherwise forced. Unlike vid_conheight the size is not fixed and will be padded to avoid inconsistent filtering.");
+cvar_t vid_minsize							= CVARFD ("vid_minsize", "320 200",
+												CVAR_NOTFROMSERVER, "Specifies a mod's minimum virtual size.");
 cvar_t vid_conheight						= CVARF ("vid_conheight", "0",
 												CVAR_ARCHIVE);
 cvar_t vid_conwidth							= CVARF ("vid_conwidth", "0",
@@ -372,13 +376,13 @@ cvar_t r_tessellation						= CVARAFD  ("r_tessellation", "0", "gl_ati_truform", 
 cvar_t gl_ati_truform_type					= CVAR  ("gl_ati_truform_type", "1");
 cvar_t r_tessellation_level					= CVAR  ("r_tessellation_level", "5");
 cvar_t gl_blend2d							= CVAR  ("gl_blend2d", "1");
-cvar_t gl_blendsprites						= CVARD  ("gl_blendsprites", "0", "Specifies how sprites are blended.\n0: Alpha tested.\n1: Premultiplied blend.\n2: Additive blend.");
+cvar_t gl_blendsprites						= CVARFD  ("gl_blendsprites", "0", CVAR_SHADERSYSTEM, "Specifies how sprites are blended.\n0: Alpha tested.\n1: Premultiplied blend.\n2: Additive blend.");
 cvar_t r_deluxemapping_cvar					= CVARAFD ("r_deluxemapping", "1", "r_glsl_deluxemapping",
 												CVAR_ARCHIVE|CVAR_RENDERERLATCH, "Enables bumpmapping based upon precomputed light directions.\n0=off\n1=use if available\n2=auto-generate (if possible)");
 cvar_t mod_loadsurfenvmaps					= CVARD ("r_loadsurfenvmaps", "1", "Load local reflection environment-maps, where available. These are normally defined via env_cubemap entities dotted around the place.");
 qboolean r_deluxemapping;
 cvar_t r_shaderblobs						= CVARD ("r_shaderblobs", "0", "If enabled, can massively accelerate vid restarts / loading (especially with the d3d renderer). Can cause issues when upgrading engine versions, so this is disabled by default.");
-cvar_t gl_compress							= CVARFD ("gl_compress", "0", CVAR_ARCHIVE, "Enable automatic texture compression even for textures which are not pre-compressed.");
+cvar_t gl_compress							= CVARAFD ("gl_compress", "0", "r_ext_compressed_textures"/*q3*/, CVAR_ARCHIVE, "Enable automatic texture compression even for textures which are not pre-compressed.");
 cvar_t gl_conback							= CVARFCD ("gl_conback", "",
 												CVAR_RENDERERCALLBACK, R2D_Conback_Callback, "Specifies which conback shader/image to use. The Quake fallback is gfx/conback.lmp");
 //cvar_t gl_detail							= CVARF ("gl_detail", "0",
@@ -440,9 +444,9 @@ cvar_t gl_specular_fallbackexp				= CVARF  ("gl_specular_fallbackexp", "1", CVAR
 cvar_t gl_texture_anisotropic_filtering		= CVARAFCD("gl_texture_anisotropy", "4",
 												"gl_texture_anisotropic_filtering"/*old*/, CVAR_ARCHIVE | CVAR_RENDERERCALLBACK,
 												Image_TextureMode_Callback, "Allows for higher quality textures on surfaces that slope away from the camera (like the floor). Set to 16 or something. Only supported with trilinear filtering.");
-cvar_t gl_texturemode						= CVARFCD("gl_texturemode", "GL_LINEAR_MIPMAP_LINEAR",
+cvar_t gl_texturemode						= CVARAFCD("gl_texturemode", "GL_LINEAR_MIPMAP_LINEAR", "r_texturemode"/*q3*/,
 												CVAR_ARCHIVE | CVAR_RENDERERCALLBACK | CVAR_SAVE, Image_TextureMode_Callback,
-												"Specifies how world/model textures appear. Typically 3 letters eg lln.\nFirst letter can be l(inear) or n(earest) and says how to sample from the mip (when downsampling).\nThe middle letter can . to disable mipmaps, or l or n to describe whether to blend between mipmaps.\nThe third letter says what to do when the texture is too low resolution and is thus the most noticable with low resolution textures, a n will make it look like lego, while an l will keep it smooth.");
+												"Specifies how world/model textures appear. Typically 3 letters eg "S_COLOR_GREEN"nll"S_COLOR_WHITE" or "S_COLOR_GREEN"lll"S_COLOR_WHITE".\nFirst letter can be l(inear) or n(earest) and says how to upscale low-res textures (n for the classic look - often favoured for embedded textures, l for blurry - best for high-res textures).\nThe middle letter can be set to '.' to disable mipmaps, or n for ugly banding with distance, or l for smooth mipmap transitions.\nThe third letter says what to do when the texture is too high resolution, and should generally be set to 'l' to reduce sparkles including when aiming for the classic lego look.");
 cvar_t gl_texture_lodbias					= CVARAFCD("d_lodbias", "0", "gl_texture_lodbias",
 												CVAR_ARCHIVE | CVAR_RENDERERCALLBACK,
 												Image_TextureMode_Callback, "Biases choice of mipmap levels. Positive values will give more blury textures, while negative values will give crisper images (but will also give some mid-surface aliasing artifacts).");
@@ -454,6 +458,7 @@ cvar_t gl_texturemode2d						= CVARFCD("gl_texturemode2d", "GL_LINEAR",
 												"Specifies how 2d images are sampled. format is a 3-tupple ");
 cvar_t r_font_linear						= CVARF("r_font_linear", "1", CVAR_ARCHIVE);
 cvar_t r_font_postprocess_outline			= CVARFD("r_font_postprocess_outline", "0", 0, "Controls the number of pixels of dark borders to use around fonts.");
+cvar_t r_font_postprocess_mono				= CVARFD("r_font_postprocess_mono", "0", 0, "Disables anti-aliasing on fonts.");
 
 #if defined(HAVE_LEGACY) && defined(AVAIL_FREETYPE)
 cvar_t dpcompat_smallerfonts				= CVARFD("dpcompat_smallerfonts", "0", 0, "Mimics DP's behaviour of using a smaller font size than was actually requested.");
@@ -468,7 +473,7 @@ cvar_t r_noaliasshadows						= CVARF ("r_noaliasshadows", "0", CVAR_ARCHIVE);
 cvar_t r_lodscale							= CVARFD ("r_lodscale", "5", CVAR_ARCHIVE, "Scales the level-of-detail reduction on models (for those that have lod).");
 cvar_t r_lodbias							= CVARFD ("r_lodbias", "0", CVAR_ARCHIVE, "Biases the level-of-detail on models (for those that have lod).");
 cvar_t r_shadows							= CVARFD ("r_shadows", "0", CVAR_ARCHIVE, "Draw basic blob shadows underneath entities without using realtime lighting.");
-cvar_t r_showbboxes							= CVARD("r_showbboxes", "0", "Debugging. Shows bounding boxes. 1=ssqc, 2=csqc. Red=solid, Green=stepping/toss/bounce, Blue=onground.");
+cvar_t r_showbboxes							= CVARFD("r_showbboxes", "0", CVAR_CHEAT, "Debugging. Shows bounding boxes. 1=ssqc, 2=csqc. Red=solid, Green=stepping/toss/bounce, Blue=onground.");
 cvar_t r_showfields							= CVARD("r_showfields", "0", "Debugging. Shows entity fields boxes (entity closest to crosshair). 1=ssqc, 2=csqc, 3=snapshots.");
 cvar_t r_showshaders						= CVARD("r_showshaders", "0", "Debugging. Shows the name of the (worldmodel) shader being pointed to.");
 cvar_t r_lightprepass_cvar					= CVARFD("r_lightprepass", "0", CVAR_ARCHIVE, "Experimental. Attempt to use a different lighting mechanism (aka: deferred lighting). Requires vid_reload to take effect.");
@@ -682,6 +687,13 @@ void R_ListSkins_f(void)
 void R_SetRenderer_f (void);
 void R_ReloadRenderer_f (void);
 
+#ifdef _DEBUG
+static void R_ShowBatches_f(void)
+{
+	sh_config.showbatches = true;
+}
+#endif
+
 void R_ToggleFullscreen_f(void)
 {
 	double time;
@@ -757,6 +769,10 @@ void Renderer_Init(void)
 	Cmd_AddCommand("r_remapshader", Shader_RemapShader_f);
 	Cmd_AddCommand("r_showshader", Shader_ShowShader_f);
 
+#ifdef _DEBUG
+	Cmd_AddCommand("r_showbatches", R_ShowBatches_f);
+#endif
+
 #ifdef SWQUAKE
 	{
 	extern cvar_t sw_interlace;
@@ -791,9 +807,11 @@ void Renderer_Init(void)
 	Cvar_Register (&vid_bpp, VIDCOMMANDGROUP);
 	Cvar_Register (&vid_depthbits, VIDCOMMANDGROUP);
 
+	Cvar_Register (&vid_baseheight, VIDCOMMANDGROUP);
 	Cvar_Register (&vid_conwidth, VIDCOMMANDGROUP);
 	Cvar_Register (&vid_conheight, VIDCOMMANDGROUP);
 	Cvar_Register (&vid_conautoscale, VIDCOMMANDGROUP);
+	Cvar_Register (&vid_minsize, VIDCOMMANDGROUP);
 
 	Cvar_Register (&vid_triplebuffer, VIDCOMMANDGROUP);
 	Cvar_Register (&vid_width, VIDCOMMANDGROUP);
@@ -967,6 +985,7 @@ void Renderer_Init(void)
 	Cvar_Register (&gl_texturemode2d, GLRENDEREROPTIONS);
 	Cvar_Register (&r_font_linear, GLRENDEREROPTIONS);
 	Cvar_Register (&r_font_postprocess_outline, GLRENDEREROPTIONS);
+	Cvar_Register (&r_font_postprocess_mono, GLRENDEREROPTIONS);
 #if defined(HAVE_LEGACY) && defined(AVAIL_FREETYPE)
 	Cvar_Register (&dpcompat_smallerfonts, GLRENDEREROPTIONS);
 #endif
@@ -1004,6 +1023,7 @@ void Renderer_Init(void)
 
 	Cvar_Register (&r_forceprogramify, GLRENDEREROPTIONS);
 	Cvar_Register (&r_glsl_precache, GLRENDEREROPTIONS);
+	Cvar_Register (&r_halfrate, GRAPHICALNICETIES);
 #ifdef HAVE_LEGACY
 	Cvar_Register (&dpcompat_nopremulpics, GLRENDEREROPTIONS);
 #endif
@@ -1014,9 +1034,9 @@ void Renderer_Init(void)
 // misc
 	Cvar_Register(&con_ocranaleds, "Console controls");
 
-	Cmd_AddCommand ("listfonts", R_ListFonts_f);
-	Cmd_AddCommand ("listskins", R_ListSkins_f);
-	Cmd_AddCommand ("listconfigs", R_ListConfigs_f);
+	Cmd_AddCommandD ("listfonts", R_ListFonts_f, "Displays a list of every installed font.");
+	Cmd_AddCommandD ("listskins", R_ListSkins_f, "Displays a list of every installed or downloaded QuakeWorld player skin.");
+	Cmd_AddCommandD ("listconfigs", R_ListConfigs_f, "Displays a list of every installed config file.");
 
 	R_Sky_Register();
 
@@ -1274,9 +1294,7 @@ static void R_RegisterBuiltinRenderers(void)
 		R_RegisterRenderer(NULL, &fbdevrendererinfo);	//direct stuff that doesn't interact well with the system should always be low priority
 	}
 	#endif
-	#ifndef NPQTV
 		R_RegisterRenderer(NULL, &dedicatedrendererinfo);
-	#endif
 	#ifdef HEADLESSQUAKE
 	{
 		extern rendererinfo_t headlessrenderer;
@@ -1691,7 +1709,7 @@ TRACE(("dbg: R_ApplyRenderer: clearing world\n"));
 
 		if (sv.world.worldmodel->loadstate != MLS_LOADED)
 			SV_UnspawnServer();
-		else if (svs.gametype == GT_PROGS)
+		else if (svs.gametype == GT_PROGS || svs.gametype == GT_Q1QVM)
 		{
 			for (i = 0; i < MAX_PRECACHE_MODELS; i++)
 			{
@@ -1756,7 +1774,7 @@ TRACE(("dbg: R_ApplyRenderer: clearing world\n"));
 	}
 #endif
 #ifdef PLUGINS
-	Plug_ResChanged();
+	Plug_ResChanged(true);
 #endif
 	Cvar_ForceCallback(&r_particlesystem);
 #ifdef MENU_NATIVECODE
@@ -1775,20 +1793,24 @@ TRACE(("dbg: R_ApplyRenderer: starting on client state\n"));
 	if (!isDedicated)
 		S_DoRestart(true);
 
+#ifdef VM_UI
+	if (q3)
+		q3->ui.Reset();
+#endif
+
 #ifdef Q3SERVER
 	if (svs.gametype == GT_QUAKE3)
 	{
 		cl.worldmodel = NULL;
-		CG_Stop();
-		memset(cl.model_precache, 0, sizeof(cl.model_precache));
-		CG_Start();
-		if (cl.worldmodel)
-			Surf_NewMap();
+		if (q3)
+			q3->cg.VideoRestarted();
 	}
 	else
 #endif
 	if (cl.worldmodel)
 	{
+		int wmidx = 0;
+		model_t *oldwm = cl.worldmodel;
 		cl.worldmodel = NULL;
 		CL_ClearEntityLists();	//shouldn't really be needed, but we're paranoid
 
@@ -1800,6 +1822,9 @@ TRACE(("dbg: R_ApplyRenderer: reloading ALL models\n"));
 				break;
 
 			TRACE(("dbg: R_ApplyRenderer: reloading model %s\n", cl.model_name[i]));
+
+			if (oldwm == cl.model_precache[i])
+				wmidx = i;
 
 #ifdef Q2CLIENT	//skip vweps
 			if (cls.protocol == CP_QUAKE2 && *cl.model_name[i] == '#')
@@ -1828,14 +1853,19 @@ TRACE(("dbg: R_ApplyRenderer: reloading ALL models\n"));
 			if (!cl.model_csqcname[i][0])
 				break;
 
+			if (oldwm == cl.model_csqcprecache[i])
+				wmidx = -i;
+
 			cl.model_csqcprecache[i] = NULL;
 			TRACE(("dbg: R_ApplyRenderer: reloading csqc model %s\n", cl.model_csqcname[i]));
 			cl.model_csqcprecache[i] = Mod_ForName (Mod_FixName(cl.model_csqcname[i], cl.model_name[1]), MLV_SILENT);
 		}
-#endif
 
-		//fixme: worldmodel could be ssqc or csqc.
-		cl.worldmodel = cl.model_precache[1];
+		if (wmidx < 0)
+			cl.worldmodel = cl.model_csqcprecache[-wmidx];
+		else
+#endif
+			cl.worldmodel = cl.model_precache[wmidx];
 
 		if (cl.worldmodel && cl.worldmodel->loadstate == MLS_LOADING)
 			COM_WorkerPartialSync(cl.worldmodel, &cl.worldmodel->loadstate, MLS_LOADING);
@@ -1843,16 +1873,14 @@ TRACE(("dbg: R_ApplyRenderer: reloading ALL models\n"));
 TRACE(("dbg: R_ApplyRenderer: done the models\n"));
 		if (!cl.worldmodel || cl.worldmodel->loadstate != MLS_LOADED)
 		{
-//				Con_Printf ("\nThe required model file '%s' could not be found.\n\n", cl.model_name[i]);
-//				Con_Printf ("You may need to download or purchase a client pack in order to play on this server.\n\n");
+//			Con_Printf ("\nThe required model file '%s' could not be found.\n\n", cl.model_name[i]);
+//			Con_Printf ("You may need to download or purchase a client pack in order to play on this server.\n\n");
 
-				CL_Disconnect ("Worldmodel missing after video reload");
-#ifdef VM_UI
-				UI_Reset();
-#endif
-				if (newr)
-					memcpy(&currentrendererstate, newr, sizeof(currentrendererstate));
-				return true;
+			CL_Disconnect ("Worldmodel missing after video reload");
+
+			if (newr)
+				memcpy(&currentrendererstate, newr, sizeof(currentrendererstate));
+			return true;
 		}
 
 TRACE(("dbg: R_ApplyRenderer: checking any wad textures\n"));
@@ -1862,18 +1890,12 @@ TRACE(("dbg: R_ApplyRenderer: checking any wad textures\n"));
 			cl_static_entities[i].ent.model = NULL;
 
 TRACE(("dbg: R_ApplyRenderer: Surf_NewMap\n"));
-		Surf_NewMap();
+		Surf_NewMap(cl.worldmodel);
 TRACE(("dbg: R_ApplyRenderer: efrags\n"));
 
 //		Skin_FlushAll();
 		Skin_FlushPlayers();
 
-	}
-	else
-	{
-#ifdef VM_UI
-		UI_Reset();
-#endif
 	}
 
 #ifdef SKELETALOBJECTS
@@ -1881,7 +1903,7 @@ TRACE(("dbg: R_ApplyRenderer: efrags\n"));
 #endif
 #ifdef CSQC_DAT
 	Shader_DoReload();
-	CSQC_RendererRestarted();
+	CSQC_RendererRestarted(false);
 #endif
 #ifdef MENU_DAT
 	MP_RendererRestarted();
@@ -2173,7 +2195,7 @@ void R_RestartRenderer (rendererstate_t *newr)
 	rendererstate_t oldr;
 	if (r_blockvidrestart)
 	{
-		Con_Printf("Ignoring vid_restart from config\n");
+		Con_TPrintf("Ignoring vid_restart from config\n");
 		return;
 	}
 
@@ -2661,115 +2683,8 @@ unsigned int	r_viewcontents;
 //mleaf_t		*r_viewleaf, *r_oldviewleaf;
 //mleaf_t		*r_viewleaf2, *r_oldviewleaf2;
 int r_viewarea;
-int		r_viewcluster, r_viewcluster2, r_oldviewcluster, r_oldviewcluster2;
-int r_visframecount;
-static pvsbuffer_t	curframevis[R_MAX_RECURSE];
+int		r_viewcluster, r_viewcluster2;
 
-
-#ifdef Q1BSPS
-qbyte *R_MarkLeaves_Q1 (qboolean getvisonly)
-{
-	static qbyte	*cvis[R_MAX_RECURSE];
-	qbyte *vis;
-	mnode_t	*node;
-	int		i;
-	int portal = r_refdef.recurse;
-
-	//for portals to work, we need two sets of any pvs caches
-	//this means lights can still check pvs at the end of the frame despite recursing in the mean time
-	//however, we still need to invalidate the cache because we only have one 'visframe' field in nodes.
-
-	if (r_refdef.forcevis)
-	{
-		vis = cvis[portal] = r_refdef.forcedvis;
-
-		r_oldviewcluster = -1;
-		r_oldviewcluster2 = -2;
-	}
-	else
-	{
-		if (!portal)
-		{
-			if (((r_oldviewcluster == r_viewcluster && r_oldviewcluster2 == r_viewcluster2) && !r_novis.ival) || r_novis.ival & 2)
-				return cvis[portal];
-
-			r_oldviewcluster = r_viewcluster;
-			r_oldviewcluster2 = r_viewcluster2;
-		}
-		else
-		{
-			r_oldviewcluster = -1;
-			r_oldviewcluster2 = -2;
-		}
-
-		if (r_novis.ival)
-		{
-			if (curframevis[portal].buffersize < cl.worldmodel->pvsbytes)
-				curframevis[portal].buffer = BZ_Realloc(curframevis[portal].buffer, curframevis[portal].buffersize=cl.worldmodel->pvsbytes);
-			vis = cvis[portal] = curframevis[portal].buffer;
-			memset (curframevis[portal].buffer, 0xff, curframevis[portal].buffersize);
-
-			r_oldviewcluster = -1;
-			r_oldviewcluster2 = -2;
-		}
-		else
-		{
-			if (r_viewcluster2 != -1 && r_viewcluster2 != r_viewcluster)
-			{
-				vis = cvis[portal] = cl.worldmodel->funcs.ClusterPVS(cl.worldmodel, r_viewcluster, &curframevis[portal], PVM_REPLACE);
-				vis = cvis[portal] = cl.worldmodel->funcs.ClusterPVS(cl.worldmodel, r_viewcluster2, &curframevis[portal], PVM_MERGE);
-			}
-			else
-				vis = cvis[portal] = cl.worldmodel->funcs.ClusterPVS(cl.worldmodel, r_viewcluster, &curframevis[portal], PVM_FAST);
-		}
-	}
-
-	r_visframecount++;
-
-	if (getvisonly)
-		return vis;
-	else if (r_viewcluster == -1)
-	{
-		//to improve spectating, when the camera is in a wall, we ignore any sky leafs.
-		//this prevents seeing the upwards-facing sky surfaces within the sky volumes.
-		//this will not affect inwards facing sky, so sky will basically appear as though it is identical to solid brushes.
-		for (i=0 ; i<cl.worldmodel->numclusters ; i++)
-		{
-			if (vis[i>>3] & (1<<(i&7)))
-			{
-				if (cl.worldmodel->leafs[i+1].contents == Q1CONTENTS_SKY)
-					continue;
-				node = (mnode_t *)&cl.worldmodel->leafs[i+1];
-				do
-				{
-					if (node->visframe == r_visframecount)
-						break;
-					node->visframe = r_visframecount;
-					node = node->parent;
-				} while (node);
-			}
-		}
-	}
-	else
-	{
-		for (i=0 ; i<cl.worldmodel->numclusters ; i++)
-		{
-			if (vis[i>>3] & (1<<(i&7)))
-			{
-				node = (mnode_t *)&cl.worldmodel->leafs[i+1];
-				do
-				{
-					if (node->visframe == r_visframecount)
-						break;
-					node->visframe = r_visframecount;
-					node = node->parent;
-				} while (node);
-			}
-		}
-	}
-	return vis;
-}
-#endif
 
 /*
 =================

@@ -59,7 +59,7 @@ extern texid_t r_whiteimage, missing_texture_gloss, missing_texture_normal;
 extern texid_t r_blackimage, r_blackcubeimage, r_whitecubeimage;
 
 static void BE_RotateForEntity (const entity_t *fte_restrict e, const model_t *fte_restrict mod);
-void VKBE_SetupLightCBuffer(dlight_t *l, vec3_t colour);
+static void VKBE_SetupLightCBuffer(dlight_t *l, vec3_t colour, vec3_t axis[3]);
 
 #ifdef VK_EXT_debug_utils
 static void DebugSetName(VkObjectType objtype, uint64_t handle, const char *name)
@@ -2155,6 +2155,9 @@ static void BE_CreatePipeline(program_t *p, unsigned int shaderflags, unsigned i
 	VkGraphicsPipelineCreateInfo pipeCreateInfo = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
 	VkPipelineShaderStageCreateInfo shaderStages[2] = {{0}};
 	VkPipelineRasterizationStateRasterizationOrderAMD ro = {VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_RASTERIZATION_ORDER_AMD};	//long enough names for you?
+#ifdef VK_KHR_fragment_shading_rate
+	VkPipelineFragmentShadingRateStateCreateInfoKHR shadingrate = {VK_STRUCTURE_TYPE_PIPELINE_FRAGMENT_SHADING_RATE_STATE_CREATE_INFO_KHR};
+#endif
 	struct specdata_s
 	{
 		int alphamode;
@@ -2511,6 +2514,28 @@ static void BE_CreatePipeline(program_t *p, unsigned int shaderflags, unsigned i
 
 //	pipeCreateInfo.flags = VK_PIPELINE_CREATE_ALLOW_DERIVATIVES_BIT;
 
+#ifdef VK_KHR_fragment_shading_rate
+	if (vk.khr_fragment_shading_rate)
+	{
+		//three ways to specify rates... we need to set which one wins here.
+		shadingrate.combinerOps[0] = VK_FRAGMENT_SHADING_RATE_COMBINER_OP_MAX_KHR;//pipeline vs primitive
+		shadingrate.combinerOps[1] = VK_FRAGMENT_SHADING_RATE_COMBINER_OP_MAX_KHR;//previous vs attachment
+		if (blendflags & SBITS_MISC_FULLRATE)
+		{
+			shadingrate.fragmentSize.width = 1;
+			shadingrate.fragmentSize.height = 1;
+		}
+		else
+		{	//actually this is more quater-rate. oh well.
+			shadingrate.fragmentSize.width = 2;
+			shadingrate.fragmentSize.height = 2;
+		}
+
+		shadingrate.pNext = pipeCreateInfo.pNext;
+		pipeCreateInfo.pNext = &shadingrate;
+	}
+#endif
+
 	err = vkCreateGraphicsPipelines(vk.device, vk.pipelinecache, 1, &pipeCreateInfo, vkallocationcb, &pipe->pipeline);
 	DebugSetName(VK_OBJECT_TYPE_PIPELINE, (uint64_t)pipe->pipeline, p->name);
 
@@ -2530,7 +2555,7 @@ static void BE_BindPipeline(program_t *p, unsigned int shaderflags, unsigned int
 	blendflags &=	0
 					| SBITS_SRCBLEND_BITS | SBITS_DSTBLEND_BITS | SBITS_MASK_BITS | SBITS_ATEST_BITS
 					| SBITS_MISC_DEPTHWRITE | SBITS_MISC_NODEPTHTEST | SBITS_DEPTHFUNC_BITS
-					| SBITS_LINES
+					| SBITS_LINES | SBITS_MISC_FULLRATE
 					;
 	shaderflags &= 0
 					| SHADER_CULL_FRONT | SHADER_CULL_BACK
@@ -3266,14 +3291,14 @@ qboolean VKBE_SelectDLight(dlight_t *dl, vec3_t colour, vec3_t axis[3], unsigned
 		lmode &= ~(LSHADER_SMAP|LSHADER_CUBE);
 		if (!VKBE_GenerateRTLightShader(lmode))
 		{
-			VKBE_SetupLightCBuffer(NULL, colour);
+			VKBE_SetupLightCBuffer(NULL, colour, NULL);
 			return false;
 		}
 	}
 	shaderstate.curdlight = dl;
 	shaderstate.curlmode = lmode;
 
-	VKBE_SetupLightCBuffer(dl, colour);
+	VKBE_SetupLightCBuffer(dl, colour, axis);
 	return true;
 }
 
@@ -3743,7 +3768,7 @@ batch_t *VKBE_GetTempBatch(void)
 	return &shaderstate.wbatches[shaderstate.wbatch++];
 }
 
-void VKBE_SetupLightCBuffer(dlight_t *l, vec3_t colour)
+static void VKBE_SetupLightCBuffer(dlight_t *dl, vec3_t colour, vec3_t axis[3])
 {
 #ifdef RTLIGHTS
 	extern cvar_t gl_specular;
@@ -3751,7 +3776,7 @@ void VKBE_SetupLightCBuffer(dlight_t *l, vec3_t colour)
 	vkcbuf_light_t *cbl = VKBE_AllocateBufferSpace(DB_UBO, (sizeof(*cbl) + 0x0ff) & ~0xff, &shaderstate.ubo_light.buffer, &shaderstate.ubo_light.offset);
 	shaderstate.ubo_light.range = sizeof(*cbl);
 
-	if (!l)
+	if (!dl)
 	{
 		memset(cbl, 0, sizeof(*cbl));
 
@@ -3760,36 +3785,51 @@ void VKBE_SetupLightCBuffer(dlight_t *l, vec3_t colour)
 	}
 
 
-	cbl->l_lightradius = l->radius;
+	cbl->l_lightradius = dl->radius;
 
 #ifdef RTLIGHTS
-	if (shaderstate.curlmode & LSHADER_SPOT)
+	if (shaderstate.curlmode & LSHADER_ORTHO)
+	{
+		float view[16];
+		float proj[16];
+		float xmin = -dl->radius;
+		float ymin = -dl->radius;
+		float znear = -dl->radius;
+		float xmax = dl->radius;
+		float ymax = dl->radius;
+		float zfar = dl->radius;
+		Matrix4x4_CM_Orthographic(proj, xmin, xmax, ymax, ymin, znear, zfar);
+		Matrix4x4_CM_ModelViewMatrixFromAxis(view, axis[0], axis[2], axis[1], dl->origin);
+		Matrix4_Multiply(proj, view, cbl->l_cubematrix);
+//		Matrix4x4_CM_LightMatrixFromAxis(cbl->l_cubematrix, axis[0], axis[1], axis[2], dl->origin);
+	}
+	else if (shaderstate.curlmode & LSHADER_SPOT)
 	{
 		float view[16];
 		float proj[16];
 		extern cvar_t r_shadow_shadowmapping_nearclip;
-		Matrix4x4_CM_Projection_Far(proj, l->fov, l->fov, l->nearclip?l->nearclip:r_shadow_shadowmapping_nearclip.value, l->radius, false);
-		Matrix4x4_CM_ModelViewMatrixFromAxis(view, l->axis[0], l->axis[1], l->axis[2], l->origin);
+		Matrix4x4_CM_Projection_Far(proj, dl->fov, dl->fov, dl->nearclip?dl->nearclip:r_shadow_shadowmapping_nearclip.value, dl->radius, false);
+		Matrix4x4_CM_ModelViewMatrixFromAxis(view, axis[0], axis[1], axis[2], dl->origin);
 		Matrix4_Multiply(proj, view, cbl->l_cubematrix);
 	}
 	else
 #endif
-		Matrix4x4_CM_LightMatrixFromAxis(cbl->l_cubematrix, l->axis[0], l->axis[1], l->axis[2], l->origin);
-	VectorCopy(l->origin, cbl->l_lightposition);
+		Matrix4x4_CM_LightMatrixFromAxis(cbl->l_cubematrix, axis[0], axis[1], axis[2], dl->origin);
+	VectorCopy(dl->origin, cbl->l_lightposition);
 	cbl->padl1 = 0;
 	VectorCopy(colour, cbl->l_colour);
 #ifdef RTLIGHTS
-	VectorCopy(l->lightcolourscales, cbl->l_lightcolourscale);
-	cbl->l_lightcolourscale[0] = l->lightcolourscales[0];
-	cbl->l_lightcolourscale[1] = l->lightcolourscales[1];
-	cbl->l_lightcolourscale[2] = l->lightcolourscales[2] * gl_specular.value;
+	VectorCopy(dl->lightcolourscales, cbl->l_lightcolourscale);
+	cbl->l_lightcolourscale[0] = dl->lightcolourscales[0];
+	cbl->l_lightcolourscale[1] = dl->lightcolourscales[1];
+	cbl->l_lightcolourscale[2] = dl->lightcolourscales[2] * gl_specular.value;
 #endif
-	cbl->l_lightradius = l->radius;
+	cbl->l_lightradius = dl->radius;
 	Vector4Copy(shaderstate.lightshadowmapproj, cbl->l_shadowmapproj);
 	Vector2Copy(shaderstate.lightshadowmapscale, cbl->l_shadowmapscale);
 
-	VectorCopy(l->origin, shaderstate.lightinfo);
-	shaderstate.lightinfo[3] = l->radius;
+	VectorCopy(dl->origin, shaderstate.lightinfo);
+	shaderstate.lightinfo[3] = dl->radius;
 }
 
 
@@ -3817,46 +3857,46 @@ static void BE_RotateForEntity (const entity_t *fte_restrict e, const model_t *f
 
 		if (e->flags & RF_WEAPONMODELNOBOB)
 		{
-			vm[0] = vpn[0];
-			vm[1] = vpn[1];
-			vm[2] = vpn[2];
+			vm[0] = r_refdef.weaponmatrix[0][0];
+			vm[1] = r_refdef.weaponmatrix[0][1];
+			vm[2] = r_refdef.weaponmatrix[0][2];
 			vm[3] = 0;
 
-			vm[4] = -vright[0];
-			vm[5] = -vright[1];
-			vm[6] = -vright[2];
+			vm[4] = r_refdef.weaponmatrix[1][0];
+			vm[5] = r_refdef.weaponmatrix[1][1];
+			vm[6] = r_refdef.weaponmatrix[1][2];
 			vm[7] = 0;
 
-			vm[8] = vup[0];
-			vm[9] = vup[1];
-			vm[10] = vup[2];
+			vm[8]  = r_refdef.weaponmatrix[2][0];
+			vm[9]  = r_refdef.weaponmatrix[2][1];
+			vm[10] = r_refdef.weaponmatrix[2][2];
 			vm[11] = 0;
 
-			vm[12] = r_refdef.vieworg[0];
-			vm[13] = r_refdef.vieworg[1];
-			vm[14] = r_refdef.vieworg[2];
+			vm[12] = r_refdef.weaponmatrix[3][0];
+			vm[13] = r_refdef.weaponmatrix[3][1];
+			vm[14] = r_refdef.weaponmatrix[3][2];
 			vm[15] = 1;
 		}
 		else
 		{
-			vm[0] = r_refdef.playerview->vw_axis[0][0];
-			vm[1] = r_refdef.playerview->vw_axis[0][1];
-			vm[2] = r_refdef.playerview->vw_axis[0][2];
+			vm[0] = r_refdef.weaponmatrix_bob[0][0];
+			vm[1] = r_refdef.weaponmatrix_bob[0][1];
+			vm[2] = r_refdef.weaponmatrix_bob[0][2];
 			vm[3] = 0;
 
-			vm[4] = r_refdef.playerview->vw_axis[1][0];
-			vm[5] = r_refdef.playerview->vw_axis[1][1];
-			vm[6] = r_refdef.playerview->vw_axis[1][2];
+			vm[4] = r_refdef.weaponmatrix_bob[1][0];
+			vm[5] = r_refdef.weaponmatrix_bob[1][1];
+			vm[6] = r_refdef.weaponmatrix_bob[1][2];
 			vm[7] = 0;
 
-			vm[8] = r_refdef.playerview->vw_axis[2][0];
-			vm[9] = r_refdef.playerview->vw_axis[2][1];
-			vm[10] = r_refdef.playerview->vw_axis[2][2];
+			vm[8] = r_refdef.weaponmatrix_bob[2][0];
+			vm[9] = r_refdef.weaponmatrix_bob[2][1];
+			vm[10] = r_refdef.weaponmatrix_bob[2][2];
 			vm[11] = 0;
 
-			vm[12] = r_refdef.playerview->vw_origin[0];
-			vm[13] = r_refdef.playerview->vw_origin[1];
-			vm[14] = r_refdef.playerview->vw_origin[2];
+			vm[12] = r_refdef.weaponmatrix_bob[3][0];
+			vm[13] = r_refdef.weaponmatrix_bob[3][1];
+			vm[14] = r_refdef.weaponmatrix_bob[3][2];
 			vm[15] = 1;
 		}
 

@@ -169,6 +169,7 @@ enum
 
 	SBITS_TESSELLATION					= 0x00100000,
 	SBITS_AFFINE						= 0x00200000,
+	SBITS_MISC_FULLRATE					= 0x00400000,	//don't use half-rate shading (for text/ui)
 
 	//provided for the backend to hack about with
 	SBITS_LINES							= 0x80000000
@@ -653,7 +654,6 @@ struct shader_s
 		SHADER_HASLIGHTMAP		= 1 << 16,
 		SHADER_HASTOPBOTTOM		= 1 << 17,
 		SHADER_HASREFLECTCUBE	= 1 << 18,	//shader has a T_GEN_REFLECTCUBE pass (otherwise we can skip surf envmaps for better batching)
-//		SHADER_STATICDATA		= 1 << 18,	//set if true: no deforms, no tcgen, rgbgen=identitylighting, alphagen=identity, tmu0=st + tmu1=lm(if available) for every pass, no norms
 		SHADER_HASREFLECT		= 1 << 19,	//says that we need to generate a reflection image first
 		SHADER_HASREFRACT		= 1 << 20,	//says that we need to generate a refraction image first
 		SHADER_HASREFRACTDEPTH	= 1 << 21,	//refraction generation needs to generate a depth texture too.
@@ -846,12 +846,15 @@ typedef struct
 	qboolean can_mipbias;		//gl1.4+
 	qboolean can_genmips;		//gl3.0+
 	qboolean havecubemaps;	//since gl1.3, so pretty much everyone will have this... should probably only be set if we also have seamless or clamp-to-edge.
+	unsigned int stencilbits;
 
 	void	 (*pDeleteProg)		(program_t *prog);
 	qboolean (*pLoadBlob)		(program_t *prog, unsigned int permu, vfsfile_t *blobfile);
 	qboolean (*pCreateProgram)	(program_t *prog, struct programpermu_s *permu, int ver, const char **precompilerconstants, const char *vert, const char *tcs, const char *tes, const char *geom, const char *frag, qboolean noerrors, vfsfile_t *blobfile);
 	qboolean (*pValidateProgram)(program_t *prog, struct programpermu_s *permu, qboolean noerrors, vfsfile_t *blobfile);
 	void	 (*pProgAutoFields)	(program_t *prog, struct programpermu_s *permu, char **cvarnames, int *cvartypes);
+
+	qboolean showbatches;	//print batches... cleared at end of video frame.
 } sh_config_t;
 extern sh_config_t sh_config;
 #endif
@@ -1061,7 +1064,9 @@ void Sh_PreGenerateLights(void);
 //Draws lights, called from the backend
 void Sh_DrawLights(qbyte *vis);
 void Sh_GenerateFakeShadows(void);
+#ifdef RTLIGHTS
 void Sh_CheckSettings(void);
+#endif
 void SH_FreeShadowMesh(struct shadowmesh_s *sm);
 //frees all memory
 void Sh_Shutdown(void);

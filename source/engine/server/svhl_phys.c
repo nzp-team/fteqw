@@ -979,19 +979,11 @@ void SVHL_CheckWaterTransition (hledict_t *ent)
 
 	if (cont <= Q1CONTENTS_WATER)
 	{
-		if (ent->v.watertype == Q1CONTENTS_EMPTY)
-		{	// just crossed into water
-			SVHL_StartSound (ent, 0, "misc/h2ohit1.wav", 255, 1);
-		}
 		ent->v.watertype = cont;
 		ent->v.waterlevel = 1;
 	}
 	else
 	{
-		if (ent->v.watertype != Q1CONTENTS_EMPTY)
-		{	// just crossed into open
-			SVHL_StartSound (ent, 0, "misc/h2ohit1.wav", 255, 1);
-		}
 		ent->v.watertype = Q1CONTENTS_EMPTY;
 		ent->v.waterlevel = cont;
 	}
@@ -1129,7 +1121,7 @@ void SVHL_Physics_Step (hledict_t *ent)
 		{
 			if (hitsound)
 			{
-				//SVHL_StartSound (ent, 0, "demon/dland2.wav", 255, 1);
+				SVHL_StartSound (ent, 0, "demon/dland2.wav", 255, 1);
 			}
 		}
 	}

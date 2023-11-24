@@ -84,7 +84,6 @@ LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_UK
 
 // Icon with lowest ID value placed first to ensure application icon
 // remains consistent on all systems.
-#ifndef NZP_BRANDING_HACK
 #if defined(BRANDING_ICON) && defined(QUAKETC)
 	IDI_ICON1               ICON                    BRANDING_ICON
 #elif defined(BRANDING_ICON)
@@ -104,12 +103,6 @@ LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_UK
 	#endif
 	IDI_ICON2               ICON                    "bymorphed.ico"
 	IDI_ICON3               ICON                    "q2.ico"
-#endif
-#else
-    IDI_ICON1               ICON                    "nzportable.ico"
-    IDI_ICON2               ICON                    "nzportable.ico"
-    IDI_ICON3               ICON                    "nzportable.ico"
-    IDI_ICON4               ICON                    "nzportable.ico"
 #endif
 
 #ifdef CONFIG_MANIFEST_TEXT

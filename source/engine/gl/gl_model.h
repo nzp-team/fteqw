@@ -281,7 +281,7 @@ typedef struct {
 	void (*FindTouchedLeafs)	(struct model_s *model, struct pvscache_s *ent, const vec3_t cullmins, const vec3_t cullmaxs);	//edict system as opposed to q2 game dll system.
 
 	void (*LightPointValues)	(struct model_s *model, const vec3_t point, vec3_t res_diffuse, vec3_t res_ambient, vec3_t res_dir);
-	void (*StainNode)			(struct mnode_s *node, float *parms);
+	void (*StainNode)			(struct model_s *model, float *parms);
 	void (*MarkLights)			(struct dlight_s *light, dlightbitmask_t bit, struct mnode_s *node);
 
 	int	(*ClusterForPoint)		(struct model_s *model, const vec3_t point, int *areaout);	//pvs index (leaf-1 for q1bsp). may be negative (ie: no pvs).
@@ -413,7 +413,7 @@ typedef struct
 
 typedef struct mtexinfo_s
 {
-	float		vecs[2][4];
+	vec4_t		vecs[2];
 	float		vecscale[2];
 	texture_t	*texture;
 	int			flags;
@@ -600,6 +600,7 @@ void Q1BSP_LoadBrushes(struct model_s *model, bspx_header_t *bspx, void *mod_bas
 void Q1BSP_Init(void);
 void Q1BSP_GenerateShadowMesh(struct model_s *model, struct dlight_s *dl, const qbyte *lightvis, qbyte *litvis, void (*callback)(msurface_t *surf));
 
+void BSPX_LightGridLoad(struct model_s *model, bspx_header_t *bspx, qbyte *mod_base);	//for q1 or q2 models.
 void BSPX_LoadEnvmaps(struct model_s *mod, bspx_header_t *bspx, void *mod_base);
 void *BSPX_FindLump(bspx_header_t *bspxheader, void *mod_base, char *lumpname, int *lumpsize);
 bspx_header_t *BSPX_Setup(struct model_s *mod, char *filebase, size_t filelen, lump_t *lumps, size_t numlumps);
@@ -627,6 +628,7 @@ typedef struct mspriteframe_s
 {
 	float	up, down, left, right;
 	qboolean xmirror;
+	qboolean lit;
 	shader_t *shader;
 	image_t *image;
 } mspriteframe_t;
@@ -909,7 +911,7 @@ typedef enum {sb_none, sb_quake64, sb_long1, sb_long2} subbsp_t; // used to deno
 #define  MFH2_SPIT				(1u<<11)		// Black transparent trail with negative light
 #define  MFH2_TRANSPARENT		(1u<<12)		// Transparent sprite
 #define  MFH2_SPELL				(1u<<13)		// Vertical spray of particles
-#define  MFH2_HOLEY				(1u<<14)		// Solid model with color 0
+#define  MFH2_HOLEY				(1u<<14)		// Solid model with color 0 cut out
 #define  MFH2_SPECIAL_TRANS		(1u<<15)		// Translucency through the particle table
 #define  MFH2_FACE_VIEW			(1u<<16)		// Poly Model always faces you
 #define  MFH2_VORP_MISSILE		(1u<<17)		// leave a trail at top and bottom of model
@@ -941,6 +943,24 @@ typedef struct
 	vec4_t *points;
 } portal_t;
 
+struct decoupled_lm_info_s
+{
+	quint16_t lmsize[2];	//made explicit. beware MAX_
+    quint32_t lmoffset;		//replacement offset for vanilla compat.
+    vec4_t lmvecs[2]; //lmcoord[] = dotproduct3(vertexcoord, lmvecs[])+lmvecs[][3]
+};
+struct facelmvecs_s
+{
+	vec4_t lmvecs[2];		//lmcoord[] = dotproduct3(vertexcoord, lmvecs[])+lmvecs[][3]
+	float lmvecscale[2];	//just 1/Length(lmvecs). dlights work in luxels, but need to be able to work back to qu.
+};
+
+struct surfedgenormals_s {
+	quint32_t n;
+	quint32_t s;
+	quint32_t t;
+};
+
 enum
 {
 	MLS_NOTLOADED,
@@ -953,6 +973,7 @@ typedef struct model_s
 	char		name[MAX_QPATH];	//actual name on disk
 	char		publicname[MAX_QPATH];	//name that the gamecode etc sees
 	int			datasequence;	//if it gets old enough, we can purge it.
+	int			engineflags;	//
 	int			loadstate;		//MLS_
 	qboolean	tainted;		// differs from the server's version. this model will be invisible as a result, to avoid spiked models.
 	qboolean	pushdepth;		// bsp submodels have this flag set so you don't get z fighting on co-planar surfaces.
@@ -967,7 +988,6 @@ typedef struct model_s
 	synctype_t	synctype;
 
 	int			flags;
-	int			engineflags;
 	int			particleeffect;
 	int			particletrail;
 	int			traildefaultindex;
@@ -1006,6 +1026,8 @@ typedef struct model_s
 	int			numvertexes;
 	mvertex_t	*vertexes;
 	vec3_t		*normals;
+	struct surfedgenormals_s	*surfedgenormals; //for per-vertex normals
+	struct facelmvecs_s			*facelmvecs;
 
 	int			numedges;
 	medge_t		*edges;
@@ -1114,10 +1136,10 @@ typedef struct model_s
 #define MDLF_FLAME           0x0020 // can be excluded with r_drawflame, fullbright render hack
 #define MDLF_DOCRC           0x0040 // model needs CRC built
 #define MDLF_NEEDOVERBRIGHT  0x0080 // only overbright these models with gl_overbright_all set
-#define MDLF_BOLT            0x0100 // doesn't produce shadows
+#define MDLF_NOSHADOWS       0x0100 // doesn't produce shadows for one reason or another
 #define	MDLF_NOTREPLACEMENTS 0x0200 // can be considered a cheat, disable texture replacements
 #define MDLF_EZQUAKEFBCHEAT  0x0400 // this is a blatent cheat, one that can disadvantage us fairly significantly if we don't support it.
-#define MDLF_NOSHADOWS		 0x0800 // do not cast shadows from this entity, ever.
+#define MDLF_NOLERP		     0x0800 // doesn't lerp, ever. for dodgy models that don't scale to nothingness before jumping.
 #define MDLF_RECALCULATERAIN 0x1000 // particles changed, recalculate any sky polys
 
 //============================================================================

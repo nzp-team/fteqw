@@ -63,7 +63,7 @@
 #undef sha2_init
 #if SHA2==256
 	#define U64_C(n) (n##ull>>32)
-	#define U64_C_LOW(n) (u64)U64_C(n)
+	#define U64_C_LOW(n) (u64)(n##ull)
 	#define u64 quint32_t
 	#define ROUNDS 64
 	#define SHA2_CONTEXT SHA256_CONTEXT
@@ -132,6 +132,9 @@ static void sha2trunc_init (void *context)
   hd->count = 0;
 }
 
+#if defined(__GNUC__) && (__GNUC__==10)
+	__attribute__((optimize("no-tree-bit-ccp")))	//gcc (Debian 10.2.1-6) 10.2.1 20210110 miscompiles without this (eg: test webrtc compat with a browser)
+#endif
 fte_inlinestatic u64
 ROTR (u64 x, u64 n)
 {
@@ -512,7 +515,7 @@ static void sha256_finish (qbyte *digest, void *context)
 	memcpy(digest, hd->buf, 256/8);
 }
 
-hashfunc_t hash_sha224 =
+hashfunc_t hash_sha2_224 =
 {
 	224/8,
 	sizeof(SHA2_CONTEXT),
@@ -520,7 +523,7 @@ hashfunc_t hash_sha224 =
 	sha2_write,
 	sha224_finish
 };
-hashfunc_t hash_sha256 =
+hashfunc_t hash_sha2_256 =
 {
 	256/8,
 	sizeof(SHA2_CONTEXT),
@@ -544,7 +547,7 @@ static void sha512_finish (qbyte *digest, void *context)
 	memcpy(digest, hd->buf, 512/8);
 }
 
-hashfunc_t hash_sha384 =
+hashfunc_t hash_sha2_384 =
 {
 	384/8,
 	sizeof(SHA2_CONTEXT),
@@ -552,7 +555,7 @@ hashfunc_t hash_sha384 =
 	sha2_write,
 	sha384_finish
 };
-hashfunc_t hash_sha512 =
+hashfunc_t hash_sha2_512 =
 {
 	512/8,
 	sizeof(SHA2_CONTEXT),

@@ -976,28 +976,28 @@ static void CLQ2_ParseDelta (entity_state_t *from, entity_state_t *to, int numbe
 	if (bits & Q2U_FRAME8)
 		to->frame = MSG_ReadByte ();
 	if (bits & Q2U_FRAME16)
-		to->frame = MSG_ReadShort ();
+		to->frame = MSG_ReadUInt16();
 
 	if ((bits & Q2U_SKIN8) && (bits & Q2U_SKIN16))		//used for laser colors
 		to->skinnum = MSG_ReadLong();
 	else if (bits & Q2U_SKIN8)
 		to->skinnum = MSG_ReadByte();
 	else if (bits & Q2U_SKIN16)
-		to->skinnum = MSG_ReadShort();
+		to->skinnum = MSG_ReadUInt16();
 
 	if ( (bits & (Q2U_EFFECTS8|Q2U_EFFECTS16)) == (Q2U_EFFECTS8|Q2U_EFFECTS16) )
 		to->effects = MSG_ReadLong();
 	else if (bits & Q2U_EFFECTS8)
 		to->effects = MSG_ReadByte();
 	else if (bits & Q2U_EFFECTS16)
-		to->effects = MSG_ReadShort();
+		to->effects = MSG_ReadUInt16();
 
 	if ( (bits & (Q2U_RENDERFX8|Q2U_RENDERFX16)) == (Q2U_RENDERFX8|Q2U_RENDERFX16) )
 		to->u.q2.renderfx = MSG_ReadLong() & 0x0007ffff;	//only the standard ones actually supported by vanilla q2.
 	else if (bits & Q2U_RENDERFX8)
 		to->u.q2.renderfx = MSG_ReadByte();
 	else if (bits & Q2U_RENDERFX16)
-		to->u.q2.renderfx = MSG_ReadShort();
+		to->u.q2.renderfx = MSG_ReadUInt16();
 
 	if (bits & Q2U_ORIGIN1)
 		to->origin[0] = MSG_ReadCoord ();
@@ -1031,7 +1031,7 @@ static void CLQ2_ParseDelta (entity_state_t *from, entity_state_t *to, int numbe
 	if (bits & Q2U_SOUND)
 	{
 		if (bits & Q2UX_INDEX16)
-			to->u.q2.sound = MSG_ReadShort();
+			to->u.q2.sound = MSG_ReadUInt16();
 		else
 			to->u.q2.sound = MSG_ReadByte ();
 	}
@@ -2395,9 +2395,10 @@ static void CLQ2_AddViewWeapon (int seat, q2player_state_t *ps, q2player_state_t
 		return;
 
 	//generate root matrix..
-	VectorCopy(pv->simorg, pv->vw_origin);
-	AngleVectors(pv->simangles, pv->vw_axis[0], pv->vw_axis[1], pv->vw_axis[2]);
-	VectorInverse(pv->vw_axis[1]);
+	VectorCopy(pv->simorg, r_refdef.weaponmatrix[3]);
+	AngleVectors(pv->simangles, r_refdef.weaponmatrix[0], r_refdef.weaponmatrix[1], r_refdef.weaponmatrix[2]);
+	VectorInverse(r_refdef.weaponmatrix[1]);
+	memcpy(r_refdef.weaponmatrix_bob, r_refdef.weaponmatrix, sizeof(r_refdef.weaponmatrix_bob));
 
 	pv->vm.oldmodel = cl.model_precache[ps->gunindex];
 	if (!pv->vm.oldmodel)

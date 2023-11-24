@@ -590,8 +590,10 @@ static int te_515sevilhackworkaround;
 #define svc_updatecolors 17
 
 #ifdef HEXEN2
-#define svch2_clearviewflags 41	//hexen2.
-#define svch2_setangles_lerp 50
+#define svch2_setviewflags		40	//hexen2.
+#define svch2_clearviewflags	41	//hexen2.
+#define svch2_setviewtint		46	//hexen2.
+#define svch2_setangles_lerp	50
 #endif
 
 //these are present in the darkplaces engine.
@@ -600,8 +602,6 @@ static int te_515sevilhackworkaround;
 
 #define	svcdp_showlmp			35		// [string] slotname [string] lmpfilename [short] x [short] y
 #define	svcdp_hidelmp			36		// [string] slotname
-
-#define svcrm_acheesement		52	// [string] codename
 
 //#define	TE_RAILTRAIL_NEH		15 // [vector] origin [coord] red [coord] green [coord] blue	(fixme: ignored)
 #define	TE_EXPLOSION3_NEH		16 // [vector] origin [coord] red [coord] green [coord] blue	(fixme: ignored)
@@ -837,6 +837,7 @@ void NPP_NQFlush(void)
 		break;
 
 	case svcfte_cgamepacket:
+		requireextension = PEXT_CSQC;
 		if (sv_csqcdebug.ival || writedest != &sv.multicast)
 		{
 			if (writedest != &sv.multicast)
@@ -1140,7 +1141,7 @@ void NPP_NQWriteByte(int dest, qbyte data)	//replacement write func (nq to qw)
 			data = svcqw_updatestatlong;	//ho hum... let it through (should check size later.)
 			protocollen = 6;
 			break;
-		case svcrm_acheesement:
+		case svcqex_achievement:
 			ignoreprotocol = true;
 			nullterms = 1;
 			break;
@@ -1149,7 +1150,9 @@ void NPP_NQWriteByte(int dest, qbyte data)	//replacement write func (nq to qw)
 			nullterms = 1;
 			break;
 #ifdef HEXEN2
-		case svch2_clearviewflags:
+		case svch2_setviewflags:	//sets some viewmodel drawflag
+		case svch2_clearviewflags:	//undoes svch2_setviewflags
+		case svch2_setviewtint:		//tints the viewmodel (tied to hexen2's weird colormap stuff)
 			if (progstype == PROG_H2)
 			{
 				protocollen = 2;
@@ -1401,7 +1404,7 @@ void NPP_NQWriteByte(int dest, qbyte data)	//replacement write func (nq to qw)
 				break;
 			}
 			break;
-		case svcrm_acheesement:
+		case svcqex_achievement:
 		case svc_updatename:
 		case svc_stufftext:
 		case svc_centerprint:
@@ -1419,7 +1422,7 @@ void NPP_NQWriteByte(int dest, qbyte data)	//replacement write func (nq to qw)
 		case svc_updatename:
 			if (bufferlen < 2)
 				break;	//don't truncate the name if the mod is sending the slot number
-		case svcrm_acheesement:
+		case svcqex_achievement:
 		case svc_stufftext:
 		case svc_centerprint:
 		case svc_cutscene:
@@ -1803,7 +1806,7 @@ void NPP_QWFlush(void)
 			int i;
 			for (i = 0, cl = svs.clients; i < sv.allocated_client_slots; i++, cl++)
 			{
-				if (cl->state == cs_spawned && !ISQWCLIENT(cl))
+				if (cl->state == cs_spawned && ISNQCLIENT(cl))
 				{
 					vec3_t org, ang;
 
@@ -1921,6 +1924,7 @@ void NPP_QWFlush(void)
 
 		break;
 	case svcfte_cgamepacket:
+		requireextension = PEXT_CSQC;
 		if (sv_csqcdebug.ival || writedest != &sv.nqmulticast)
 		{
 			if (writedest != &sv.nqmulticast)

@@ -52,13 +52,6 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 	#define HAVE_PACKET
 #endif
 
-#ifdef NACL
-	#define NO_PNG
-	#define NO_JPEG
-	#define NO_OGG
-	#define NO_ZLIB
-#endif
-
 #ifndef MULTITHREAD
 	#if !defined(_WIN32) || defined(FTE_SDL) //win32 is annoying
 		#define NO_MULTITHREAD
@@ -124,6 +117,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 	#undef HUFFNETWORK
 	#undef SUPPORT_ICE
 	#undef WEBCLIENT
+	#undef MULTITHREAD
 	#undef LOADERTHREAD
 	#undef PACKAGEMANAGER
 	#undef PACKAGE_PK3
@@ -133,6 +127,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 	#undef PACKAGE_DZIP
 	#undef AVAIL_XZDEC
 	#undef AVAIL_GZDEC
+	#undef SUBSERVERS
+	#undef HAVE_LEGACY
+	#undef IPLOG
 #else
 	#if defined(SERVERONLY) && defined(CLIENTONLY)
 		#undef CLIENTONLY	//impossible build. assume the config had CLIENTONLY and they tried building a dedicated server
@@ -311,7 +308,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 //	#undef Q3SERVER //match Q3CLIENT
 //	#undef Q2BSPS	//emscripten can't cope with bss, leading to increased download time. too lazy to fix.
 //	#undef Q3BSPS	//emscripten can't cope with bss, leading to increased download time. too lazy to fix.
-	#undef TERRAIN
+//	#undef TERRAIN
 //	#undef PSET_SCRIPT	//bss+size
 	#define GLSLONLY	//pointless having the junk
 	#define GLESONLY	//should reduce the conditions a little
@@ -345,24 +342,6 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 		#define NO_FREETYPE
 	#endif
 	#define NO_OPENAL
-#endif
-#if defined(NACL)
-	//stuff is sandboxed.
-	#undef HAVE_TCP		//websockets are not true tcp
-	#undef HAVE_PACKET	//no udp support.
-
-	#undef SUPPORT_ICE
-	#undef CL_MASTER	//no sockets support
-	#undef SV_MASTER	//noone uses this anyway
-	#undef WEBSERVER		//http server
-	#undef FTPSERVER		//ftp server
-	#undef FTPCLIENT		//ftp client.
-	#undef TCPCONNECT
-	#undef IRCCONNECT
-	#define GLSLONLY	//pointless having the junk
-	#define GLESONLY	//should reduce the conditions a little
-	#undef HEADLESSQUAKE
-	#define NO_FREETYPE
 #endif
 #if (defined(_MSC_VER) && (_MSC_VER < 1500)) || defined(FTE_SDL)
 	#undef AVAIL_WASAPI	//wasapi is available in the vista sdk, while that's compatible with earlier versions, its not really expected until 2008
@@ -421,7 +400,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #if defined(HAVE_GNUTLS) || defined(HAVE_WINSSPI)
 	#define HAVE_SSL
 #endif
-#if defined(HAVE_GNUTLS) || defined(HAVE_WINSSPI)
+#if defined(HAVE_GNUTLS) || defined(HAVE_WINSSPI) || defined(HAVE_PLUGINS)
 	//FIXME: HAVE_WINSSPI does not work as a server.
 	//FIXME: advertising dtls without a valid certificate will probably bug out if a client tries to auto-upgrade.
 	//FIXME: we don't cache server certs
@@ -432,7 +411,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 	#define SQL
 #endif
 
-#if defined(AVAIL_GZDEC) && (!defined(AVAIL_ZLIB) || defined(NPFTE) || defined(NO_ZLIB))
+#if defined(AVAIL_GZDEC) && (!defined(AVAIL_ZLIB) || defined(NO_ZLIB))
 	//gzip needs zlib to work (pk3s can still contain non-compressed files)
 	#undef AVAIL_GZDEC
 #endif
@@ -447,20 +426,6 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #if !defined(NQPROT) || defined(SERVERONLY) || !defined(AVAIL_ZLIB) || defined(DYNAMIC_ZLIB)
 	#undef PACKAGE_DZIP
-#endif
-
-//fix things a little...
-#ifdef NPQTV
-	#define NPFTE
-	#undef NPQTV
-#endif
-#ifdef NPFTE
-	/*plugins require threads and stuff now, and http download support*/
-	#ifndef MULTITHREAD
-		#define MULTITHREAD
-		#define WEBCLIENT
-	#endif
-	#undef SUBSERVERS
 #endif
 
 #if (defined(NOLOADERTHREAD) || !defined(MULTITHREAD)) && defined(LOADERTHREAD)
@@ -484,13 +449,6 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 	#endif
 #endif
 
-#ifdef NPFTE
-	#undef TEXTEDITOR
-	#undef WEBSERVER		//http server
-	#undef FTPSERVER		//ftp server
-	#undef FTPCLIENT		//ftp client.
-#endif
-
 #ifndef AVAIL_ZLIB
 	#undef SUPPORT_ICE	//depends upon zlib's crc32 for fingerprinting. I cba writing my own.
 #endif
@@ -501,7 +459,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 	#undef WEBSERVER		//http server
 	#undef FTPSERVER		//ftp server
 	#undef FTPCLIENT		//ftp client.
-	#if !defined(FTE_TARGET_WEB) && !defined(NACL)
+	#if !defined(FTE_TARGET_WEB)
 		#undef WEBCLIENT
 	#endif
 #endif
@@ -608,8 +566,6 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 		#define PLATFORM		"Web"
 		#define ARCH_CPU_POSTFIX "web"
 		#define ARCH_DL_POSTFIX ".wasm"
-	#elif defined(NACL)
-		#define PLATFORM		"Nacl"
 	#elif defined(_WIN32_WCE)
 		#define PLATFORM		"WinCE"
 		#define ARCH_DL_POSTFIX ".dll"
@@ -684,7 +640,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 		#define ARCH_CPU_POSTFIX "x86"
 	#elif defined(__powerpc__) || defined(__ppc__)
 		#define ARCH_CPU_POSTFIX "ppc"
-	#elif defined(__aarch64__)
+	#elif defined(__aarch64__) || defined(__arm64__)
 		#define ARCH_CPU_POSTFIX "arm64"
 	#elif defined(__arm__)
 		#ifdef __SOFTFP__
@@ -1012,6 +968,7 @@ STAT_H2_DEXTERITY,					// changes stat bar
 STAT_H2_BLUEMANA,					// changes stat bar
 STAT_H2_GREENMANA,					// changes stat bar
 STAT_H2_EXPERIENCE,					// changes stat bar
+#define STAT_H2_CNT_FIRST (STAT_H2_CNT_TORCH)
 STAT_H2_CNT_TORCH,					// changes stat bar
 STAT_H2_CNT_H_BOOST,				// changes stat bar
 STAT_H2_CNT_SH_BOOST,				// changes stat bar
@@ -1027,6 +984,8 @@ STAT_H2_CNT_POLYMORPH,				// changes stat bar
 STAT_H2_CNT_FLIGHT,					// changes stat bar
 STAT_H2_CNT_CUBEOFFORCE,			// changes stat bar
 STAT_H2_CNT_INVINCIBILITY,			// changes stat bar
+#define STAT_H2_CNT_LAST (STAT_H2_CNT_INVINCIBILITY)
+#define STAT_H2_CNT_COUNT (STAT_H2_CNT_LAST+1-STAT_H2_CNT_FIRST)
 STAT_H2_ARTIFACT_ACTIVE,
 STAT_H2_ARTIFACT_LOW,
 STAT_H2_MOVETYPE,
@@ -1101,7 +1060,7 @@ STAT_MOVEVARS_AIRACCEL_SIDEWAYS_FRICTION	= 255, // DP
 	MAX_CL_STATS = 256
 };
 
-#ifdef QUAKEHUD
+#ifdef QUAKESTATS
 //
 // item flags
 //

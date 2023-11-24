@@ -39,8 +39,6 @@ qboolean r_pushdepth;
 
 extern cvar_t		r_ambient;
 
-static vec3_t		modelorg;	/*set before recursively entering the visible surface finder*/
-
 model_t				*currentmodel;
 
 static size_t		maxblocksize;
@@ -57,6 +55,8 @@ extern cvar_t r_stainfadetime;
 extern cvar_t r_stainfadeammount;
 extern cvar_t r_lightmap_nearest;
 extern cvar_t r_lightmap_format;
+
+double r_loaderstalltime;
 
 extern int r_dlightframecount;
 
@@ -80,7 +80,7 @@ void QDECL Surf_RebuildLightmap_Callback (struct cvar_s *var, char *oldvalue)
 }
 
 //radius, x y z, r g b
-void Surf_StainSurf (msurface_t *surf, float *parms)
+void Surf_StainSurf (model_t *mod, msurface_t *surf, float *parms)
 {
 	int			sd, td;
 	float		dist, rad, minlight;
@@ -91,7 +91,8 @@ void Surf_StainSurf (msurface_t *surf, float *parms)
 	int			smax, tmax;
 	float amm;
 	int lim;
-	mtexinfo_t	*tex;
+	vec4_t	*lmvecs;
+	float	*lmvecscale;
 	stmap *stainbase;
 	lightmapinfo_t *lm;
 
@@ -107,7 +108,10 @@ void Surf_StainSurf (msurface_t *surf, float *parms)
 
 	smax = (surf->extents[0]>>surf->lmshift)+1;
 	tmax = (surf->extents[1]>>surf->lmshift)+1;
-	tex = surf->texinfo;
+	if (mod->facelmvecs)
+		lmvecs = mod->facelmvecs[surf-mod->surfaces].lmvecs, lmvecscale = mod->facelmvecs[surf-mod->surfaces].lmvecscale;
+	else
+		lmvecs = surf->texinfo->vecs, lmvecscale = surf->texinfo->vecscale;
 
 	stainbase = lm->stainmaps;
 	stainbase += (surf->light_t[0] * lm->width + surf->light_s[0]) * 3;
@@ -125,20 +129,20 @@ void Surf_StainSurf (msurface_t *surf, float *parms)
 		impact[i] = (parms+1)[i] - surf->plane->normal[i]*dist;
 	}
 
-	local[0] = DotProduct (impact, tex->vecs[0]) + tex->vecs[0][3];
-	local[1] = DotProduct (impact, tex->vecs[1]) + tex->vecs[1][3];
+	local[0] = DotProduct (impact, lmvecs[0]) + lmvecs[0][3];
+	local[1] = DotProduct (impact, lmvecs[1]) + lmvecs[1][3];
 
 	local[0] -= surf->texturemins[0];
 	local[1] -= surf->texturemins[1];
 
 	for (t = 0 ; t<tmax ; t++)
 	{
-		td = local[1] - (t<<surf->lmshift);
+		td = (local[1] - (t<<surf->lmshift))*lmvecscale[1];
 		if (td < 0)
 			td = -td;
 		for (s=0 ; s<smax ; s++)
 		{
-			sd = local[0] - (s<<surf->lmshift);
+			sd = (local[0] - (s<<surf->lmshift))*lmvecscale[0];
 			if (sd < 0)
 				sd = -sd;
 			if (sd > td)
@@ -219,7 +223,7 @@ void Surf_AddStain(vec3_t org, float red, float green, float blue, float radius)
 	parms[6] = blue;
 
 
-	cl.worldmodel->funcs.StainNode(cl.worldmodel->rootnode, parms);
+	cl.worldmodel->funcs.StainNode(cl.worldmodel, parms);
 
 	//now stain inline bsp models other than world.
 
@@ -243,7 +247,7 @@ void Surf_AddStain(vec3_t org, float red, float green, float blue, float radius)
 			}
 
 
-			pe->model->funcs.StainNode(pe->model->rootnode, parms);
+			pe->model->funcs.StainNode(pe->model, parms);
 		}
 	}
 }
@@ -340,14 +344,17 @@ static void Surf_AddDynamicLights_Lum (msurface_t *surf)
 	int			s, t;
 	int			i;
 	int			smax, tmax;
-	mtexinfo_t	*tex;
-	float a;
+	float l;
 	unsigned	*bl;
+	vec4_t		*lmvecs;
+	float		*lmvecscale;
 
 	smax = (surf->extents[0]>>surf->lmshift)+1;
 	tmax = (surf->extents[1]>>surf->lmshift)+1;
-	tex = surf->texinfo;
-
+	if (currentmodel->facelmvecs)
+		lmvecs = currentmodel->facelmvecs[surf-currentmodel->surfaces].lmvecs, lmvecscale = currentmodel->facelmvecs[surf-currentmodel->surfaces].lmvecscale;
+	else
+		lmvecs = surf->texinfo->vecs, lmvecscale = surf->texinfo->vecscale;
 	for (lnum=rtlights_first; lnum<RTL_FIRST; lnum++)
 	{
 		if ( !(surf->dlightbits & ((dlightbitmask_t)1u<<lnum) ) )
@@ -371,23 +378,23 @@ static void Surf_AddDynamicLights_Lum (msurface_t *surf)
 					surf->plane->normal[i]*dist;
 		}
 
-		local[0] = DotProduct (impact, tex->vecs[0]) + tex->vecs[0][3];
-		local[1] = DotProduct (impact, tex->vecs[1]) + tex->vecs[1][3];
+		local[0] = DotProduct (impact, lmvecs[0]) + lmvecs[0][3];
+		local[1] = DotProduct (impact, lmvecs[1]) + lmvecs[1][3];
 
 		local[0] -= surf->texturemins[0];
 		local[1] -= surf->texturemins[1];
 
-		a = 256*(cl_dlights[lnum].color[0]*NTSC_RED + cl_dlights[lnum].color[1]*NTSC_GREEN + cl_dlights[lnum].color[2]*NTSC_BLUE);
+		l = 256*(cl_dlights[lnum].color[0]*NTSC_RED + cl_dlights[lnum].color[1]*NTSC_GREEN + cl_dlights[lnum].color[2]*NTSC_BLUE);
 
 		bl = blocklights;
 		for (t = 0 ; t<tmax ; t++)
 		{
-			td = local[1] - (t<<surf->lmshift);
+			td = (local[1] - (t<<surf->lmshift))*lmvecscale[1];
 			if (td < 0)
 				td = -td;
 			for (s=0 ; s<smax ; s++)
 			{
-				sd = local[0] - (s<<surf->lmshift);
+				sd = (local[0] - (s<<surf->lmshift))*lmvecscale[0];
 				if (sd < 0)
 					sd = -sd;
 				if (sd > td)
@@ -395,7 +402,7 @@ static void Surf_AddDynamicLights_Lum (msurface_t *surf)
 				else
 					dist = td + (sd>>1);
 				if (dist < minlight)
-					bl[0] += (rad - dist)*a;
+					bl[0] += (rad - dist)*l;
 				bl++;
 			}
 		}
@@ -412,7 +419,8 @@ static void Surf_AddDynamicLightNorms (msurface_t *surf)
 	int			s, t;
 	int			i;
 	int			smax, tmax;
-	mtexinfo_t	*tex;
+	vec4_t		*lmvecs;
+	float		*lmvecscale;
 	float a;
 
 	smax = (surf->extents[0]>>4)+1;
@@ -442,8 +450,8 @@ static void Surf_AddDynamicLightNorms (msurface_t *surf)
 					surf->plane->normal[i]*dist;
 		}
 
-		local[0] = DotProduct (impact, tex->vecs[0]) + tex->vecs[0][3];
-		local[1] = DotProduct (impact, tex->vecs[1]) + tex->vecs[1][3];
+		local[0] = DotProduct (impact, lmvecs[0]) + lmvecs[0][3];
+		local[1] = DotProduct (impact, lmvecs[1]) + lmvecs[1][3];
 
 		local[0] -= surf->texturemins[0];
 		local[1] -= surf->texturemins[1];
@@ -452,12 +460,12 @@ static void Surf_AddDynamicLightNorms (msurface_t *surf)
 
 		for (t = 0 ; t<tmax ; t++)
 		{
-			td = local[1] - t*surf->lmscale;
+			td = (local[1] - t*surf->lmscale)*lmvecscale[1];
 			if (td < 0)
 				td = -td;
 			for (s=0 ; s<smax ; s++)
 			{
-				sd = local[0] - s*surf->lmscale;
+				sd = (local[0] - s*surf->lmscale)*lmvecscale[0];
 				if (sd < 0)
 					sd = -sd;
 				if (sd > td)
@@ -480,13 +488,15 @@ static void Surf_AddDynamicLightNorms (msurface_t *surf)
 static void Surf_AddDynamicLights_RGB (msurface_t *surf)
 {
 	int			lnum;
-	int			sd, td;
+	float		sd, td;
 	float		dist, rad, minlight;
-	vec3_t		impact, local;
+	vec3_t		impact;
+	vec2_t		local;
 	int			s, t;
 	int			i;
 	int			smax, tmax;
-	mtexinfo_t	*tex;
+	vec4_t		*lmvecs;
+	float		*lmvecscale;
 //	float temp;
 	float r, g, b;
 	unsigned	*bl;
@@ -494,7 +504,10 @@ static void Surf_AddDynamicLights_RGB (msurface_t *surf)
 
 	smax = (surf->extents[0]>>surf->lmshift)+1;
 	tmax = (surf->extents[1]>>surf->lmshift)+1;
-	tex = surf->texinfo;
+	if (currentmodel->facelmvecs)
+		lmvecs = currentmodel->facelmvecs[surf-currentmodel->surfaces].lmvecs, lmvecscale = currentmodel->facelmvecs[surf-currentmodel->surfaces].lmvecscale;
+	else
+		lmvecs = surf->texinfo->vecs, lmvecscale = surf->texinfo->vecscale;
 
 	for (lnum=rtlights_first; lnum<RTL_FIRST; lnum++)
 	{
@@ -503,7 +516,7 @@ static void Surf_AddDynamicLights_RGB (msurface_t *surf)
 
 		rad = cl_dlights[lnum].radius;
 		VectorSubtract(cl_dlights[lnum].origin, currententity->origin, lightofs);
-		//FIXME: transform by forward/right/up
+		//FIXME: transform by currententity->axis
 		dist = DotProduct (lightofs, surf->plane->normal) - surf->plane->dist;
 		rad -= fabs(dist);
 		minlight = cl_dlights[lnum].minlight;
@@ -517,11 +530,12 @@ static void Surf_AddDynamicLights_RGB (msurface_t *surf)
 					surf->plane->normal[i]*dist;
 		}
 
-		local[0] = DotProduct (impact, tex->vecs[0]) + tex->vecs[0][3];
-		local[1] = DotProduct (impact, tex->vecs[1]) + tex->vecs[1][3];
+		local[0] = DotProduct (impact, lmvecs[0]) + lmvecs[0][3];
+		local[1] = DotProduct (impact, lmvecs[1]) + lmvecs[1][3];
 
 		local[0] -= surf->texturemins[0];
 		local[1] -= surf->texturemins[1];
+
 
 		if (r_dynamic.ival == 2)
 			r = g = b = 256;
@@ -537,18 +551,18 @@ static void Surf_AddDynamicLights_RGB (msurface_t *surf)
 		{
 			for (t = 0 ; t<tmax ; t++)
 			{
-				td = local[1] - (t<<surf->lmshift);
+				td = (local[1] - (t<<surf->lmshift))*lmvecscale[1];
 				if (td < 0)
 					td = -td;
 				for (s=0 ; s<smax ; s++)
 				{
-					sd = local[0] - (s<<surf->lmshift);
+					sd = (local[0] - (s<<surf->lmshift))*lmvecscale[0];
 					if (sd < 0)
 						sd = -sd;
 					if (sd > td)
-						dist = sd + (td>>1);
+						dist = sd + td*0.5;
 					else
-						dist = td + (sd>>1);
+						dist = td + sd*0.5;
 					if (dist < minlight)
 					{
 						i = bl[0] + (rad - dist)*r;
@@ -566,18 +580,18 @@ static void Surf_AddDynamicLights_RGB (msurface_t *surf)
 		{
 			for (t = 0 ; t<tmax ; t++)
 			{
-				td = local[1] - (t<<surf->lmshift);
+				td = (local[1] - (t<<surf->lmshift))*lmvecscale[1];
 				if (td < 0)
 					td = -td;
 				for (s=0 ; s<smax ; s++)
 				{
-					sd = local[0] - (s<<surf->lmshift);
+					sd = (local[0] - (s<<surf->lmshift))*lmvecscale[0];
 					if (sd < 0)
 						sd = -sd;
 					if (sd > td)
-						dist = sd + (td>>1);
+						dist = sd + td*0.5;
 					else
-						dist = td + (sd>>1);
+						dist = td + sd*0.5;
 					if (dist < minlight)
 					{
 						bl[0] += (rad - dist)*r;
@@ -2082,259 +2096,7 @@ dynamic:
 =============================================================
 */
 
-#if 0
-static qbyte *R_MarkLeafSurfaces_Q1 (void)
-{
-	qbyte	*vis;
-	mleaf_t	*leaf;
-	int		i, j;
-	msurface_t *surf;
-	int shift;
 
-	vis = R_CalcVis_Q1();
-
-	for (i=0 ; i<cl.worldmodel->numvisleafs ; i++)
-	{
-		if (vis[i>>3] & (1<<(i&7)))
-		{
-			leaf = (mleaf_t *)&cl.worldmodel->leafs[i+1];
-
-			if (R_CullBox (leaf->minmaxs, leaf->minmaxs+3))
-				continue;
-			leaf->visframe = r_visframecount;
-
-			for (j = 0; j < leaf->nummarksurfaces; j++)
-			{
-				surf = leaf->firstmarksurface[j];
-				if (surf->visframe == r_visframecount)
-					continue;
-				surf->visframe = r_visframecount;
-
-				*surf->mark = surf;
-			}
-		}
-	}
-
-	{
-		texture_t *tex;
-
-		shift = Surf_LightmapShift(cl.worldmodel);
-
-		for (i = 0; i < cl.worldmodel->numtextures; i++)
-		{
-			tex = cl.worldmodel->textures[i];
-			if (!tex)
-				continue;
-			for (j = 0; j < tex->vbo.meshcount; j++)
-			{
-				surf = tex->vbo.meshlist[j];
-				if (surf)
-				{
-					Surf_RenderDynamicLightmaps (surf);
-
-					tex->vbo.meshlist[j] = NULL;
-					surf->sbatch->mesh[surf->sbatch->meshes++] = surf->mesh;
-				}
-			}
-		}
-	}
-	return vis;
-}
-#endif
-
-/*
-static qbyte *Surf_MaskVis(qbyte *src, qbyte *dest)
-{
-	int i;
-	if (cl.worldmodel->leafs[i].ma
-}
-*/
-static qbyte *q1frustumvis;
-
-#ifdef Q1BSPS
-/*
-================
-R_RecursiveWorldNode
-================
-*/
-static void Surf_RecursiveWorldNode (mnode_t *node, unsigned int clipflags)
-{
-	int			c, side, clipped;
-	mplane_t	*plane, *clipplane;
-	msurface_t	*surf, **mark;
-	mleaf_t		*pleaf;
-	double		dot;
-
-start:
-
-	if (node->contents == Q1CONTENTS_SOLID)
-		return;		// solid
-
-	if (node->visframe != r_visframecount)
-		return;
-
-	for (c = 0, clipplane = r_refdef.frustum; c < r_refdef.frustum_numworldplanes; c++, clipplane++)
-	{
-		if (!(clipflags & (1 << c)))
-			continue;	// don't need to clip against it
-
-		clipped = BOX_ON_PLANE_SIDE (node->minmaxs, node->minmaxs + 3, clipplane);
-		if (clipped == 2)
-			return; 
-		else if (clipped == 1)
-			clipflags -= (1<<c);	// node is entirely on screen
-	}
-
-// if a leaf node, draw stuff
-	if (node->contents < 0)
-	{
-		pleaf = (mleaf_t *)node;
-
-		c = (pleaf - cl.worldmodel->leafs)-1;
-		q1frustumvis[c>>3] |= 1<<(c&7);
-
-		mark = pleaf->firstmarksurface;
-		c = pleaf->nummarksurfaces;
-
-		if (c)
-		{
-			do
-			{
-				(*mark++)->visframe = r_framecount;
-			} while (--c);
-		}
-		return;
-	}
-
-// node is just a decision point, so go down the apropriate sides
-
-// find which side of the node we are on
-	plane = node->plane;
-
-	switch (plane->type)
-	{
-	case PLANE_X:
-		dot = modelorg[0] - plane->dist;
-		break;
-	case PLANE_Y:
-		dot = modelorg[1] - plane->dist;
-		break;
-	case PLANE_Z:
-		dot = modelorg[2] - plane->dist;
-		break;
-	default:
-		dot = DotProduct (modelorg, plane->normal) - plane->dist;
-		break;
-	}
-
-	if (dot >= 0)
-		side = 0;
-	else
-		side = 1;
-
-// recurse down the children, front side first
-	Surf_RecursiveWorldNode (node->children[side], clipflags);
-
-// draw stuff
-	c = node->numsurfaces;
-
-	if (c)
-	{
-		surf = cl.worldmodel->surfaces + node->firstsurface;
-
-		if (dot < 0 -BACKFACE_EPSILON)
-			side = SURF_PLANEBACK;
-		else if (dot > BACKFACE_EPSILON)
-			side = 0;
-		{
-			for ( ; c ; c--, surf++)
-			{
-				if (surf->visframe != r_framecount)
-					continue;
-
-				if (((dot < 0) ^ !!(surf->flags & SURF_PLANEBACK)))
-					continue;		// wrong side
-
-				Surf_RenderDynamicLightmaps (surf);
-				surf->sbatch->mesh[surf->sbatch->meshes++] = surf->mesh;
-			}
-		}
-	}
-
-// recurse down the back side
-	//GLR_RecursiveWorldNode (node->children[!side], clipflags);
-	node = node->children[!side];
-	goto start;
-}
-
-static void Surf_OrthoRecursiveWorldNode (mnode_t *node, unsigned int clipflags)
-{
-	//when rendering as ortho the front and back sides are technically equal. the only culling comes from frustum culling.
-
-	int			c, clipped;
-	mplane_t	*clipplane;
-	msurface_t	*surf, **mark;
-	mleaf_t		*pleaf;
-
-	if (node->contents == Q1CONTENTS_SOLID)
-		return;		// solid
-
-	if (node->visframe != r_visframecount)
-		return;
-
-	for (c = 0, clipplane = r_refdef.frustum; c < r_refdef.frustum_numworldplanes; c++, clipplane++)
-	{
-		if (!(clipflags & (1 << c)))
-			continue;	// don't need to clip against it
-
-		clipped = BOX_ON_PLANE_SIDE (node->minmaxs, node->minmaxs + 3, clipplane);
-		if (clipped == 2)
-			return;
-		else if (clipped == 1)
-			clipflags -= (1<<c);	// node is entirely on screen
-	}
-
-// if a leaf node, draw stuff
-	if (node->contents < 0)
-	{
-		pleaf = (mleaf_t *)node;
-
-		mark = pleaf->firstmarksurface;
-		c = pleaf->nummarksurfaces;
-
-		if (c)
-		{
-			do
-			{
-				(*mark++)->visframe = r_framecount;
-			} while (--c);
-		}
-		return;
-	}
-
-// recurse down the children
-	Surf_OrthoRecursiveWorldNode (node->children[0], clipflags);
-	Surf_OrthoRecursiveWorldNode (node->children[1], clipflags);
-
-// draw stuff
-  	c = node->numsurfaces;
-
-	if (c)
-	{
-		surf = cl.worldmodel->surfaces + node->firstsurface;
-
-		for ( ; c ; c--, surf++)
-		{
-			if (surf->visframe != r_framecount)
-				continue;
-
-			Surf_RenderDynamicLightmaps (surf);
-			surf->sbatch->mesh[surf->sbatch->meshes++] = surf->mesh;
-		}
-	}
-	return;
-}
-#endif
 
 static void Surf_PushChains(batch_t **batches)
 {
@@ -2417,7 +2179,6 @@ void Surf_SetupFrame(void)
 		r_refdef.flags |= RDF_NOWORLDMODEL;
 
 	R_AnimateLight();
-	r_framecount++;
 
 	if (r_refdef.recurse)
 	{
@@ -2542,7 +2303,7 @@ void Surf_GenBrushBatches(batch_t **batches, entity_t *ent)
 
 // calculate dynamic lighting for bmodel if it's not an
 // instanced model
-	if (model->fromgame != fg_quake3 && model->fromgame != fg_doom3 && lightmap && webo_blocklightmapupdates!=3)
+	if (model->fromgame != fg_quake3 && model->fromgame != fg_doom3 && lightmap && !(webo_blocklightmapupdates&1))
 	{
 		int k;
 
@@ -2556,7 +2317,10 @@ void Surf_GenBrushBatches(batch_t **batches, entity_t *ent)
 					continue;
 				if (!(cl_dlights[k].flags & LFLAG_LIGHTMAP))
 					continue;
-
+				if ((cl_dlights[k].flags & LFLAG_NORMALMODE) && r_shadow_realtime_dlight.ival)
+					continue;
+				if ((cl_dlights[k].flags & LFLAG_REALTIMEMODE) && r_shadow_realtime_world.ival)
+					continue;
 				model->funcs.MarkLights (&cl_dlights[k], (dlightbitmask_t)1<<k, model->rootnode);
 			}
 		}
@@ -2739,6 +2503,7 @@ static void R_DestroyWorldEBO(struct webostate_s *es)
 }
 void R_GeneratedWorldEBO(void *ctx, void *data, size_t a_, size_t b_)
 {
+	double starttime = Sys_DoubleTime();
 	size_t idxcount, vertcount;
 	unsigned int i;
 	model_t *mod;
@@ -2903,6 +2668,8 @@ void R_GeneratedWorldEBO(void *ctx, void *data, size_t a_, size_t b_)
 			webostate->rbatches[sortid] = b;
 		}
 	}
+
+	r_loaderstalltime += Sys_DoubleTime() - starttime;
 }
 #ifdef Q1BSPS
 static void Surf_SimpleWorld_Q1BSP(struct webostate_s *es, qbyte *pvs)
@@ -2912,9 +2679,9 @@ static void Surf_SimpleWorld_Q1BSP(struct webostate_s *es, qbyte *pvs)
 	mesh_t		*mesh;
 	model_t *wmodel = es->wmodel;
 	int l = wmodel->numclusters;
-	int fc = -r_framecount;
+	int fc = es->framecount;
 	int i;
-//	int s, f, lastface;
+	int s, f, lastface;
 	struct wesbatch_s *eb;
 	for (leaf = wmodel->leafs+l; l-- > 0; leaf--)
 	{
@@ -2977,18 +2744,18 @@ static void Surf_SimpleWorld_Q1BSP(struct webostate_s *es, qbyte *pvs)
 		}
 	}
 
-/*TODO	for (s = 0; s < wmodel->numsubmodels; s++)
+	for (s = 1; s < wmodel->numsubmodels; s++)
 	{
-		if (!es->bakedsubmodels[s])
-			continue;	//not baking this one (not currently visible or something)
+//		if (!es->bakedsubmodels[s])
+//			continue;	//not baking this one (not currently visible or something)
 		//FIXME: pvscull it here?
 		lastface = wmodel->submodels[s].firstface + wmodel->submodels[s].numfaces;
 		for (f = wmodel->submodels[s].firstface; f < lastface; f++)
 		{
-			surf = wmodel->surfaces;
+			surf = wmodel->surfaces+f;
 
 			Surf_RenderDynamicLightmaps_Worker (wmodel, surf, es->lightstylevalues);
-
+/*
 			mesh = surf->mesh;
 			eb = &es->batches[surf->sbatch->webobatch];
 			if (eb->maxidx < eb->numidx + mesh->numindexes)
@@ -2999,9 +2766,9 @@ static void Surf_SimpleWorld_Q1BSP(struct webostate_s *es, qbyte *pvs)
 			}
 			for (i = 0; i < mesh->numindexes; i++)
 				eb->idxbuffer[eb->numidx+i] = mesh->indexes[i] + mesh->vbofirstvert;
-			eb->numidx += mesh->numindexes;
+			eb->numidx += mesh->numindexes;*/
 		}
-	}*/
+	}
 }
 #endif
 #if defined(Q2BSPS) || defined(Q3BSPS)
@@ -3227,6 +2994,8 @@ void Surf_DrawWorld (void)
 	currentmodel = cl.worldmodel;
 	currententity = &r_worldentity;
 
+	r_dynamic.ival = r_dynamic.value;
+
 	{
 #ifdef THREADEDWORLD
 		int sc = r_temporalscenecache.ival;
@@ -3252,8 +3021,9 @@ void Surf_DrawWorld (void)
 		{
 			r_dynamic.modified = false;
 			r_temporalscenecache.modified = false;
+#ifdef RTLIGHT
 			Sh_CheckSettings(); //fiddle with r_dynamic vs r_shadow_realtime_dlight.
-
+#endif
 			COM_WorkerPartialSync(webogenerating, &webogeneratingstate, true);
 			while (webostates)
 			{
@@ -3265,9 +3035,7 @@ void Surf_DrawWorld (void)
 		}
 
 		if (!r_temporalscenecache.ival)
-		{
-			r_dynamic.ival = r_dynamic.value;
-		}
+			;
 		else if (!r_refdef.recurse && currentmodel->type == mod_brush)
 		{
 			struct webostate_s *webostate, *best = NULL, *kill, **link;
@@ -3360,6 +3128,7 @@ void Surf_DrawWorld (void)
 					if (gennew)
 					{
 						int i;
+						static int ebogensequence;
 						if (!currentmodel->numbatches)
 						{
 							int sortid;
@@ -3401,7 +3170,7 @@ void Surf_DrawWorld (void)
 						}
 						VectorCopy(r_refdef.vieworg, webogenerating->lastpos);
 						webogenerating->wmodel = currentmodel;
-						webogenerating->framecount = -r_framecount;
+						webogenerating->framecount = --ebogensequence;
 						webogenerating->cluster[0] = r_viewcluster;
 						webogenerating->cluster[1] = r_viewcluster2;
 						webogenerating->pvs.buffer = (qbyte*)(webogenerating+1) + sizeof(webogenerating->batches[0])*(currentmodel->numbatches-1);
@@ -3429,6 +3198,11 @@ void Surf_DrawWorld (void)
 					webostate = webogenerating;
 					COM_WorkerPartialSync(webogenerating, &webogeneratingstate, true);
 				}
+			}
+			else if (webogenerating && !webostate)
+			{	//block the first time around to avoid possible race conditions.
+				webostate = webogenerating;
+				COM_WorkerPartialSync(webogenerating, &webogeneratingstate, true);
 			}
 
 			if (webostate)
@@ -3463,6 +3237,10 @@ void Surf_DrawWorld (void)
 		}
 #endif
 
+#ifdef RTLIGHT
+		if (r_shadow_realtime_dlight.ival || currentmodel->type != mod_brush || !(currentmodel->fromgame == fg_quake || currentmodel->fromgame == fg_halflife) || !currentmodel->funcs.MarkLights)
+			r_dynamic.ival = -1;
+#endif
 
 		Surf_PushChains(currentmodel->batches);
 
@@ -3482,27 +3260,6 @@ void Surf_DrawWorld (void)
 		{
 			entvis = surfvis = NULL;
 			R_DoomWorld();
-		}
-#endif
-#ifdef Q1BSPS
-		else if (currentmodel->fromgame == fg_quake || currentmodel->fromgame == fg_halflife)
-		{
-			pvsbuffer_t *vis = &surf_frustumvis[r_refdef.recurse];
-
-			entvis = R_MarkLeaves_Q1 (false);
-			if (!(r_novis.ival & 2))
-				VectorCopy (r_origin, modelorg);
-
-			if (vis->buffersize < currentmodel->pvsbytes)
-				vis->buffer = BZ_Realloc(vis->buffer, vis->buffersize=currentmodel->pvsbytes);
-			q1frustumvis = vis->buffer;
-			memset(q1frustumvis, 0, currentmodel->pvsbytes);
-
-			if (r_refdef.useperspective)
-				Surf_RecursiveWorldNode (currentmodel->nodes, 0x1f);
-			else
-				Surf_OrthoRecursiveWorldNode (currentmodel->nodes, 0x1f);
-			surfvis = q1frustumvis;
 		}
 #endif
 		else
@@ -3530,6 +3287,8 @@ void Surf_DrawWorld (void)
 		/*FIXME: move this away*/
 		if (cl.worldmodel->fromgame == fg_quake || cl.worldmodel->fromgame == fg_halflife)
 			Surf_LessenStains();
+
+		r_refdef.sceneareas = NULL;
 	}
 }
 
@@ -4208,17 +3967,12 @@ void Surf_BuildLightmaps (void)
 	R_BumpLightstyles(maxstyle);	//should only really happen with lazy loading
 	R_AnimateLight();
 
-	r_framecount = 1;		// no dlightcache
-
 	while(numlightmaps > 0)
 	{
 		numlightmaps--;
 		Surf_FreeLightmap(lightmap[numlightmaps]);
 		lightmap[numlightmaps] = NULL;
 	}
-
-	r_oldviewcluster = -1;
-	r_oldviewcluster2 = -1;
 
 	//FIXME: unload stuff that's no longer relevant somehow.
 	for (i = 0; i < mod_numknown; i++)
@@ -4242,7 +3996,7 @@ void Surf_BuildLightmaps (void)
 Surf_NewMap
 ===============
 */
-void Surf_NewMap (void)
+void Surf_NewMap (model_t *worldmodel)
 {
 	char namebuf[MAX_QPATH];
 	extern cvar_t host_mapname;
@@ -4252,9 +4006,11 @@ void Surf_NewMap (void)
 #endif
 	int		i;
 
+	cl.worldmodel = worldmodel;
+
 	//evil haxx
 	r_dynamic.ival = r_dynamic.value;
-	if (r_dynamic.ival > 0 && cl.worldmodel->fromgame == fg_quake3) //quake3 has no lightmaps, disable r_dynamic
+	if (r_dynamic.ival > 0 && (!cl.worldmodel || cl.worldmodel->fromgame == fg_quake3)) //quake3 has no lightmaps, disable r_dynamic
 		r_dynamic.ival = 0;
 
 	memset (&r_worldentity, 0, sizeof(r_worldentity));
@@ -4274,9 +4030,7 @@ void Surf_NewMap (void)
 	Surf_DeInit();
 
 	r_viewcluster = -1;
-	r_oldviewcluster = 0;
 	r_viewcluster2 = -1;
-	r_oldviewcluster2 = 0;
 #ifdef BEF_PUSHDEPTH
 	r_pushdepth = false;
 	for (s = r_polygonoffset_submodel_maps.string; s && *s; )
@@ -4319,7 +4073,8 @@ TRACE(("dbg: Surf_NewMap: building lightmaps\n"));
 
 TRACE(("dbg: Surf_NewMap: ui\n"));
 #ifdef VM_UI
-	UI_Reset();
+	if (q3)
+		q3->ui.Reset();
 #endif
 TRACE(("dbg: Surf_NewMap: tp\n"));
 	TP_NewMap();
@@ -4360,14 +4115,15 @@ TRACE(("dbg: Surf_NewMap: tp\n"));
 
 void Surf_PreNewMap(void)
 {
+	extern cvar_t gl_specular;
+
 	r_loadbumpmapping = r_deluxemapping || r_glsl_offsetmapping.ival;
+	r_loadbumpmapping |= gl_specular.value>0;
 #ifdef RTLIGHTS
 	r_loadbumpmapping |= r_shadow_realtime_world.ival || r_shadow_realtime_dlight.ival;
 #endif
 	r_viewcluster = -1;
-	r_oldviewcluster = -1;
 	r_viewcluster2 = -1;
-	r_oldviewcluster2 = -1;
 
 	Shader_DoReload();
 }

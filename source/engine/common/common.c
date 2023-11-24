@@ -83,10 +83,10 @@ static cvar_t	pr_engine		= CVARFD("pr_engine",DISTRIBUTION" "STRINGIFY(SVNREVISI
 #endif
 cvar_t	fs_gamename				= CVARAD("com_fullgamename", NULL, "fs_gamename", "The filesystem is trying to run this game");
 cvar_t	com_protocolname		= CVARAD("com_protocolname", NULL, "com_gamename", "The protocol game name used for dpmaster queries. For compatibility with DP, you can set this to 'DarkPlaces-Quake' in order to be listed in DP's master server, and to list DP servers.");
-cvar_t	com_protocolversion		= CVARAD("com_protocolversion", "3", NULL, "The protocol version used for dpmaster queries.");	//3 by default, for compat with DP/NQ, even if our QW protocol uses different versions entirely. really it only matters for master servers.
+cvar_t	com_protocolversion		= CVARAD("com_protocolversion", "3", NULL, "The protocol version used for dpmaster queries.");	//3 as strong default for compat with DP which uses its netchan rather than protocol version here, even if our QW protocol uses different versions entirely. really it only matters for master servers.
 cvar_t	com_parseutf8			= CVARD("com_parseutf8", "1", "Interpret console messages/playernames/etc as UTF-8. Requires special fonts. -1=iso 8859-1. 0=quakeascii(chat uses high chars). 1=utf8, revert to ascii on decode errors. 2=utf8 ignoring errors");	//1 parse. 2 parse, but stop parsing that string if a char was malformed.
 cvar_t	com_highlightcolor		= CVARD("com_highlightcolor", STRINGIFY(COLOR_RED), "ANSI colour to be used for highlighted text, used when com_parseutf8 is active.");
-cvar_t	com_nogamedirnativecode	= CVARFD("com_nogamedirnativecode", "1", CVAR_NOTFROMSERVER, FULLENGINENAME" blocks all downloads of files with a .dll or .so extension, however other engines (eg: ezquake and fodquake) do not - this omission can be used to trigger delayed eremote exploits in any engine (including "DISTRIBUTION") which is later run from the same gamedir.\nQuake2, Quake3(when debugging), and KTX typically run native gamecode from within gamedirs, so if you wish to run any of these games you will need to ensure this cvar is changed to 0, as well as ensure that you don't run unsafe clients.");
+cvar_t	com_gamedirnativecode	= CVARFD("com_gamedirnativecode", "0", CVAR_NOTFROMSERVER, FULLENGINENAME" blocks all downloads of files with a .dll or .so extension, however other engines (eg: ezquake and fodquake) do not - this omission can be used to trigger delayed eremote exploits in any engine (including "DISTRIBUTION") which is later run from the same gamedir.\nQuake2, Quake3(when debugging), and KTX typically run native gamecode from within gamedirs, so if you wish to run any of these games you will need to ensure this cvar is changed to 1, as well as ensure that you don't run unsafe clients.");
 cvar_t	sys_platform			= CVAR("sys_platform", PLATFORM);
 cvar_t	host_mapname			= CVARAFD("mapname", "", "host_mapname", 0, "Cvar that holds the short name of the current map, for scripting type stuff");
 #ifdef HAVE_LEGACY
@@ -868,6 +868,147 @@ Handles qbyte ordering and avoids alignment errors
 // writing functions
 //
 
+void MSG_BeginWriting (sizebuf_t *msg, struct netprim_s prim, void *bufferstorage, size_t buffersize)
+{
+	if (bufferstorage || buffersize)
+	{	//otherwise just clear it.
+		msg->data = bufferstorage;
+		msg->maxsize = buffersize;
+	}
+	msg->overflowed = false;
+	msg->cursize = 0;
+	msg->currentbit = 0;
+	msg->packing = SZ_RAWBYTES;
+	msg->prim = prim;
+	msg->allowoverflow = false;
+}
+
+static void MSG_WriteRawBytes(sizebuf_t *msg, int value, int bits)
+{
+	qbyte	*buf;
+
+	if (bits <= 8)
+	{
+		buf = SZ_GetSpace(msg, 1);
+		buf[0] = value;
+	}
+	else if (bits <= 16)
+	{
+		buf = SZ_GetSpace(msg, 2);
+		buf[0] = value & 0xFF;
+		buf[1] = value >> 8;
+	}
+	else //if (bits <= 32)
+	{
+		buf = SZ_GetSpace(msg, 4);
+		buf[0] = value & 0xFF;
+		buf[1] = (value >> 8) & 0xFF;
+		buf[2] = (value >> 16) & 0xFF;
+		buf[3] = value >> 24;
+	}
+}
+
+static void MSG_WriteRawBits(sizebuf_t *msg, int value, int bits)
+{
+	int i;
+	for (i=0; i<bits; )
+	{
+		if (!(msg->currentbit&7))
+		{	//we need another byte now...
+			msg->cursize++;
+			if (bits >= 8)
+			{	//splurge an entire byte
+				msg->data[msg->currentbit>>3] = (value>>i)&0xff;
+				i += 8;
+				msg->currentbit += 8;
+				continue;
+			}
+			//clear it for the following 8 bits to splurge
+			msg->data[msg->currentbit>>3] = 0;
+		}
+		msg->data[msg->currentbit>>3] |= ((value>>i)&1) << (msg->currentbit & 7);
+		msg->currentbit++;
+		i++;
+	}
+}
+
+#ifdef HUFFNETWORK
+static void MSG_WriteHuffBits(sizebuf_t *msg, int value, int bits)
+{
+	int		remaining;
+	int		i;
+
+	value &= 0xFFFFFFFFu >> (32 - bits);
+	remaining = bits & 7;
+
+	for( i=0; i<remaining ; i++ )
+	{
+		if( !(msg->currentbit & 7) )
+		{
+			msg->data[msg->currentbit >> 3] = 0;
+		}
+		msg->data[msg->currentbit >> 3] |= (value & 1) << (msg->currentbit & 7);
+		msg->currentbit++;
+		value >>= 1;
+	}
+	bits -= remaining;
+
+	if( bits > 0 )
+	{
+		for( i=0 ; i<(bits+7)>>3 ; i++ )
+		{
+			Huff_EmitByte( value & 255, msg->data, &msg->currentbit );
+			value >>= 8;
+		}
+	}
+
+	msg->cursize = (msg->currentbit >> 3) + 1;
+}
+#endif
+
+/*
+============
+MSG_WriteBits
+============
+*/
+void MSG_WriteBits(sizebuf_t *msg, int value, int bits)
+{
+	if( !bits || bits < -31 || bits > 32 )
+		Sys_Error("MSG_WriteBits: bad bits %i", bits);
+
+	if (bits < 0)
+	{	//negative means sign extension on reading
+		if (value & (1u<<(bits-1)))
+			value |= ~1u<<bits;	//sign extend, just in case it matters (rawbytes with bits < n*8)...
+		bits = -bits;
+	}
+
+	switch( msg->packing )
+	{
+	default:
+	case SZ_BAD:
+		Sys_Error("MSG_WriteBits: bad msg->packing %i", msg->packing );
+		break;
+	case SZ_RAWBYTES:
+		MSG_WriteRawBytes( msg, value, bits );
+		break;
+	case SZ_RAWBITS:
+		MSG_WriteRawBits( msg, value, bits );
+		break;
+#ifdef HUFFNETWORK
+	case SZ_HUFFMAN:
+		if( msg->maxsize - msg->cursize < 4 )
+		{
+			if (!msg->allowoverflow)
+			msg->overflowed = true;
+			return;
+		}
+		MSG_WriteHuffBits( msg, value, bits );
+		break;
+#endif
+	}
+}
+
 void MSG_WriteChar (sizebuf_t *sb, int c)
 {
 	qbyte	*buf;
@@ -918,12 +1059,45 @@ void MSG_WriteLong (sizebuf_t *sb, int c)
 	buf[2] = (c>>16)&0xff;
 	buf[3] = (c>>24)&0xff;
 }
+void MSG_WriteULEB128 (sizebuf_t *sb, quint64_t c)
+{
+	qbyte b;
+	for(;;)
+	{
+		b = c&0x7f;
+		c>>=7;
+		if (!c)
+			break;
+		MSG_WriteByte(sb, b|0x80);
+	}
+	MSG_WriteByte(sb, b);
+}
+/*void MSG_WriteSLEB128 (sizebuf_t *sb, qint64_t c)
+{
+	qbyte b;
+	for(;;)
+	{
+		b = c&0x7f;
+		c>>=7;
+		if ((c==0 && (b&64)==0) || (c==-1 && (b&64)!=0))
+			break;
+		MSG_WriteByte(sb, b|0x80);
+	}
+	MSG_WriteByte(sb, b);
+}*/
+void MSG_WriteSignedQEX (sizebuf_t *sb, qint64_t c)
+{
+	if (c < 0)
+		MSG_WriteULEB128(sb, ((quint64_t)(-1-c)<<1)|1);
+	else
+		MSG_WriteULEB128(sb, c<<1);
+}
 void MSG_WriteUInt64 (sizebuf_t *sb, quint64_t c)
 {	//0* 10*,*, 110*,*,* etc, up to 0xff followed by 8 continuation bytes
 	qbyte *buf;
 	int b = 0;
 	quint64_t l = 128;
-	while (c > l-1u)
+	while (c > l-1u && b < 8)
 	{	//count the extra bytes we need
 		b++;
 		l <<= 7;	//each byte we add gains 8 bits, but we spend one on length.
@@ -1098,7 +1272,7 @@ void MSG_WriteAngle (sizebuf_t *sb, float f)
 		Sys_Error("MSG_WriteAngle: undefined network primitive size");
 }
 
-
+#if defined(HAVE_CLIENT) || defined(HAVE_SERVER)
 int MSG_ReadSize16 (sizebuf_t *sb)
 {
 	unsigned short ssolid = MSG_ReadShort();
@@ -1130,7 +1304,7 @@ void MSG_WriteSize16 (sizebuf_t *sb, int sz)
 	else
 		MSG_WriteShort(sb, 0);
 }
-void COM_DecodeSize(int solid, vec3_t mins, vec3_t maxs)
+void COM_DecodeSize(int solid, float *mins, float *maxs)
 {
 #if 1
 	maxs[0] = maxs[1] = solid & 255;
@@ -1144,7 +1318,7 @@ void COM_DecodeSize(int solid, vec3_t mins, vec3_t maxs)
 	maxs[2] = 8*((solid>>10) & 63) - 32;
 #endif
 }
-int COM_EncodeSize(vec3_t mins, vec3_t maxs)
+int COM_EncodeSize(const float *mins, const float *maxs)
 {
 	int solid;
 #if 1
@@ -1163,7 +1337,6 @@ int COM_EncodeSize(vec3_t mins, vec3_t maxs)
 	return solid;
 }
 
-#if defined(HAVE_CLIENT) || defined(HAVE_SERVER)
 void MSG_WriteEntity(sizebuf_t *sb, unsigned int entnum)
 {
 	if (entnum > MAX_EDICTS)
@@ -1327,6 +1500,7 @@ void MSGQ2_WriteDeltaUsercmd (sizebuf_t *buf, const usercmd_t *from, const userc
 #define	UC_RIGHT		(1<<4)
 #define	UC_BUTTONS		(1<<5)
 #define	UC_IMPULSE		(1<<6)
+
 #define	UC_UP			(1<<7)	//split from forward/right because its rare, and this avoids sending an extra byte.
 #define UC_ABSANG		(1<<8)	//angle values are shorts
 #define UC_BIGMOVES		(1<<9)	//fwd/left/up are shorts, rather than a fith.
@@ -1334,13 +1508,15 @@ void MSGQ2_WriteDeltaUsercmd (sizebuf_t *buf, const usercmd_t *from, const userc
 #define	UC_CURSORFLDS	(1<<11)	//lots of data in one.
 #define	UC_LIGHTLEV		(1<<12)
 #define	UC_VR_HEAD		(1<<13)
+
 #define	UC_VR_RIGHT		(1<<14)
 #define	UC_VR_LEFT		(1<<15)
 //#define	UC_UNUSED		(1<<16)
 //#define	UC_UNUSED		(1<<17)
-//#define	UC_UNUSED		(1<<18)
+#define	UC_MSEC_DEBUG		(1<<18)	//FIXME: temporary
 //#define	UC_UNUSED		(1<<19)
 //#define	UC_UNUSED		(1<<20)
+
 //#define	UC_UNUSED		(1<<21)
 //#define	UC_UNUSED		(1<<22)
 //#define	UC_UNUSED		(1<<23)
@@ -1348,11 +1524,12 @@ void MSGQ2_WriteDeltaUsercmd (sizebuf_t *buf, const usercmd_t *from, const userc
 //#define	UC_UNUSED		(1<<25)
 //#define	UC_UNUSED		(1<<26)
 //#define	UC_UNUSED		(1<<27)
+
 //#define	UC_UNUSED		(1<<28)
 //#define	UC_UNUSED		(1<<29)
 //#define	UC_UNUSED		(1<<30)
 //#define	UC_UNUSED		(1<<31)
-#define UC_UNSUPPORTED (~(UC_ANGLE1 | UC_ANGLE2 | UC_ANGLE3 | UC_FORWARD | UC_RIGHT | UC_BUTTONS | UC_IMPULSE | UC_UP | UC_ABSANG | UC_BIGMOVES | UC_WEAPON | UC_CURSORFLDS | UC_LIGHTLEV | UC_VR_HEAD | UC_VR_RIGHT | UC_VR_LEFT))
+#define UC_UNSUPPORTED (~(UC_ANGLE1 | UC_ANGLE2 | UC_ANGLE3 | UC_FORWARD | UC_RIGHT | UC_BUTTONS | UC_IMPULSE | UC_UP | UC_ABSANG | UC_BIGMOVES | UC_WEAPON | UC_CURSORFLDS | UC_LIGHTLEV | UC_VR_HEAD | UC_VR_RIGHT | UC_VR_LEFT | UC_MSEC_DEBUG))
 
 #define UC_VR_STATUS		(1<<0)
 #define UC_VR_ANG			(1<<1)
@@ -1478,10 +1655,17 @@ void MSGFTE_WriteDeltaUsercmd (sizebuf_t *buf, const short baseangles[3], const 
 	if (MSG_CompareVR(VRDEV_LEFT, from, cmd))
 		bits |= UC_VR_LEFT;
 
+#ifdef _DEBUG
+	if (developer.ival)
+		bits |= UC_MSEC_DEBUG;
+#endif
+
 	//NOTE: WriteUInt64 actually uses some length coding, so its not quite as bloated as it looks.
 	MSG_WriteUInt64(buf, bits);
 
 	MSG_WriteUInt64(buf, cmd->servertime-from->servertime);
+	if (bits & UC_MSEC_DEBUG)
+		MSG_WriteUInt64(buf, cmd->msec);
 	for (i = 0; i < 3; i++)
 	{
 		if (bits & (UC_ANGLE1<<i))
@@ -1595,7 +1779,10 @@ void MSGFTE_ReadDeltaUsercmd (const usercmd_t *from, usercmd_t *cmd)
 	*cmd = *from;
 	cmd->servertime = from->servertime+MSG_ReadUInt64();
 	cmd->fservertime = cmd->servertime/1000.0;
-	cmd->msec = 0;	//no info...
+	if (bits & UC_MSEC_DEBUG)
+		cmd->msec = MSG_ReadUInt64();	//for debugging only. only sent when developer 1, for now.
+	else
+		cmd->msec = 0;	//no info...
 	for (i = 0; i < 3; i++)
 	{
 		if (bits & (UC_ANGLE1<<i))
@@ -1728,7 +1915,7 @@ void MSGCL_WriteDeltaUsercmd (sizebuf_t *buf, const usercmd_t *from, const userc
 //
 qboolean	msg_badread;
 struct netprim_s msg_nullnetprim;
-static sizebuf_t 	*msg_readmsg;
+static sizebuf_t	*msg_readmsg;
 
 void MSG_BeginReading (sizebuf_t *sb, struct netprim_s prim)
 {
@@ -1790,7 +1977,6 @@ static int MSG_ReadRawBytes(sizebuf_t *msg, int bits)
 	return bitmask;
 }
 
-
 /*
 ============
 MSG_ReadRawBits
@@ -1801,6 +1987,13 @@ static int MSG_ReadRawBits(sizebuf_t *msg, int bits)
 	int i;
 	int val;
 	int bitmask = 0;
+
+	if (msg->currentbit + bits > (msg->cursize<<3))
+	{
+		msg_badread = true;
+		msg->currentbit = msg->cursize<<3;
+		return -1;
+	}
 
 	for(i=0 ; i<bits ; i++)
 	{
@@ -1842,7 +2035,6 @@ static int MSG_ReadHuffBits(sizebuf_t *msg, int bits)
 
 	return bitmask;
 }
-
 #endif
 
 int MSG_ReadBits(int bits)
@@ -1922,7 +2114,6 @@ void MSG_ReadSkip(int bytes)
 }
 
 
-
 // returns -1 and sets msg_badread if no more characters are available
 int MSG_ReadChar (void)
 {
@@ -1945,7 +2136,6 @@ int MSG_ReadChar (void)
 
 	return c;
 }
-
 
 int MSG_ReadByte (void)
 {
@@ -1993,6 +2183,30 @@ int MSG_ReadShort (void)
 	return c;
 }
 
+int MSG_ReadUInt16 (void)
+{
+	int	c;
+	unsigned int msg_readcount;
+
+	if (msg_readmsg->packing!=SZ_RAWBYTES)
+		return (short)MSG_ReadBits(16);
+
+	msg_readcount = msg_readmsg->currentbit>>3;
+	if (msg_readcount+2 > msg_readmsg->cursize)
+	{
+		msg_badread = true;
+		return -1;
+	}
+
+	c = (unsigned short)(msg_readmsg->data[msg_readcount]
+	+ (msg_readmsg->data[msg_readcount+1]<<8));
+
+	msg_readcount += 2;
+	msg_readmsg->currentbit = msg_readcount<<3;
+
+	return c;
+}
+
 int MSG_ReadLong (void)
 {
 	int	c;
@@ -2018,7 +2232,28 @@ int MSG_ReadLong (void)
 
 	return c;
 }
-
+quint64_t MSG_ReadULEB128 (void)
+{
+	quint64_t r = 0;
+	qbyte b, o=0;
+	while (!msg_badread)
+	{
+		b = MSG_ReadByte();
+		r |= (b&0x7f)<<o;
+		o+=7;
+		if (!(b & 0x80))
+			break;
+	}
+	return r;
+}
+qint64_t MSG_ReadSignedQEX (void)
+{	//this is not signed leb128 (which would normally just sign-extend)
+	quint64_t c = MSG_ReadULEB128();
+	if (c&1)
+		return -1-(qint64_t)(c>>1);
+	else
+		return (qint64_t)(c>>1);
+}
 quint64_t MSG_ReadUInt64 (void)
 {	//0* 10*,*, 110*,*,* etc, up to 0xff followed by 8 continuation bytes
 	qbyte l=0x80, v, b = 0;
@@ -2029,9 +2264,9 @@ quint64_t MSG_ReadUInt64 (void)
 		v-=l;
 		b++;
 	}
-	r = v<<(b*8);
+	r = (quint64_t)v<<(b*8);
 	while(b --> 0)
-		r |= MSG_ReadByte()<<(b*8);
+		r |= (quint64_t)MSG_ReadByte()<<(b*8);
 	return r;
 }
 qint64_t MSG_ReadInt64 (void)
@@ -2078,7 +2313,6 @@ float MSG_ReadFloat (void)
 
 	return dat.f;
 }
-
 double MSG_ReadDouble (void)
 {
 	union
@@ -2106,7 +2340,6 @@ double MSG_ReadDouble (void)
 
 	return dat.f;
 }
-
 
 char *MSG_ReadStringBuffer (char *out, size_t outsize)
 {
@@ -2183,7 +2416,6 @@ float MSG_ReadCoord (void)
 	MSG_ReadData(c.b, coordtype&COORDTYPE_SIZE_MASK);
 	return MSG_FromCoord(c, coordtype);
 }
-
 float MSG_ReadCoordFloat (void)
 {
 	coorddata c = {{0}};
@@ -2472,20 +2704,31 @@ void SZ_Print (sizebuf_t *buf, const char *data)
 
 //============================================================================
 
-char *COM_TrimString(char *str, char *buffer, int buffersize)
+qboolean COM_TrimString(char *str, char *buffer, int buffersize)
 {
 	int i;
+	if (buffersize <= 0)
+	{
+		Sys_Error("COM_TrimString: no buffer\n");
+		return false;
+	}
+
 	while (*str <= ' ' && *str>'\0')
 		str++;
 
-	for (i = 0; i < buffersize-1; i++)
+	for (i = 0; ; i++)
 	{
+		if (i == buffersize-1)
+		{
+			buffer[i] = '\0';
+			return false;
+		}
 		if (*str <= ' ')
 			break;
 		buffer[i] = *str++;
 	}
 	buffer[i] = '\0';
-	return buffer;
+	return true;
 }
 
 /*
@@ -2609,12 +2852,12 @@ void COM_CleanUpPath(char *str)
 	int criticize = 0;
 	for (dots = str; *dots; dots++)
 	{
-		if (*dots >= 'A' && *dots <= 'Z')
+		/*if (*dots >= 'A' && *dots <= 'Z')
 		{
 			*dots = *dots - 'A' + 'a';
 			criticize = 1;
 		}
-		else if (*dots == '\\')
+		else */if (*dots == '\\')
 		{
 			*dots = '/';
 			criticize = 2;
@@ -5203,7 +5446,7 @@ void COM_InitArgv (int argc, const char **argv)	//not allowed to tprint
 	qboolean	safe;
 	int			i;
 
-#if !defined(NACL) && !defined(FTE_TARGET_WEB)
+#if !defined(FTE_TARGET_WEB)
 	FILE *f;
 
 	if (argv && argv[0])
@@ -5305,8 +5548,8 @@ static void COM_Version_f (void)
 
 #ifdef FTE_BRANCH
 	Con_Printf("Branch: "STRINGIFY(FTE_BRANCH)"\n");
-#endif
-#if defined(SVNREVISION) && defined(SVNDATE)
+	Con_Printf("Revision: %s - %s\n",STRINGIFY(SVNREVISION), STRINGIFY(SVNDATE));
+#elif defined(SVNREVISION) && defined(SVNDATE)
 	if (!strncmp(STRINGIFY(SVNREVISION), "git-", 4))
 		Con_Printf("GIT Revision: %s - %s\n",STRINGIFY(SVNREVISION), STRINGIFY(SVNDATE));
 	else
@@ -5588,13 +5831,13 @@ static void COM_Version_f (void)
 	#ifdef BOTLIB_STATIC
 		Con_Printf(" Quake3");
 	#else
-		Con_Printf(" Quake3^h(no-botlib)^h");
+		Con_Printf(" Quake3^h(dynamic)^h");
 	#endif
 #elif defined(Q3SERVER)
 	#ifdef BOTLIB_STATIC
 		Con_Printf(" Quake3(server)");
 	#else
-		Con_Printf(" Quake3(server,no-botlib)");
+		Con_Printf(" Quake3(server,dynamic)");
 	#endif
 #elif defined(Q3CLIENT)
 	Con_Printf(" Quake3(client)");
@@ -6396,7 +6639,7 @@ void COM_Init (void)
 	Cvar_Register (&gameversion, "Gamecode");
 	Cvar_Register (&gameversion_min, "Gamecode");
 	Cvar_Register (&gameversion_max, "Gamecode");
-	Cvar_Register (&com_nogamedirnativecode, "Gamecode");
+	Cvar_Register (&com_gamedirnativecode, "Gamecode");
 	Cvar_Register (&com_parseutf8, "Internationalisation");
 #ifdef HAVE_LEGACY
 	Cvar_Register (&scr_usekfont, NULL);
@@ -6461,6 +6704,7 @@ char	*VARGS va(const char *format, ...)
 	return string[bufnum];
 }
 
+#if defined(HAVE_CLIENT) || defined(HAVE_SERVER)
 #ifdef NQPROT
 //for compat with dpp7 protocols, or dp gamecode that neglects to properly precache particles.
 void COM_Effectinfo_Enumerate(int (*cb)(const char *pname))
@@ -6545,55 +6789,97 @@ unsigned int COM_RemapMapChecksum(model_t *model, unsigned int checksum)
 	static const struct {
 		const char *name;
 		unsigned int gpl2;
-		unsigned int id11;
+//		unsigned int id11;
 		unsigned int id12;
 	} sums[] =
 	{
-		{"maps/start.bsp",	0xDC03BAF3,	0x2A9A3763,	0x1D69847B},
+		{"maps/start.bsp",	0xDC03BAF3,	/*0x2A9A3763,*/	0x1D69847B},
 
-		{"maps/e1m1.bsp",	0xB7B19924,	0x1F392B02,	0xAD07D882},
-		{"maps/e1m2.bsp",	0x80CD279B,	0x5D140D24,	0x67100127},
-		{"maps/e1m3.bsp",	0x1F632D93,	0x3C20FA2E,	0x3546324A},
-		{"maps/e1m4.bsp",	0xB75BC1B8,	0xE5A522CE,	0xEDDA0675},
-		{"maps/e1m5.bsp",	0x65DEA50B,	0x6EA3A1CB,	0xA82C1C8A},
-		{"maps/e1m6.bsp",	0x3C76263E,	0x4DC4FFC4,	0x2C0028E3},
-		{"maps/e1m7.bsp",	0x51FAD6A8,	0xACBF5564,	0x97D6FB1A},
-		{"maps/e1m8.bsp",	0x57A436A8,	0xF63C8EE5,	0x04B6E741},
+		{"maps/e1m1.bsp",	0xB7B19924,	/*0x1F392B02,*/	0xAD07D882},
+		{"maps/e1m2.bsp",	0x80CD279B,	/*0x5D140D24,*/	0x67100127},
+		{"maps/e1m3.bsp",	0x1F632D93,	/*0x3C20FA2E,*/	0x3546324A},
+		{"maps/e1m4.bsp",	0xB75BC1B8,	/*0xE5A522CE,*/	0xEDDA0675},
+		{"maps/e1m5.bsp",	0x65DEA50B,	/*0x6EA3A1CB,*/	0xA82C1C8A},
+		{"maps/e1m6.bsp",	0x3C76263E,	/*0x4DC4FFC4,*/	0x2C0028E3},
+		{"maps/e1m7.bsp",	0x51FAD6A8,	/*0xACBF5564,*/	0x97D6FB1A},
+		{"maps/e1m8.bsp",	0x57A436A8,	/*0xF63C8EE5,*/	0x04B6E741},
 
-		{"maps/e2m1.bsp",	0x992B120D,	0xD0732BA6,	0xDCF57032},
-		{"maps/e2m2.bsp",	0xA23126C5,	0xEACA9423,	0xAF961D4D},
-		{"maps/e2m3.bsp",	0x0956602E,	0x47B46758,	0xFC992551},
-		{"maps/e2m4.bsp",	0xA4CDDCC6,	0x9EDD4CE8,	0xC3169BC9},
-		{"maps/e3m5.bsp",	0xDC98420F,	0xAC371E07,	0x917A0631},
-		{"maps/e2m6.bsp",	0x3E1AA34D,	0x22CD3B7B,	0x91A33B81},
-		{"maps/e2m7.bsp",	0xA1A37724,	0x6C1F85F2,	0x7A3FE018},
+		{"maps/e2m1.bsp",	0x992B120D,	/*0xD0732BA6,*/	0xDCF57032},
+		{"maps/e2m2.bsp",	0xA23126C5,	/*0xEACA9423,*/	0xAF961D4D},
+		{"maps/e2m3.bsp",	0x0956602E,	/*0x47B46758,*/	0xFC992551},
+		{"maps/e2m4.bsp",	0xA4CDDCC6,	/*0x9EDD4CE8,*/	0xC3169BC9},
+		{"maps/e3m5.bsp",	0xDC98420F,	/*0xAC371E07,*/	0x917A0631},
+		{"maps/e2m6.bsp",	0x3E1AA34D,	/*0x22CD3B7B,*/	0x91A33B81},
+		{"maps/e2m7.bsp",	0xA1A37724,	/*0x6C1F85F2,*/	0x7A3FE018},
 
-		{"maps/e3m1.bsp",	0xBD5A7A83,	0xE4BE9A0B,	0x90B20D21},
-		{"maps/e3m2.bsp",	0xE4043D8E,	0x2B1EC056,	0x9C6C7538},
-		{"maps/e3m3.bsp",	0xEE12BAC9,	0xDFCFCB78,	0xC3D05D18},
-		{"maps/e3m4.bsp",	0xF33D954A,	0x42003651,	0xB1790CB8},
-		{"maps/e3m5.bsp",	0xDC98420F,	0xAC371E07,	0x917A0631},
-		{"maps/e3m6.bsp",	0x9CC8F9BC,	0x6139434A,	0x2DC17DF8},
-		{"maps/e3m7.bsp",	0x2E8DE70A,	0xA5CF7110,	0x1039C1B1},
+		{"maps/e3m1.bsp",	0xBD5A7A83,	/*0xE4BE9A0B,*/	0x90B20D21},
+		{"maps/e3m2.bsp",	0xE4043D8E,	/*0x2B1EC056,*/	0x9C6C7538},
+		{"maps/e3m3.bsp",	0xEE12BAC9,	/*0xDFCFCB78,*/	0xC3D05D18},
+		{"maps/e3m4.bsp",	0xF33D954A,	/*0x42003651,*/	0xB1790CB8},
+		{"maps/e3m5.bsp",	0xDC98420F,	/*0xAC371E07,*/	0x917A0631},
+		{"maps/e3m6.bsp",	0x9CC8F9BC,	/*0x6139434A,*/	0x2DC17DF8},
+		{"maps/e3m7.bsp",	0x2E8DE70A,	/*0xA5CF7110,*/	0x1039C1B1},
 
-		{"maps/e4m1.bsp",	0x5C4CDD45,	0x4AC23D4C,	0xBBF06350},
-		{"maps/e4m2.bsp",	0xAC84C40A,	0x057FACCC,	0xFFF8CB18},
-		{"maps/e4m3.bsp",	0xB6A519E2,	0x74E93DDD,	0x59BEF08C},
-		{"maps/e4m4.bsp",	0x3233C45C,	0xE9A7693C,	0x2D3B183F},
-		{"maps/e4m5.bsp",	0xE5D3E4DD,	0x17315A00,	0x699CE7F4},
-		{"maps/e4m6.bsp",	0x5A7B37C0,	0x6636A6B8,	0x0620FF98},
-		{"maps/e4m7.bsp",	0xE9497085,	0xDD1C14E2,	0x9DEC01AC},
-		{"maps/e4m8.bsp",	0x325A2B54,	0x3F6274D5,	0x3CB46C57},
+		{"maps/e4m1.bsp",	0x5C4CDD45,	/*0x4AC23D4C,*/	0xBBF06350},
+		{"maps/e4m2.bsp",	0xAC84C40A,	/*0x057FACCC,*/	0xFFF8CB18},
+		{"maps/e4m3.bsp",	0xB6A519E2,	/*0x74E93DDD,*/	0x59BEF08C},
+		{"maps/e4m4.bsp",	0x3233C45C,	/*0xE9A7693C,*/	0x2D3B183F},
+		{"maps/e4m5.bsp",	0xE5D3E4DD,	/*0x17315A00,*/	0x699CE7F4},
+		{"maps/e4m6.bsp",	0x5A7B37C0,	/*0x6636A6B8,*/	0x0620FF98},
+		{"maps/e4m7.bsp",	0xE9497085,	/*0xDD1C14E2,*/	0x9DEC01AC},
+		{"maps/e4m8.bsp",	0x325A2B54,	/*0x3F6274D5,*/	0x3CB46C57},
 
-		{"maps/dm1.bsp",	0x7D37618E,	0xA3B80B3A,	0xC5C7DAB3},	//you should be able to use aquashark's untextured maps.
-		{"maps/dm2.bsp",	0x7B337440,	0x1763B3DA,	0x65F63634},
-		{"maps/dm3.bsp",	0x912781AE,	0x7AC99CDE,	0x15E20DF8},
-		{"maps/dm4.bsp",	0xC374DF89,	0x13799D1F,	0x9C6FE4BF},
-		{"maps/dm5.bsp",	0x77CA7CE5,	0x2DB66BBC,	0xB02D48FD},
-		{"maps/dm6.bsp",	0x200C8B5D,	0x0EBB386D,	0x5208DA2B},
+		{"maps/dm1.bsp",	0x7D37618E,	/*0xA3B80B3A,*/	0xC5C7DAB3},	//you should be able to use aquashark's untextured maps.
+		{"maps/dm2.bsp",	0x7B337440,	/*0x1763B3DA,*/	0x65F63634},
+		{"maps/dm3.bsp",	0x912781AE,	/*0x7AC99CDE,*/	0x15E20DF8},
+		{"maps/dm4.bsp",	0xC374DF89,	/*0x13799D1F,*/	0x9C6FE4BF},
+		{"maps/dm5.bsp",	0x77CA7CE5,	/*0x2DB66BBC,*/	0xB02D48FD},
+		{"maps/dm6.bsp",	0x200C8B5D,	/*0x0EBB386D,*/	0x5208DA2B},
 
-		{"maps/end.bsp",	0xF89B12AE,	0xA66198D8,	0xBBD4B4A5},	//unmodified gpl version (with the extra room)
-		{"maps/end.bsp",	0x924F4D33,	0xA66198D8,	0xBBD4B4A5} 	//aquashark's gpl version (with the extra room removed)
+		{"maps/end.bsp",	0xF89B12AE,	/*0xA66198D8,*/	0xBBD4B4A5},	//unmodified gpl version (with the extra room)
+		{"maps/end.bsp",	0x924F4D33,	/*0xA66198D8,*/	0xBBD4B4A5}, 	//aquashark's gpl version (with the extra room removed)
+
+		//re-release maps. they are not 100% identical,
+		//but they're generally close enough and its confusing to get kicked for having the official maps.
+		//expect minor prediction issues in a few places.
+		{"maps/start.bsp",	0x49A92170,	/*0x2A9A3763,*/	0x1D69847B},
+		{"maps/e1m1.bsp",	0xA1937AD5,	/*0x1F392B02,*/	0xAD07D882},
+		{"maps/e1m2.bsp",	0x65BC436B,	/*0x5D140D24,*/	0x67100127},
+		{"maps/e1m3.bsp",	0x7A4FE4F2,	/*0x3C20FA2E,*/	0x3546324A},
+		{"maps/e1m4.bsp",	0xEC07DCB0,	/*0xE5A522CE,*/	0xEDDA0675},
+//buggy	{"maps/e1m5.bsp",	0xAD138551,	/*0x6EA3A1CB,*/	0xA82C1C8A},
+		{"maps/e1m6.bsp",	0xA732C2E4,	/*0x4DC4FFC4,*/	0x2C0028E3},
+		{"maps/e1m7.bsp",	0x9318DDF3,	/*0xACBF5564,*/	0x97D6FB1A},
+		{"maps/e1m8.bsp",	0x0E858BF7,	/*0xF63C8EE5,*/	0x04B6E741},
+		{"maps/e2m1.bsp",	0xCB350590,	/*0xD0732BA6,*/	0xDCF57032},
+		{"maps/e2m2.bsp",	0x045DC982,	/*0xEACA9423,*/	0xAF961D4D},
+		{"maps/e2m3.bsp",	0x4E14A67D,	/*0x47B46758,*/	0xFC992551},
+		{"maps/e2m4.bsp",	0x5366D18C,	/*0x9EDD4CE8,*/	0xC3169BC9},
+		{"maps/e3m5.bsp",	0x94086C83,	/*0xAC371E07,*/	0x917A0631},
+//start	{"maps/e2m6.bsp",	0x460E3FE2,	/*0x22CD3B7B,*/	0x91A33B81},
+		{"maps/e2m7.bsp",	0xB7477F61,	/*0x6C1F85F2,*/	0x7A3FE018},
+		{"maps/e3m1.bsp",	0xBC433495,	/*0xE4BE9A0B,*/	0x90B20D21},
+		{"maps/e3m2.bsp",	0x63E72C4D,	/*0x2B1EC056,*/	0x9C6C7538},
+		{"maps/e3m3.bsp",	0x8DD3DF69,	/*0xDFCFCB78,*/	0xC3D05D18},
+		{"maps/e3m4.bsp",	0xD41DD779,	/*0x42003651,*/	0xB1790CB8},
+		{"maps/e3m5.bsp",	0x1EAA53D8,	/*0xAC371E07,*/	0x917A0631},
+		{"maps/e3m6.bsp",	0xEFB7B728,	/*0x6139434A,*/	0x2DC17DF8},
+		{"maps/e3m7.bsp",	0x7A46C0EA,	/*0xA5CF7110,*/	0x1039C1B1},
+		{"maps/e4m1.bsp",	0x9AF0885B,	/*0x4AC23D4C,*/	0xBBF06350},
+		{"maps/e4m2.bsp",	0x8E947D06,	/*0x057FACCC,*/	0xFFF8CB18},
+		{"maps/e4m3.bsp",	0x134BCDEE,	/*0x74E93DDD,*/	0x59BEF08C},
+		{"maps/e4m4.bsp",	0xBDB41FF0,	/*0xE9A7693C,*/	0x2D3B183F},
+		{"maps/e4m5.bsp",	0xC1F0D4C6,	/*0x17315A00,*/	0x699CE7F4},
+		{"maps/e4m6.bsp",	0x286A9410,	/*0x6636A6B8,*/	0x0620FF98},
+		{"maps/e4m7.bsp",	0xB769356B,	/*0xDD1C14E2,*/	0x9DEC01AC},
+//		{"maps/e4m8.bsp",	0xA62A7AEB,	/*0x3F6274D5,*/	0x3CB46C57},
+//		{"maps/dm1.bsp",	0x6E4C13E6,	/*0xA3B80B3A,*/	0xC5C7DAB3},
+		{"maps/dm2.bsp",	0x725B277D,	/*0x1763B3DA,*/	0x65F63634},
+		{"maps/dm3.bsp",	0xB1DD97B1,	/*0x7AC99CDE,*/	0x15E20DF8},
+		{"maps/dm4.bsp",	0x76A592A0,	/*0x13799D1F,*/	0x9C6FE4BF},
+		{"maps/dm5.bsp",	0xD651996F,	/*0x2DB66BBC,*/	0xB02D48FD},
+		{"maps/dm6.bsp",	0x33F7D9C9,	/*0x0EBB386D,*/	0x5208DA2B},
+//		{"maps/end.bsp",	0x3C87824B,	/*0xA66198D8,*/	0xBBD4B4A5},
 	};
 	unsigned int i;
 	for (i = 0; i < sizeof(sums)/sizeof(sums[0]); i++)
@@ -6605,6 +6891,7 @@ unsigned int COM_RemapMapChecksum(model_t *model, unsigned int checksum)
 #endif
 	return checksum;
 }
+#endif
 
 static char Base64_Encode(int byt)
 {
@@ -6628,9 +6915,9 @@ static int Base64_Decode(char inp)
 		return (inp-'a') + 26;
 	if (inp >= '0' && inp <= '9')
 		return (inp-'0') + 52;
-	if (inp == '+')
+	if (inp == '+' || inp == '-')
 		return 62;
-	if (inp == '/')
+	if (inp == '/' || inp == '_')
 		return 63;
 	//if (inp == '=') //padding char
 	return 0;	//invalid
@@ -6665,6 +6952,23 @@ size_t Base64_EncodeBlock(const qbyte *in, size_t length, char *out, size_t outs
 	if (out < end)
 		*out = 0;
 	return out-start;
+}
+size_t Base64_EncodeBlockURI(const qbyte *in, size_t length, char *out, size_t outsize)
+{	//special uri-safe version (also trims)
+	outsize = Base64_EncodeBlock(in, length, out, outsize);
+	for (length = 0; length < outsize; length++)
+	{
+		if (out[length] == '+')
+			out[length] = '-';
+		else if (out[length] == '/')
+			out[length] = '_';
+		else if (out[length] == '=')
+		{	//truncate it here.
+			out[length] = 0;
+			return length;
+		}
+	}
+	return outsize;
 }
 size_t Base64_DecodeBlock(const char *in, const char *in_end, qbyte *out, size_t outsize)
 {
@@ -7369,11 +7673,11 @@ void InfoBuf_Print(infobuf_t *info, const char *lineprefix)
 		val = info->keys[k].value;
 
 		if (info->keys[k].size != strlen(info->keys[k].value))
-			Con_Printf ("%s%-20s%s<BINARY %u BYTES>\n", lineprefix, key, partial, (unsigned int)info->keys[k].size);
+			Con_Printf ("%s"S_COLOR_GREEN"%-20s"S_COLOR_RED"%s<BINARY %u BYTES>\n", lineprefix, key, partial, (unsigned int)info->keys[k].size);
 		else if (info->keys[k].size > 64 || strchr(val, '\n') || strchr(val, '\r') || strchr(val, '\t'))
-			Con_Printf ("%s%-20s%s<%u BYTES>\n", lineprefix, key, partial, (unsigned int)info->keys[k].size);
+			Con_Printf ("%s"S_COLOR_GREEN"%-20s"S_COLOR_RED"%s<%u BYTES>\n", lineprefix, key, partial, (unsigned int)info->keys[k].size);
 		else
-			Con_Printf ("%s%-20s%s%s\n", lineprefix, key, partial, val);
+			Con_Printf ("%s"S_COLOR_GREEN"%-20s"S_COLOR_WHITE"%s%s\n", lineprefix, key, partial, val);
 	}
 }
 void InfoBuf_Enumerate (infobuf_t *info, void *ctx, void(*cb)(void *ctx, const char *key, const char *value))
@@ -8207,10 +8511,15 @@ char *version_string(void)
 #ifdef OFFICIAL_RELEASE
 		Q_snprintfz(s, sizeof(s), "%s v%i.%02i", DISTRIBUTION, FTE_VER_MAJOR, FTE_VER_MINOR);
 #elif defined(SVNREVISION) && defined(SVNDATE)
+	#ifdef FTE_BRANCH
+		//something like 'FTE master 6410M-HASH'
+		Q_snprintfz(s, sizeof(s), "%s %s %s", DISTRIBUTION, STRINGIFY(FTE_BRANCH), STRINGIFY(SVNREVISION));
+	#else
 		if (!strncmp(STRINGIFY(SVNREVISION), "git-", 4))
 			Q_snprintfz(s, sizeof(s), "%s %s", DISTRIBUTION, STRINGIFY(SVNREVISION));	//if both are defined then its a known unmodified svn revision.
 		else
 			Q_snprintfz(s, sizeof(s), "%s SVN %s", DISTRIBUTION, STRINGIFY(SVNREVISION));	//if both are defined then its a known unmodified svn revision.
+	#endif
 #else
 	#if defined(SVNREVISION)
 		if (!strncmp(STRINGIFY(SVNREVISION), "git-", 4))
@@ -8265,9 +8574,17 @@ int parse_revision_number(const char *s, qboolean strict)
 	}
 	else
 	{
-		//[lower-]upper[M]
+		//svn: [lower-]upper[M]
+		//git: revision-git-hash[-dirty]
+		//git: branch-revision-git-hash[-dirty]
 		rev = strtoul(s, &e, 10);
-		if (*e && strict)
+		if (!strncmp(e, "-git", 4))
+		{	//if there's a -dirty in there then its bad.
+			//we can't validate that the commit id matches the same branch as this build. we'll just have to live with it.
+			if (strict && strstr(s, "-dirty"))
+				return false;
+		}
+		else if (*e && strict)
 			return false;	//something odd.
 	}
 	return rev;

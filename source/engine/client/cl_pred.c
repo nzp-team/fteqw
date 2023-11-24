@@ -231,14 +231,24 @@ CL_PredictMovement
 Sets cl.predicted_origin and cl.predicted_angles
 =================
 */
+static void CLQ2_UserCmdToQ2(q2usercmd_t *out, const usercmd_t *cmd)
+{
+	out->msec = cmd->msec;
+	out->buttons = cmd->buttons;
+	VectorCopy(cmd->angles, out->angles);
+	out->forwardmove = cmd->forwardmove;
+	out->sidemove = cmd->sidemove;
+	out->upmove = cmd->upmove;
+	out->impulse = cmd->impulse;
+	out->lightlevel = cmd->lightlevel;
+}
 static void CLQ2_PredictMovement (int seat)	//q2 doesn't support split clients.
 {
 #ifdef Q2BSPS
 	int			ack, current;
 	int			frame;
 	int			oldframe;
-	q2usercmd_t	*cmd;
-	q2pmove_t		pm;
+	q2pmove_t	pm;
 	int			step;
 	int			oldz;
 #endif
@@ -293,10 +303,7 @@ static void CLQ2_PredictMovement (int seat)	//q2 doesn't support split clients.
 	while (++ack < current)
 	{
 		frame = ack & (UPDATE_MASK);
-		cmd = (q2usercmd_t*)&cl.outframes[frame].cmd[seat];
-		cmd->msec = cl.outframes[frame].cmd[seat].msec;
-
-		pm.cmd = *cmd;
+		CLQ2_UserCmdToQ2(&pm.cmd, &cl.outframes[frame].cmd[seat]);
 		Q2_Pmove (&pm);
 
 		// save for debug checking
@@ -305,10 +312,7 @@ static void CLQ2_PredictMovement (int seat)	//q2 doesn't support split clients.
 
 	if (cl_pendingcmd[seat].msec)
 	{
-		cmd = (q2usercmd_t*)&cl_pendingcmd[seat];
-		cmd->msec = cl_pendingcmd[seat].msec;
-
-		pm.cmd = *cmd;
+		CLQ2_UserCmdToQ2(&pm.cmd, &cl_pendingcmd[seat]);
 		Q2_Pmove (&pm);
 	}
 
@@ -611,7 +615,8 @@ void CL_CalcClientTime(void)
 {
 	if (!cls.state)
 	{
-		cl.servertime += host_frametime;
+		if (!cl.implicitpause)
+			cl.servertime += host_frametime;
 		cl.time = cl.servertime;
 		return;
 	}
@@ -954,6 +959,8 @@ float CL_GetPredictionRealtime(playerview_t *pv)
 
 	return simtime;
 }
+
+qboolean CSQC_GetSSQCEntityOrigin(unsigned int ssqcent, float *out);
 /*
 ==============
 CL_PredictMove
@@ -1055,7 +1062,8 @@ void CL_PredictMovePNum (int seat)
 	if (pv->cam_state == CAM_PENDING && pv->cam_spec_track >= 0 && pv->cam_spec_track < cl.allocated_client_slots && pv->viewentity != pv->cam_spec_track+1)
 	{
 		if ((cl.inframes[cl.validsequence & UPDATE_MASK].playerstate[pv->cam_spec_track].messagenum == cl.validsequence) ||
-			(pv->cam_spec_track+1 < cl.maxlerpents && cl.lerpents[pv->cam_spec_track+1].sequence == cl.lerpentssequence))
+			(pv->cam_spec_track+1 < cl.maxlerpents && cl.lerpents[pv->cam_spec_track+1].sequence == cl.lerpentssequence) ||
+			CSQC_GetSSQCEntityOrigin(pv->cam_spec_track+1, NULL))
 		{
 			pv->cam_state = CAM_EYECAM;
 			pv->viewentity = pv->cam_spec_track+1;

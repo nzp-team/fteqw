@@ -36,15 +36,16 @@ cvar_t mod_loadentfiles						= CVAR("sv_loadentfiles", "1");
 cvar_t mod_loadentfiles_dir					= CVAR("sv_loadentfiles_dir", "");
 cvar_t mod_external_vis						= CVARD("mod_external_vis", "1", "Attempt to load .vis patches for quake maps, allowing transparent water to work properly.");
 cvar_t mod_warnmodels						= CVARD("mod_warnmodels", "1", "Warn if any models failed to load. Set to 0 if your mod is likely to lack optional models (like its in development).");	//set to 0 for hexen2 and its otherwise-spammy-as-heck demo.
-cvar_t mod_litsprites_force					= CVARD("mod_litsprites_force", "0", "If set to 1, sprites will be lit according to world lighting (including rtlights), like Tenebrae. Ideally use EF_ADDITIVE or EF_FULLBRIGHT to make emissive sprites instead.");
+cvar_t mod_litsprites_force					= CVARFD("mod_litsprites_force", "0", CVAR_RENDERERLATCH, "If set to 1, sprites will be lit according to world lighting (including rtlights), like Tenebrae. Ideally use EF_ADDITIVE or EF_FULLBRIGHT to make emissive sprites instead.");
 cvar_t mod_loadmappackages					= CVARD ("mod_loadmappackages", "1", "Load additional content embedded within bsp files.");
 cvar_t mod_lightscale_broken				= CVARFD("mod_lightscale_broken", "0", CVAR_RENDERERLATCH, "When active, replicates a bug from vanilla - the radius of r_dynamic lights is scaled by per-surface texture scale rather than using actual distance.");
-cvar_t temp_lit2support						= CVARD("temp_mod_lit2support", "0", "Set to 1 to enable lit2 support. This cvar will be removed once the format is finalised.");
+cvar_t mod_lightpoint_distance				= CVARD("mod_lightpoint_distance", "8192", "This is the maximum distance to trace when searching for a ground surface for lighting info on map formats without light more fancy lighting info. Use 2048 for full compat with Quake.");
 #ifdef SPRMODELS
 cvar_t r_sprite_backfacing					= CVARD	("r_sprite_backfacing", "0", "Make oriented sprites face backwards relative to their orientation, for compat with q1.");
 #endif
+cvar_t r_nolerp_list						= CVARFD ("r_nolerp_list"/*qs*/, "", CVAR_RENDERERLATCH, "Models in this list will not interpolate. Any models included here should be considered bad.");
 #ifdef RTLIGHTS
-cvar_t r_noEntityCastShadowList				= CVARD ("r_noEntityCastShadowList", "progs/missile.mdl,progs/flame.mdl,progs/flame2.mdl,progs/lavaball.mdl,progs/grenade.mdl,progs/spike.mdl,progs/s_spike.mdl,progs/laser.mdl,progs/lspike.mdl,progs/candle.mdl", "Models in this list will not cast shadows.");
+cvar_t r_noshadow_list						= CVARAFD ("r_noshadow_list"/*qs*/, "r_noEntityCastShadowList", "progs/missile.mdl,progs/flame.mdl,progs/flame2.mdl,progs/lavaball.mdl,progs/grenade.mdl,progs/spike.mdl,progs/s_spike.mdl,progs/laser.mdl,progs/lspike.mdl,progs/candle.mdl", CVAR_RENDERERLATCH, "Models in this list will not cast shadows.");
 #endif
 #ifdef SERVERONLY
 cvar_t gl_overbright, gl_specular, gl_load24bit, r_replacemodels, gl_miptexLevel, r_fb_bmodels;	//all of these can/should default to 0
@@ -81,6 +82,7 @@ void Mod_LoadDoomSprite (model_t *mod);
 #define	MAX_MOD_KNOWN	8192
 model_t	*mod_known;
 int		mod_numknown;
+char mod_modifier[MAX_QPATH];	//postfix for ent files
 
 extern cvar_t r_loadlits;
 #ifdef SPECULAR
@@ -620,6 +622,17 @@ void Mod_Purge(enum mod_purge_e ptype)
 	}
 }
 
+void Mod_SetModifier(const char *modifier)
+{
+	if (!modifier || strlen(modifier) >= sizeof(mod_modifier)) modifier = "";
+	if (strcmp(modifier, mod_modifier))
+	{	//if the modifier changed, force all models to reset.
+		COM_WorkerFullSync();	//sync all the workers, just in case.
+		strcpy(mod_modifier, modifier);
+		Mod_Purge(MP_RESET);	//nuke it now
+	}
+}
+
 #ifndef SERVERONLY
 void Mod_FindCubemaps_f(void);
 void Mod_Realign_f(void);
@@ -661,11 +674,12 @@ void Mod_Init (qboolean initial)
 		Cvar_Register(&mod_loadentfiles_dir, NULL);
 		Cvar_Register(&mod_loadmappackages, NULL);
 		Cvar_Register(&mod_lightscale_broken, NULL);
-		Cvar_Register(&temp_lit2support, NULL);
+		Cvar_Register(&mod_lightpoint_distance, NULL);
 		Cvar_Register (&r_meshpitch, "Gamecode");
 		Cvar_Register (&r_meshroll, "Gamecode");
+		Cvar_Register(&r_nolerp_list, "Graphical Nicaties");
 #ifdef RTLIGHTS
-		Cvar_Register(&r_noEntityCastShadowList, "Graphical Nicaties");
+		Cvar_Register(&r_noshadow_list, "Graphical Nicaties");
 #endif
 		Cmd_AddCommandD("sv_saveentfile", Mod_SaveEntFile_f, "Dumps a copy of the map's entities to disk, so that it can be edited and used as a replacement for slightly customised maps.");
 		Cmd_AddCommandD("mod_showent", Mod_ShowEnt_f, "Allows you to quickly search through a map's entities.");
@@ -1012,11 +1026,7 @@ void Mod_ModelLoaded(void *ctx, void *data, size_t a, size_t b)
 #endif
 #ifndef SERVERONLY
 	if (mod->type == mod_brush)
-	{
 		Surf_BuildModelLightmaps(mod);
-		r_oldviewcluster = -1;	//just in case.
-		r_oldviewcluster2 = -2;
-	}
 	if (mod->type == mod_sprite)
 	{
 		Mod_LoadSpriteShaders(mod);
@@ -1060,6 +1070,7 @@ void Mod_ModelLoaded(void *ctx, void *data, size_t a, size_t b)
 			Con_Printf(CON_ERROR "Unable to load %s\n", mod->name);
 		break;
 	case MLV_SILENT:
+	case MLV_SILENTSYNC:
 		break;
 	}
 }
@@ -1089,6 +1100,9 @@ static void Mod_LoadModelWorker (void *ctx, void *data, size_t a, size_t b)
 	char ext[8];
 	int basedepth;
 
+	//clear out any old state.
+	memset(&mod->loadstate+1, 0, sizeof(*mod) - (qintptr_t)(&((model_t*)NULL)->loadstate+1));
+
 	if (!*mod->publicname)
 	{
 		mod->type = mod_dummy;
@@ -1117,7 +1131,6 @@ static void Mod_LoadModelWorker (void *ctx, void *data, size_t a, size_t b)
 //
 // load the file
 //
-	mod->maxlod = 0;
 	// set necessary engine flags for loading purposes
 	if (!strcmp(mod->publicname, "progs/player.mdl"))
 		mod->engineflags |= MDLF_PLAYER | MDLF_DOCRC;
@@ -1129,9 +1142,9 @@ static void Mod_LoadModelWorker (void *ctx, void *data, size_t a, size_t b)
 		|| !strcmp(mod->publicname, "models/cflmtrch.mdl")	//hexen2 wall torch
 #endif
 			)
-		mod->engineflags |= MDLF_FLAME;
+		mod->engineflags |= MDLF_FLAME|MDLF_NOSHADOWS;
 	else if (!strcmp(mod->publicname, "progs/bolt.mdl")
-		|| !strcmp(mod->publicname, "models/misc/bolt2.mdl")
+		|| !strcmp(mod->publicname, "progs/bolt2.mdl")
 		|| !strcmp(mod->publicname, "progs/bolt3.mdl")
 		|| !strcmp(mod->publicname, "progs/beam.mdl")
 #ifdef HEXEN2
@@ -1140,7 +1153,7 @@ static void Mod_LoadModelWorker (void *ctx, void *data, size_t a, size_t b)
 		|| !strcmp(mod->publicname, "models/stice.mdl")
 #endif
 			 )
-		mod->engineflags |= MDLF_BOLT;
+		mod->engineflags |= MDLF_NOSHADOWS;
 	else if (!strcmp(mod->publicname, "progs/backpack.mdl"))
 		mod->engineflags |= MDLF_NOTREPLACEMENTS;
 	else if (!strcmp(mod->publicname, "progs/eyes.mdl"))
@@ -1321,18 +1334,6 @@ static void Mod_LoadModelWorker (void *ctx, void *data, size_t a, size_t b)
 			}
 		}
 
-/*
-#ifdef MAP_PROC
-			if (!strcmp(com_token, "CM"))	//doom3 map.
-			{
-				TRACE(("Mod_LoadModel: doom3 CM\n"));
-				if (!D3_LoadMap_CollisionMap (mod, (char*)buf))
-					continue;
-				break;
-			}
-#endif
-*/
-
 		TRACE(("Mod_LoadModel: Loaded\n"));
 
 		BZ_Free(buf);
@@ -1357,13 +1358,20 @@ model_t *Mod_LoadModel (model_t *mod, enum mlverbosity_e verbose)
 {
 	if (mod->loadstate == MLS_NOTLOADED && *mod->name != '*')
 	{
-#ifdef RTLIGHTS
-		char *s = strstr(r_noEntityCastShadowList.string, mod->publicname);
+		const char *s = strstr(r_nolerp_list.string, mod->publicname);
 		COM_AssertMainThread("Mod_LoadModel");
 		if (s)
 		{
 			size_t l = strlen(mod->publicname);
-			if ((s == r_noEntityCastShadowList.string || s[-1]==',') && (s[l] == 0 || s[l] == ','))
+			if ((s == r_nolerp_list.string || s[-1]==',') && (s[l] == 0 || s[l] == ','))
+				mod->engineflags |= MDLF_NOLERP;
+		}
+#ifdef RTLIGHTS
+		s = strstr(r_noshadow_list.string, mod->publicname);
+		if (s)
+		{
+			size_t l = strlen(mod->publicname);
+			if ((s == r_noshadow_list.string || s[-1]==',') && (s[l] == 0 || s[l] == ','))
 				mod->engineflags |= MDLF_NOSHADOWS;
 		}
 #endif
@@ -1373,18 +1381,16 @@ model_t *Mod_LoadModel (model_t *mod, enum mlverbosity_e verbose)
 			COM_InsertWork(WG_LOADER, Mod_LoadModelWorker, mod, NULL, verbose, 0);
 		else
 			COM_AddWork(WG_LOADER, Mod_LoadModelWorker, mod, NULL, verbose, 0);
-
-		//block until its loaded, if we care.
-		if (verbose == MLV_ERROR || verbose == MLV_WARNSYNC)
-			COM_WorkerPartialSync(mod, &mod->loadstate, MLS_LOADING);
 	}
+
+	//block until its loaded, if we care.
+	if (mod->loadstate == MLS_LOADING && (verbose == MLV_ERROR || verbose == MLV_WARNSYNC || verbose == MLV_SILENTSYNC))
+		COM_WorkerPartialSync(mod, &mod->loadstate, MLS_LOADING);
 
 	if (verbose == MLV_ERROR)
 	{
 		//someone already tried to load it without caring if it failed or not. make sure its loaded.
 		//fixme: this is a spinloop.
-		if (mod->loadstate == MLS_LOADING)
-			COM_WorkerPartialSync(mod, &mod->loadstate, MLS_LOADING);
 
 		if (mod->loadstate != MLS_LOADED)
 			Host_EndGame ("Mod_NumForName: %s not found or couldn't load", mod->name);
@@ -1452,7 +1458,7 @@ static const char *Mod_RemapBuggyTexture(const char *name, const qbyte *data, un
 	{
 		if (!strcmp(name, buggytextures[i].oldname))
 		{
-			unsigned int sum = Com_BlockChecksum(data, datalen);
+			unsigned int sum = CalcHashInt(&hash_md4, data, datalen);
 			for (; i < sizeof(buggytextures)/sizeof(buggytextures[0]); i++)
 			{
 				if (strcmp(name, buggytextures[i].oldname))
@@ -1617,6 +1623,11 @@ void Mod_LoadLighting (model_t *loadmodel, bspx_header_t *bspx, qbyte *mod_base,
 #endif
 
 	extern cvar_t gl_overbright;
+
+#ifdef HAVE_CLIENT
+	BSPX_LightGridLoad(loadmodel, bspx, mod_base);
+#endif
+
 	loadmodel->lightmaps.fmt = LM_L8;
 
 	//q3 maps have built in 4-fold overbright.
@@ -1708,13 +1719,12 @@ void Mod_LoadLighting (model_t *loadmodel, bspx_header_t *bspx, qbyte *mod_base,
 		struct
 		{
 			char *pattern;
-			int type;
 		} litnames[] = {
-			{"%s.lit2",2},
-			{"%s.hdr",1},
-			{"%s.lit",0},
-			{"lits/%s.lit2",2},
-			{"lits/%s.lit",0},
+			{"%s.hdr"},
+			{"%s.lit"},
+#ifdef HAVE_LEGACY
+			{"lits/%s.lit"},
+#endif
 		};
 		char litbasep[MAX_QPATH];
 		char litbase[MAX_QPATH];
@@ -1730,8 +1740,6 @@ void Mod_LoadLighting (model_t *loadmodel, bspx_header_t *bspx, qbyte *mod_base,
 		COM_FileBase(loadmodel->name, litbase, sizeof(litbase));
 		for (i = 0; i < countof(litnames); i++)
 		{
-			if (!temp_lit2support.ival && litnames[i].type==2)
-				continue;
 			if (strchr(litnames[i].pattern, '/'))
 				Q_snprintfz(litname, sizeof(litname), litnames[i].pattern, litbase);
 			else
@@ -1790,12 +1798,7 @@ void Mod_LoadLighting (model_t *loadmodel, bspx_header_t *bspx, qbyte *mod_base,
 				unsigned short *extents = (unsigned short*)(offsets+ql2->numsurfs);
 				unsigned char *styles = (unsigned char*)(extents+ql2->numsurfs*2);
 				unsigned char *shifts = (unsigned char*)(styles+ql2->numsurfs*4);
-				if (!temp_lit2support.ival)
-				{
-					litdata = NULL;
-					Con_Printf("lit2 support is disabled, pending format finalisation (%s).\n", litname);
-				}
-				else if (loadmodel->numsurfaces != ql2->numsurfs)
+				if (loadmodel->numsurfaces != ql2->numsurfs)
 				{
 					litdata = NULL;
 					Con_Printf("lit \"%s\" doesn't match level. Ignored.\n", litname);
@@ -1807,6 +1810,8 @@ void Mod_LoadLighting (model_t *loadmodel, bspx_header_t *bspx, qbyte *mod_base,
 				}
 				else
 				{
+					Con_Printf("%s: lit2 support is unstandardised and may change in future.\n", litname);
+
 					inhibitvalidation = true;
 
 					//surface code needs to know the overrides.
@@ -2261,11 +2266,13 @@ static void Mod_SaveEntFile_f(void)
 	{
 		Q_snprintfz(fname, sizeof(fname), "maps/%s/%s", mod_loadentfiles_dir.string, mod->name+5);
 		COM_StripExtension(fname, fname, sizeof(fname));
+		Q_strncatz(fname, mod_modifier, sizeof(fname));
 		Q_strncatz(fname, ".ent", sizeof(fname));
 	}
 	else
 	{
 		COM_StripExtension(mod->name, fname, sizeof(fname));
+		Q_strncatz(fname, mod_modifier, sizeof(fname));
 		Q_strncatz(fname, ".ent", sizeof(fname));
 	}
 
@@ -2302,6 +2309,7 @@ qboolean Mod_LoadEntitiesBlob(struct model_s *mod, const char *entdata, size_t e
 		{
 			Q_snprintfz(fname, sizeof(fname), "maps/%s/%s", mod_loadentfiles_dir.string, mod->name+5);
 			COM_StripExtension(fname, fname, sizeof(fname));
+			Q_strncatz(fname, mod_modifier, sizeof(fname));
 			Q_strncatz(fname, ".ent", sizeof(fname));
 			ents = FS_LoadMallocFile(fname, &sz);
 		}
@@ -2309,12 +2317,14 @@ qboolean Mod_LoadEntitiesBlob(struct model_s *mod, const char *entdata, size_t e
 	if (mod_loadentfiles.value && !ents)
 	{
 		COM_StripExtension(mod->name, fname, sizeof(fname));
+		Q_strncatz(fname, mod_modifier, sizeof(fname));
 		Q_strncatz(fname, ".ent", sizeof(fname));
 		ents = FS_LoadMallocFile(fname, &sz);
 	}
 	if (mod_loadentfiles.value && !ents)
 	{	//tenebrae compat
 		COM_StripExtension(mod->name, fname, sizeof(fname));
+		Q_strncatz(fname, mod_modifier, sizeof(fname));
 		Q_strncatz(fname, ".edo", sizeof(fname));
 		ents = FS_LoadMallocFile(fname, &sz);
 	}
@@ -2414,18 +2424,48 @@ qboolean Mod_LoadVertexNormals (model_t *loadmodel, bspx_header_t *bspx, qbyte *
 			Con_Printf (CON_ERROR "MOD_LoadBmodel: funny lump size in %s\n", loadmodel->name);
 			return false;
 		}
+
+		if (count != loadmodel->numvertexes)
+			return false;	//invalid number of verts there, can't use this.
 	}
 	else
-	{
-		in = BSPX_FindLump(bspx, mod_base, "VERTEXNORMALS", &count); 
-		if (in)
-			count /= sizeof(vec3_t);
+	{	//ericw's thing
+		unsigned int size;
+		quint32_t t;
+		int *normcount;
+		struct surfedgenormals_s *sen;
+		normcount = BSPX_FindLump(bspx, mod_base, "FACENORMALS", &size);
+		if (normcount && size >= sizeof(*normcount))
+		{
+			count = LittleLong(*normcount);
+			if (count < 1)
+				return false;
+			in = (void*)(normcount+1);	//now the normals table.
+			sen = (void*)(in + count*3);
+			if ((qbyte*)(sen + loadmodel->numsurfedges)-(qbyte*)normcount != size)
+				return false;	//bad size.
+
+			loadmodel->surfedgenormals = ZG_Malloc(&loadmodel->memgroup, loadmodel->numsurfedges*sizeof(*loadmodel->surfedgenormals));
+			for ( i=0 ; i<loadmodel->numsurfedges ; i++, sen++)
+			{
+				t = LittleLong(sen->n); loadmodel->surfedgenormals[i].n = bound(0, t, count-1);
+				t = LittleLong(sen->s); loadmodel->surfedgenormals[i].s = bound(0, t, count-1);
+				t = LittleLong(sen->t); loadmodel->surfedgenormals[i].t = bound(0, t, count-1);
+			}
+		}
 		else
-			count = 0;
+		{
+			//quake2world's thing
+			in = BSPX_FindLump(bspx, mod_base, "VERTEXNORMALS", &count);
+			if (in)
+				count /= sizeof(vec3_t);
+			else
+				count = 0;
+			if (count != loadmodel->numvertexes)
+				return false;	//invalid number of verts there, can't use this.
+		}
 	}
 
-	if (count != loadmodel->numvertexes)
-		return false;	//invalid number of verts there, can't use this.
 	out = ZG_Malloc(&loadmodel->memgroup, count*sizeof(vec3_t));	
 	loadmodel->normals = (vec3_t*)out;
 	for ( i=0 ; i<count ; i++, in+=3, out+=3)
@@ -2447,6 +2487,7 @@ void ModQ1_Batches_BuildQ1Q2Poly(model_t *mod, msurface_t *surf, builddata_t *co
 	float s, t, d;
 	int sty;
 //	int w,h;
+	struct facelmvecs_s *flmv = mod->facelmvecs?mod->facelmvecs + (surf-mod->surfaces):NULL;
 
 	if (!mesh)
 	{
@@ -2505,47 +2546,75 @@ void ModQ1_Batches_BuildQ1Q2Poly(model_t *mod, msurface_t *surf, builddata_t *co
 				mesh->st_array[i][1] /= surf->texinfo->texture->vheight;
 		}
 
-#ifndef SERVERONLY
-		if (r_lightmap_average.ival)
+		if (flmv)
 		{
+			s = DotProduct (vec, flmv->lmvecs[0]) + flmv->lmvecs[0][3];
+			t = DotProduct (vec, flmv->lmvecs[1]) + flmv->lmvecs[1][3];
+#ifndef SERVERONLY
+			if (r_lightmap_average.ival)
+				s = surf->extents[0]*0.5, t = surf->extents[1]*0.5;
+#endif
+			//s+t are now in luxels... need to convert those to normalised texcoords though.
 			for (sty = 0; sty < 1; sty++)
 			{
-				mesh->lmst_array[sty][i][0] = (surf->extents[0]*0.5 + (surf->light_s[sty]<<surf->lmshift) + (1<<surf->lmshift)*0.5) / (mod->lightmaps.width<<surf->lmshift);
-				mesh->lmst_array[sty][i][1] = (surf->extents[1]*0.5 + (surf->light_t[sty]<<surf->lmshift) + (1<<surf->lmshift)*0.5) / (mod->lightmaps.height<<surf->lmshift);
+				mesh->lmst_array[sty][i][0] = (surf->light_s[sty] + s) / mod->lightmaps.width;
+				mesh->lmst_array[sty][i][1] = (surf->light_t[sty] + t) / mod->lightmaps.height;
 			}
 		}
 		else
-#endif
 		{
-			for (sty = 0; sty < 1; sty++)
+#ifndef SERVERONLY
+			if (r_lightmap_average.ival)
 			{
-				mesh->lmst_array[sty][i][0] = (s - surf->texturemins[0] + (surf->light_s[sty]<<surf->lmshift) + (1<<surf->lmshift)*0.5) / (mod->lightmaps.width<<surf->lmshift);
-				mesh->lmst_array[sty][i][1] = (t - surf->texturemins[1] + (surf->light_t[sty]<<surf->lmshift) + (1<<surf->lmshift)*0.5) / (mod->lightmaps.height<<surf->lmshift);
+				for (sty = 0; sty < 1; sty++)
+				{
+					mesh->lmst_array[sty][i][0] = (surf->extents[0]*0.5 + (surf->light_s[sty]<<surf->lmshift) + (1<<surf->lmshift)*0.5) / (mod->lightmaps.width<<surf->lmshift);
+					mesh->lmst_array[sty][i][1] = (surf->extents[1]*0.5 + (surf->light_t[sty]<<surf->lmshift) + (1<<surf->lmshift)*0.5) / (mod->lightmaps.height<<surf->lmshift);
+				}
+			}
+			else
+#endif
+			{
+				for (sty = 0; sty < 1; sty++)
+				{
+					mesh->lmst_array[sty][i][0] = (s - surf->texturemins[0] + (surf->light_s[sty]<<surf->lmshift) + (1<<surf->lmshift)*0.5) / (mod->lightmaps.width<<surf->lmshift);
+					mesh->lmst_array[sty][i][1] = (t - surf->texturemins[1] + (surf->light_t[sty]<<surf->lmshift) + (1<<surf->lmshift)*0.5) / (mod->lightmaps.height<<surf->lmshift);
+				}
 			}
 		}
 
-		//figure out the texture directions, for bumpmapping and stuff
-		if (mod->normals && (surf->texinfo->flags & 0x800) && (mod->normals[vertidx][0] || mod->normals[vertidx][1] || mod->normals[vertidx][2])) 
+		if (mod->surfedgenormals)
 		{
-			//per-vertex normals - used for smoothing groups and stuff.
-			VectorCopy(mod->normals[vertidx], mesh->normals_array[i]);
+			struct surfedgenormals_s *pv = mod->surfedgenormals + surf->firstedge + i;
+			VectorCopy(mod->normals[pv->n], mesh->normals_array[i]);
+			VectorCopy(mod->normals[pv->s], mesh->snormals_array[i]);
+			VectorCopy(mod->normals[pv->t], mesh->tnormals_array[i]);
 		}
 		else
 		{
-			if (surf->flags & SURF_PLANEBACK)
-				VectorNegate(surf->plane->normal, mesh->normals_array[i]);
+			//figure out the texture directions, for bumpmapping and stuff
+			if (mod->normals && (surf->texinfo->flags & 0x800) && (mod->normals[vertidx][0] || mod->normals[vertidx][1] || mod->normals[vertidx][2]))
+			{
+				//per-vertex normals - used for smoothing groups and stuff.
+				VectorCopy(mod->normals[vertidx], mesh->normals_array[i]);
+			}
 			else
-				VectorCopy(surf->plane->normal, mesh->normals_array[i]);
+			{
+				if (surf->flags & SURF_PLANEBACK)
+					VectorNegate(surf->plane->normal, mesh->normals_array[i]);
+				else
+					VectorCopy(surf->plane->normal, mesh->normals_array[i]);
+			}
+			VectorCopy(surf->texinfo->vecs[0], mesh->snormals_array[i]);
+			VectorNegate(surf->texinfo->vecs[1], mesh->tnormals_array[i]);
+			//for q1bsp the s+t vectors are usually axis-aligned, so fiddle them so they're normal aligned instead
+			d = -DotProduct(mesh->normals_array[i], mesh->snormals_array[i]);
+			VectorMA(mesh->snormals_array[i], d, mesh->normals_array[i], mesh->snormals_array[i]);
+			d = -DotProduct(mesh->normals_array[i], mesh->tnormals_array[i]);
+			VectorMA(mesh->tnormals_array[i], d, mesh->normals_array[i], mesh->tnormals_array[i]);
+			VectorNormalize(mesh->snormals_array[i]);
+			VectorNormalize(mesh->tnormals_array[i]);
 		}
-		VectorCopy(surf->texinfo->vecs[0], mesh->snormals_array[i]);
-		VectorNegate(surf->texinfo->vecs[1], mesh->tnormals_array[i]);
-		//the s+t vectors are axis-aligned, so fiddle them so they're normal aligned instead
-		d = -DotProduct(mesh->normals_array[i], mesh->snormals_array[i]);
-		VectorMA(mesh->snormals_array[i], d, mesh->normals_array[i], mesh->snormals_array[i]);
-		d = -DotProduct(mesh->normals_array[i], mesh->tnormals_array[i]);
-		VectorMA(mesh->tnormals_array[i], d, mesh->normals_array[i], mesh->tnormals_array[i]);
-		VectorNormalize(mesh->snormals_array[i]);
-		VectorNormalize(mesh->tnormals_array[i]);
 
 		//q1bsp has no colour information (fixme: sample from the lightmap?)
 		for (sty = 0; sty < 1; sty++)
@@ -2699,6 +2768,37 @@ static void Mod_UpdateBatchShader_Q1 (struct batch_s *batch)
 	if (base->anim_total)
 	{
 		relative = (unsigned int)(cl.time*10) % base->anim_total;
+
+		count = 0;
+		while (base->anim_min > relative || base->anim_max <= relative)
+		{
+			base = base->anim_next;
+			if (!base)
+				Sys_Error ("R_TextureAnimation: broken cycle");
+			if (++count > 100)
+				Sys_Error ("R_TextureAnimation: infinite cycle");
+		}
+	}
+
+	batch->shader = base->shader;
+}
+
+// copy of Q1s, but with a different framerate
+static void Mod_UpdateBatchShader_HL (struct batch_s *batch)
+{
+	texture_t *base = batch->texture;
+	unsigned int	relative;
+	int				count;
+
+	if (batch->ent->framestate.g[FS_REG].frame[0])
+	{
+		if (base->alternate_anims)
+			base = base->alternate_anims;
+	}
+
+	if (base->anim_total)
+	{
+		relative = (unsigned int)(cl.time*20) % base->anim_total;
 
 		count = 0;
 		while (base->anim_min > relative || base->anim_max <= relative)
@@ -2886,8 +2986,10 @@ static int Mod_Batches_Generate(model_t *mod)
 #endif
 #ifdef Q1BSPS
 				case fg_quake:
-				case fg_halflife:
 					batch->buildmeshes = Mod_UpdateBatchShader_Q1;
+					break;
+				case fg_halflife:
+					batch->buildmeshes = Mod_UpdateBatchShader_HL;
 					break;
 #endif
 				default:
@@ -3696,6 +3798,12 @@ TRACE(("dbg: Mod_LoadTextures: inittexturedescs\n"));
 
 	m->nummiptex = LittleLong (m->nummiptex);
 
+	if ((1+m->nummiptex)*sizeof(int) > l->filelen)
+	{
+		Con_Printf(CON_WARNING "warning: %s contains corrupt texture lump\n", loadmodel->name);
+		return false;
+	}
+
 	loadmodel->numtextures = m->nummiptex;
 	loadmodel->textures = ZG_Malloc(&loadmodel->memgroup, m->nummiptex * sizeof(*loadmodel->textures));
 	sizes = alloca(sizeof(*sizes)*m->nummiptex);
@@ -4141,6 +4249,10 @@ static qboolean Mod_LoadFaces (model_t *loadmodel, bspx_header_t *bspx, qbyte *m
 	lightmapoverrides_t overrides;
 
 	int lofsscale = 1;
+	qboolean lightmapusable = false;
+
+	struct decoupled_lm_info_s *decoupledlm;
+	unsigned int dcsize;
 
 	memset(&overrides, 0, sizeof(overrides));
 
@@ -4181,7 +4293,14 @@ static qboolean Mod_LoadFaces (model_t *loadmodel, bspx_header_t *bspx, qbyte *m
 	loadmodel->surfaces = out;
 	loadmodel->numsurfaces = count;
 
+	Mod_LoadVertexNormals(loadmodel, bspx, mod_base, NULL);
 	Mod_LoadLighting (loadmodel, bspx, mod_base, lightlump, false, &overrides, subbsp);
+
+	decoupledlm = BSPX_FindLump(bspx, mod_base, "DECOUPLED_LM", &dcsize); //RGB packed data
+	if (dcsize == count*sizeof(*decoupledlm))
+		loadmodel->facelmvecs = ZG_Malloc(&loadmodel->memgroup, count * sizeof(*loadmodel->facelmvecs));	//seems good.
+	else
+		decoupledlm	= NULL;	//wrong size somehow... discard it.
 
 	switch(loadmodel->lightmaps.fmt)
 	{
@@ -4265,14 +4384,37 @@ static qboolean Mod_LoadFaces (model_t *loadmodel, bspx_header_t *bspx, qbyte *m
 			if (loadmodel->lightmaps.maxstyle < out->styles[i])
 				loadmodel->lightmaps.maxstyle = out->styles[i];
 
-		CalcSurfaceExtents (loadmodel, out);
+		if (decoupledlm)
+		{
+			lofs = LittleLong(decoupledlm->lmoffset);
+			out->texturemins[0] = out->texturemins[1] = 0; // should be handled by the now-per-surface vecs[][3] value.
+			out->lmshift = 0;	//redundant.
+			out->extents[0] = (unsigned short)LittleShort(decoupledlm->lmsize[0]) - 1;
+			out->extents[1] = (unsigned short)LittleShort(decoupledlm->lmsize[1]) - 1;
+			loadmodel->facelmvecs[surfnum].lmvecs[0][0] = LittleFloat(decoupledlm->lmvecs[0][0]);
+			loadmodel->facelmvecs[surfnum].lmvecs[0][1] = LittleFloat(decoupledlm->lmvecs[0][1]);
+			loadmodel->facelmvecs[surfnum].lmvecs[0][2] = LittleFloat(decoupledlm->lmvecs[0][2]);
+			loadmodel->facelmvecs[surfnum].lmvecs[0][3] = LittleFloat(decoupledlm->lmvecs[0][3]) + 0.5f; //sigh
+			loadmodel->facelmvecs[surfnum].lmvecs[1][0] = LittleFloat(decoupledlm->lmvecs[1][0]);
+			loadmodel->facelmvecs[surfnum].lmvecs[1][1] = LittleFloat(decoupledlm->lmvecs[1][1]);
+			loadmodel->facelmvecs[surfnum].lmvecs[1][2] = LittleFloat(decoupledlm->lmvecs[1][2]);
+			loadmodel->facelmvecs[surfnum].lmvecs[1][3] = LittleFloat(decoupledlm->lmvecs[1][3]) + 0.5f; //sigh
+			loadmodel->facelmvecs[surfnum].lmvecscale[0] = 1.0f/Length(loadmodel->facelmvecs[surfnum].lmvecs[0]);	//luxels->qu
+			loadmodel->facelmvecs[surfnum].lmvecscale[1] = 1.0f/Length(loadmodel->facelmvecs[surfnum].lmvecs[1]);
+			decoupledlm++;
+		}
+		else
+			CalcSurfaceExtents (loadmodel, out);
 		if (lofs != (unsigned int)-1)
 			lofs *= lofsscale;
-		lend = lofs+(out->extents[0]+1)*(out->extents[1]+1);
+		lend = lofs+(out->extents[0]+1)*(out->extents[1]+1) /*FIXME: mul by numstyles */;
 		if (lofs > loadmodel->lightdatasize || lend < lofs)
 			out->samples = NULL;	//should includes -1
 		else
+		{
 			out->samples = loadmodel->lightdata + lofs;
+			lightmapusable = true;	//something has a valid offset.
+		}
 
 		if (!out->texinfo->texture)
 			continue;
@@ -4317,6 +4459,15 @@ static qboolean Mod_LoadFaces (model_t *loadmodel, bspx_header_t *bspx, qbyte *m
 			out->flags &= ~SURF_DRAWALPHA;
 	}
 
+	if (!lightmapusable)
+	{
+		Con_Printf("no valid lightmap offsets in map\n");
+#ifdef RUNTIMELIGHTING
+		RelightTerminate(loadmodel);	//not gonna work...
+#endif
+		loadmodel->lightdata = NULL;
+		loadmodel->deluxdata = NULL;
+	}
 	return true;
 }
 
@@ -4693,6 +4844,11 @@ static qboolean Mod_LoadClipnodes (model_t *loadmodel, qbyte *mod_base, lump_t *
 		if (l->filelen % sizeof(*ins) || count > SANITY_LIMIT(*out))
 		{
 			Con_Printf (CON_ERROR "MOD_LoadBmodel: funny lump size in %s\n",loadmodel->name);
+			return false;
+		}
+		if (count > (1u<<16))
+		{
+			Con_Printf (CON_ERROR "%s: clipnode count exceeds 16bit limit (%u). Try bsp2.\n", loadmodel->name, count);
 			return false;
 		}
 	}
@@ -5288,7 +5444,6 @@ static qboolean QDECL Mod_LoadBrushModel (model_t *mod, void *buffer, size_t fsi
 
 	mod_base = (qbyte *)buffer;
 	memcpy(&header, mod_base, sizeof(header));
-	header.version = LittleLong(header.version);
 	for (i=0 ; i<countof(header.lumps)/4 ; i++)
 	{
 		header.lumps[i].filelen = LittleLong(header.lumps[i].filelen);
@@ -5320,12 +5475,34 @@ static qboolean QDECL Mod_LoadBrushModel (model_t *mod, void *buffer, size_t fsi
 	else if (!memcmp(&header.version,  BSPVERSION_LONG2))
 		mod->engineflags |= MDLF_NEEDOVERBRIGHT, subbsp = sb_long2;
 	else if (!memcmp(&header.version,  BSPVERSIONHL))
+	{
+		char tmp[64];
 		mod->fromgame = fg_halflife;
+
+		//special hack to work around blueshit bugs - we need to swap LUMP_ENTITIES and LUMP_PLANES over
+		if (COM_ParseOut(mod_base + header.lumps[LUMP_PLANES].fileofs, tmp, sizeof(tmp)) && !strcmp(tmp, "{"))
+		{
+			COM_ParseOut(mod_base + header.lumps[LUMP_ENTITIES].fileofs, tmp, sizeof(tmp));
+			if (strcmp(tmp, "{"))
+			{
+				int i;
+				for (i = 0; i < header.lumps[LUMP_ENTITIES].filelen && i < sizeof(dplane_t); i++)
+					if (mod_base[header.lumps[LUMP_ENTITIES].fileofs + i] == 0)
+					{	//yeah, looks screwy in the way we expect. swap em over.
+						lump_t tmp = header.lumps[LUMP_ENTITIES];
+						header.lumps[LUMP_ENTITIES] = header.lumps[LUMP_PLANES];
+						header.lumps[LUMP_PLANES] = tmp;
+						break;
+					}
+			}
+		}
+	}
 	else
 	{
 		Con_Printf (CON_ERROR "Mod_LoadBrushModel: %s has wrong version number (%i)\n", mod->name, i);
 		return false;
 	}
+	header.version = LittleLong(header.version);
 
 	mod->lightmaps.width = 128;//LMBLOCK_WIDTH;
 	mod->lightmaps.height = 128;//LMBLOCK_HEIGHT; 
@@ -5346,7 +5523,7 @@ static qboolean QDECL Mod_LoadBrushModel (model_t *mod, void *buffer, size_t fsi
 		}
 		if (i == LUMP_ENTITIES)
 			continue;
-		chksum = Com_BlockChecksum(mod_base + header.lumps[i].fileofs, header.lumps[i].filelen);
+		chksum = CalcHashInt(&hash_md4, mod_base + header.lumps[i].fileofs, header.lumps[i].filelen);
 		mod->checksum ^= chksum;
 
 		if (i == LUMP_VISIBILITY || i == LUMP_LEAFS || i == LUMP_NODES)
@@ -5619,7 +5796,7 @@ void Mod_LoadDoomSprite (model_t *mod)
 
 //we need to override the rtlight shader for sprites so they get lit properly ignoring n+s+t dirs
 //so lets split the shader into parts to avoid too many dupes
-#define SPRITE_SHADER_MAIN									\
+#define SPRITE_SHADER_MAIN(extra)			\
 			"{\n"											\
 				"if gl_blendsprites\n"						\
 					"program defaultsprite\n"				\
@@ -5639,9 +5816,12 @@ void Mod_LoadDoomSprite (model_t *mod)
 					"rgbgen vertex\n"						\
 					"alphagen vertex\n"						\
 				"}\n"										\
-				"surfaceparm noshadows\n"
-#define SPRITE_SHADER_UNLIT	"surfaceparm nodlight\n"
-#define SPRITE_SHADER_LIT								\
+				"surfaceparm noshadows\n"					\
+				extra										\
+			"}\n"
+#define SPRITE_SHADER_UNLIT	SPRITE_SHADER_MAIN(			\
+				"surfaceparm nodlight\n")
+#define SPRITE_SHADER_LIT	SPRITE_SHADER_MAIN(			\
 				"sort seethrough\n"						\
 				"bemode rtlight\n"						\
 				"{\n"									\
@@ -5650,8 +5830,7 @@ void Mod_LoadDoomSprite (model_t *mod)
 						"map $diffuse\n"				\
 						"blendfunc add\n"				\
 					"}\n"								\
-				"}\n"
-#define SPRITE_SHADER_FOOTER "}\n"
+				"}\n")
 
 void Mod_LoadSpriteFrameShader(model_t *spr, int frame, int subframe, mspriteframe_t *frameinfo)
 {
@@ -5675,7 +5854,7 @@ void Mod_LoadSpriteFrameShader(model_t *spr, int frame, int subframe, mspritefra
 	{
 		int i;
 		/*
-		A quick note on tenebrae and sprites: In tenebrae, sprites are always lit, unless the light_lev field is set (which makes it fullbright).
+		A quick note on tenebrae and sprites: In tenebrae, sprites are always additive, unless the light_lev field is set (which makes it fullbright).
 		While its generally preferable and more consistent to assume lit sprites, this is incompatible with vanilla quake and thus unacceptable to us, but you can set the mod_assumelitsprites cvar if you want it.
 		So for better compatibility, we have a whitelist of 'well-known' sprites that tenebrae uses in this way, which we do lighting on.
 		You should still be able to use EF_FULLBRIGHT on these, but light_lev is an imprecise setting and will result in issues. Just be specific about fullbright or additive.
@@ -5697,9 +5876,10 @@ void Mod_LoadSpriteFrameShader(model_t *spr, int frame, int subframe, mspritefra
 #endif
 
 	if (litsprite)	// a ! in the filename makes it non-fullbright (and can also be lit by rtlights too).
-		shadertext = SPRITE_SHADER_MAIN SPRITE_SHADER_LIT SPRITE_SHADER_FOOTER;
+		shadertext = SPRITE_SHADER_LIT;
 	else
-		shadertext = SPRITE_SHADER_MAIN SPRITE_SHADER_UNLIT SPRITE_SHADER_FOOTER;
+		shadertext = SPRITE_SHADER_UNLIT;
+	frameinfo->lit = litsprite;
 	frameinfo->shader = R_RegisterShader(name, SUF_NONE, shadertext);
 	frameinfo->shader->defaulttextures->base = frameinfo->image;
 	frameinfo->shader->width = frameinfo->right-frameinfo->left;
@@ -5735,7 +5915,7 @@ void Mod_LoadSpriteShaders(model_t *spr)
 Mod_LoadSpriteFrame
 =================
 */
-static void * Mod_LoadSpriteFrame (model_t *mod, void *pin, void *pend, mspriteframe_t **ppframe, int framenum, int version, unsigned char *palette)
+static void * Mod_LoadSpriteFrame (model_t *mod, void *pin, void *pend, mspriteframe_t **ppframe, int framenum, int subframe, int version, unsigned char *palette)
 {
 	dspriteframe_t		*pinframe;
 	mspriteframe_t		*pspriteframe;
@@ -5784,7 +5964,10 @@ static void * Mod_LoadSpriteFrame (model_t *mod, void *pin, void *pend, mspritef
 		lowresfmt = TF_INVALID;
 	}
 
-	Q_snprintfz(name, sizeof(name), "%s_%i.tga", mod->name, framenum);
+	if (subframe == -1)
+		Q_snprintfz(name, sizeof(name), "%s_%i.tga", mod->name, framenum);
+	else
+		Q_snprintfz(name, sizeof(name), "%s_%i_%i.tga", mod->name, framenum, subframe);
 	pspriteframe->image = Image_GetTexture(name, "sprites", IF_NOMIPMAP|IF_NOGAMMA|IF_CLAMP|IF_PREMULTIPLYALPHA, dataptr, palette, width, height, lowresfmt);
 
 	return (void *)((qbyte *)(pinframe+1) + size);
@@ -5845,7 +6028,7 @@ static void * Mod_LoadSpriteGroup (model_t *mod, void * pin, void *pend, msprite
 
 	for (i=0 ; i<numframes ; i++)
 	{
-		ptemp = Mod_LoadSpriteFrame (mod, ptemp, pend, &pspritegroup->frames[i], framenum * 100 + i, version, palette);
+		ptemp = Mod_LoadSpriteFrame (mod, ptemp, pend, &pspritegroup->frames[i], framenum, i, version, palette);
 	}
 
 	return ptemp;
@@ -6000,7 +6183,7 @@ qboolean QDECL Mod_LoadSpriteModel (model_t *mod, void *buffer, size_t fsize)
 		{
 			pframetype = (dspriteframetype_t *)
 					Mod_LoadSpriteFrame (mod, pframetype + 1, (qbyte*)buffer + fsize,
-										 &psprite->frames[i].frameptr, i, version, pal);
+										 &psprite->frames[i].frameptr, i, -1, version, pal);
 		}
 		else
 		{

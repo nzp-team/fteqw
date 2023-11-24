@@ -105,6 +105,7 @@ struct {
 	char facename[MAX_OSPATH];
 	float scale; //poop
 	int outline; //argh
+	unsigned int fontflags; //erk
 	int sizes;
 	int size[FONT_SIZES];
 	struct font_s *font[FONT_SIZES];
@@ -233,7 +234,7 @@ void PR_ReloadFonts(qboolean reload)
 		{	//otherwise load it.
 			for (j = 0; j < fontslot[i].sizes; j++)
 			{
-				fontslot[i].font[j] = Font_LoadFont(fontslot[i].facename, fontslot[i].size[j], fontslot[i].scale, fontslot[i].outline);
+				fontslot[i].font[j] = Font_LoadFont(fontslot[i].facename, fontslot[i].size[j], fontslot[i].scale, fontslot[i].outline, fontslot[i].fontflags);
 			}
 		}
 	}
@@ -333,7 +334,7 @@ void QCBUILTIN PF_CL_loadfont (pubprogfuncs_t *prinst, struct globalvars_s *pr_g
 	if (qrenderer > QR_NONE)
 	{
 		for (i = 0; i < fontslot[slotnum].sizes; i++)
-			fontslot[slotnum].font[i] = Font_LoadFont(facename, fontslot[slotnum].size[i], fontslot[slotnum].scale, fontslot[slotnum].outline);
+			fontslot[slotnum].font[i] = Font_LoadFont(facename, fontslot[slotnum].size[i], fontslot[slotnum].scale, fontslot[slotnum].outline, fontslot[slotnum].fontflags);
 	}
 
 	G_FLOAT(OFS_RETURN) = slotnum;
@@ -342,7 +343,7 @@ void QCBUILTIN PF_CL_loadfont (pubprogfuncs_t *prinst, struct globalvars_s *pr_g
 #ifdef HAVE_LEGACY
 void CL_LoadFont_f(void)
 {
-	extern cvar_t r_font_postprocess_outline;
+	extern cvar_t r_font_postprocess_outline, r_font_postprocess_mono;
 	//console command for compat with dp/debug.
 	if (Cmd_Argc() == 1)
 	{
@@ -418,6 +419,8 @@ void CL_LoadFont_f(void)
 			fontslot[slotnum].scale = 1;
 			fontslot[slotnum].sizes = 0;
 			fontslot[slotnum].outline = r_font_postprocess_outline.ival;	//locked in at definition, so different fonts can have different settings even with vid_reload going on.
+			fontslot[slotnum].fontflags = 0 |
+										(r_font_postprocess_mono.ival?FONT_MONO:0);
 		}
 		if (!*facename)
 			return;
@@ -435,6 +438,14 @@ void CL_LoadFont_f(void)
 			if (!strcmp(a, "outline"))
 			{
 				fontslot[slotnum].outline = atoi(Cmd_Argv(sizenum++));
+				continue;
+			}
+			if (!strcmp(a, "mono"))
+			{
+				if (atoi(Cmd_Argv(sizenum++)))
+					fontslot[slotnum].fontflags |= FONT_MONO;
+				else
+					fontslot[slotnum].fontflags &= ~FONT_MONO;
 				continue;
 			}
 			if (!strcmp(a, "blur"))
@@ -471,7 +482,7 @@ void CL_LoadFont_f(void)
 		if (qrenderer > QR_NONE)
 		{
 			for (i = 0; i < fontslot[slotnum].sizes; i++)
-				fontslot[slotnum].font[i] = Font_LoadFont(facename, fontslot[slotnum].size[i], fontslot[slotnum].scale, fontslot[slotnum].outline);
+				fontslot[slotnum].font[i] = Font_LoadFont(facename, fontslot[slotnum].size[i], fontslot[slotnum].scale, fontslot[slotnum].outline, fontslot[slotnum].fontflags);
 		}
 
 		//FIXME: slotnum0==default is problematic.
@@ -939,6 +950,7 @@ void QCBUILTIN PF_CL_readimage (pubprogfuncs_t *prinst, struct globalvars_s *pr_
 				G_INT(OFS_RETURN) = (char*)ptr - prinst->stringtable;
 				G_INT(OFS_PARM1) = imagewidth;	//out width
 				G_INT(OFS_PARM2) = imageheight;	//out height
+				G_INT(OFS_PARM3) = PR_UnTranslateTextureFormat(format);	//out format...
 			}
 			BZ_Free(imagedata);
 		}
@@ -2198,6 +2210,26 @@ static void QCBUILTIN PF_m_addentity(pubprogfuncs_t *prinst, struct globalvars_s
 	if (CopyMenuEdictToEntity(prinst, in, &ent))
 		V_AddAxisEntity(&ent);
 }
+static void QCBUILTIN PF_m_addentity_lighting(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	menuedict_t *in = (void*)G_EDICT(prinst, OFS_PARM0);
+	entity_t ent;
+	if (in->ereftype == ER_FREE || in->entnum == 0)
+	{
+		Con_Printf("Tried drawing a free/removed/world entity\n");
+		return;
+	}
+
+	if (CopyMenuEdictToEntity(prinst, in, &ent))
+	{
+		ent.light_known = true;
+		VectorCopy(G_VECTOR(OFS_PARM1), ent.light_dir);
+		VectorCopy(G_VECTOR(OFS_PARM2), ent.light_avg);
+		VectorCopy(G_VECTOR(OFS_PARM3), ent.light_range);
+
+		V_AddAxisEntity(&ent);
+	}
+}
 static void QCBUILTIN PF_m_renderscene(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	V_ApplyRefdef();
@@ -2251,9 +2283,10 @@ static void MP_ConsoleCommand_f(void)
 }
 static void QCBUILTIN PF_menu_registercommand (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
-	const char *str = PF_VarString(prinst, 0, pr_globals);
+	const char *str = PR_GetStringOfs(prinst, OFS_PARM0);
+	const char *desc = (prinst->callargc>1)?PR_GetStringOfs(prinst, OFS_PARM1):NULL;
 	if (!Cmd_Exists(str))
-		Cmd_AddCommand(str, MP_ConsoleCommand_f);
+		Cmd_AddCommandD(str, MP_ConsoleCommand_f, desc);
 }
 
 static void PF_m_clipboard_got(void *ctx, const char *utf8)
@@ -2322,6 +2355,19 @@ static struct {
 	{"vtos",					PF_vtos,					19},
 	{"etos",					PF_etos,					20},
 	{"stof",					PF_stof,					21},
+
+	{"json_parse",				PF_json_parse,				0},
+	{"json_free",				PF_memfree,					0},
+	{"json_get_value_type",		PF_json_get_value_type,		0},
+	{"json_get_integer",		PF_json_get_integer,		0},
+	{"json_get_float",			PF_json_get_float,			0},
+	{"json_get_string",			PF_json_get_string,			0},
+	{"json_find_object_child",	PF_json_find_object_child,	0},
+	{"json_get_length",			PF_json_get_length,			0},
+	{"json_get_child_at_index",	PF_json_get_child_at_index,	0},
+	{"json_get_name",			PF_json_get_name,			0},
+
+	{"js_run_script",			PF_js_run_script,			0},
 	
 	{"stoi",					PF_stoi,					0},
 	{"itos",					PF_itos,					0},
@@ -2451,6 +2497,7 @@ static struct {
 	{"clearscene",				PF_m_clearscene,			300},
 //	{"addentities",				PF_Fixme,					301},
 	{"addentity",				PF_m_addentity,				302},//FIXME: needs setmodel, origin, angles, colormap(eep), frame etc, skin, 
+	{"addentity_lighting",		PF_m_addentity_lighting,	0},
 #ifdef CSQC_DAT
 	{"setproperty",				PF_R_SetViewFlag,			303},//should be okay to share
 #endif
@@ -2611,6 +2658,8 @@ static struct {
 															//gap
 	{"uri_escape",				PF_uri_escape,				510},
 	{"uri_unescape",			PF_uri_unescape,			511},
+	{"base64encode",			PF_base64encode,			0},
+	{"base64decode",			PF_base64decode,			0},
 	{"num_for_edict",			PF_etof,					512},
 	{"uri_get",					PF_uri_get,					513},
 	{"uri_post",				PF_uri_get,					513},
@@ -2638,6 +2687,7 @@ static struct {
 	{"getresolution",			PF_cl_getresolution,		608},
 	{"keynumtostring",			PF_cl_keynumtostring,		609},
 	{"findkeysforcommand",		PF_cl_findkeysforcommand,	610},
+	{"findkeysforcommandex",	PF_cl_findkeysforcommandex,	0},
 	{"gethostcachevalue",		PF_cl_gethostcachevalue,	611},
 	{"gethostcachestring",		PF_cl_gethostcachestring,	612},
 	{"parseentitydata",			PF_parseentitydata,			613},
@@ -2853,12 +2903,23 @@ static qboolean MP_KeyEvent(menu_t *menu, qboolean isdown, unsigned int devid, i
 		}
 		PR_ExecuteProgram(menu_world.progs, mpfuncs.inputevent);
 		result = G_FLOAT(OFS_RETURN);
+		if (!result && key == K_TOUCH)
+		{	//convert touches to mouse, for compat. gestures are untranslated but expected to be ignored.
+			G_FLOAT(OFS_PARM0) = isdown?CSIE_KEYDOWN:CSIE_KEYUP;
+			G_FLOAT(OFS_PARM1) = MP_TranslateFTEtoQCCodes(K_MOUSE1);
+			G_FLOAT(OFS_PARM2) = unicode;
+			G_FLOAT(OFS_PARM3) = devid;
+			PR_ExecuteProgram(menu_world.progs, mpfuncs.inputevent);
+			result = G_FLOAT(OFS_RETURN);
+		}
 		qcinput_scan = 0;
 		qcinput_unicode = 0;
 	}
 	else if (isdown && mpfuncs.keydown)
 	{
 		void *pr_globals = PR_globals(menu_world.progs, PR_CURRENT);
+		if (key == K_TOUCH)
+			key = K_MOUSE1;	//old api doesn't expect touches nor provides feedback for emulation. make sure stuff works.
 		G_FLOAT(OFS_PARM0) = MP_TranslateFTEtoQCCodes(key);
 		G_FLOAT(OFS_PARM1) = unicode;
 		PR_ExecuteProgram(menu_world.progs, mpfuncs.keydown);
@@ -2867,6 +2928,8 @@ static qboolean MP_KeyEvent(menu_t *menu, qboolean isdown, unsigned int devid, i
 	else if (!isdown && mpfuncs.keyup)
 	{
 		void *pr_globals = PR_globals(menu_world.progs, PR_CURRENT);
+		if (key == K_TOUCH)
+			key = K_MOUSE1;	//old api doesn't expect touches.
 		G_FLOAT(OFS_PARM0) = MP_TranslateFTEtoQCCodes(key);
 		G_FLOAT(OFS_PARM1) = unicode;
 		PR_ExecuteProgram(menu_world.progs, mpfuncs.keyup);
@@ -3090,7 +3153,7 @@ qboolean MP_Init (void)
 	m->scale = 1;
 	m->dirty = true;
 
-	menuqc.cursor = &key_customcursor[kc_menuqc];
+	menuqc.cursor = m;
 	menuqc.drawmenu = NULL;		//menuqc sucks!
 	menuqc.mousemove = MP_MouseMove;
 	menuqc.keyevent = MP_KeyEvent;

@@ -175,7 +175,7 @@ qboolean GLSCR_UpdateScreen (void)
 		if (topmenu && topmenu->isopaque)
 			nohud = true;
 #ifdef VM_CG
-		else if (CG_Refresh())
+		else if (q3 && q3->cg.Redraw(cl.time))
 			nohud = true;
 #endif
 #ifdef CSQC_DAT
@@ -184,7 +184,7 @@ qboolean GLSCR_UpdateScreen (void)
 #endif
 		else
 		{
-			if (r_worldentity.model && cls.state == ca_active)
+			if ((r_worldentity.model && cls.state == ca_active) || vid.vr || vrui.enabled)
 				V_RenderView (nohud);
 			else
 				noworld = true;
@@ -218,7 +218,9 @@ qboolean GLSCR_UpdateScreen (void)
 			nohud = true;
 		}
 
-		SCR_DrawTwoDimensional(nohud);
+		r_refdef.playerview = &cl.playerview[0];
+		if (!vrui.enabled)
+			SCR_DrawTwoDimensional(nohud);
 
 		V_UpdatePalette (false);
 		R2D_BrightenScreen();
@@ -238,6 +240,7 @@ qboolean GLSCR_UpdateScreen (void)
 	//gl 4.5 / GL_ARB_robustness / GL_KHR_robustness
 	if (qglGetGraphicsResetStatus)
 	{
+		char *reason;
 		GLenum err = qglGetGraphicsResetStatus();
 		switch(err)
 		{
@@ -247,7 +250,13 @@ qboolean GLSCR_UpdateScreen (void)
 		case GL_INNOCENT_CONTEXT_RESET:	//something else broke the hardware and broke our ram
 		case GL_UNKNOWN_CONTEXT_RESET:	//whodunit
 		default:
-			Con_Printf("OpenGL reset detected\n");
+			if (err == GL_GUILTY_CONTEXT_RESET)
+				reason = "guilty";
+			else if (err == GL_INNOCENT_CONTEXT_RESET)
+				reason = "innocent";
+			else
+				reason = "unknown";
+			Con_Printf("OpenGL reset detected (%s)\n", reason);
 			Sys_Sleep(3.0);
 			Cmd_ExecuteString("vid_restart", RESTRICT_LOCAL);
 			break;

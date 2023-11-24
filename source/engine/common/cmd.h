@@ -224,7 +224,7 @@ void Cmd_Args_Set(const char *newargs, size_t len);
 #define RESTRICT_MAX_USER	29
 #define RESTRICT_DEFAULT	20
 #define RESTRICT_MIN		1
-#define RESTRICT_TEAMPLAY	0
+#define RESTRICT_TEAMPLAY	0	//this is blocked from everything but aliases.
 
 #define RESTRICT_MAX RESTRICT_MAX_USER
 
@@ -251,7 +251,7 @@ void Cmd_MessageTrigger (char *message, int type);
 
 void Cmd_ShiftArgs (int ammount, qboolean expandstring);
 
-char *Cmd_ExpandString (const char *data, char *dest, int destlen, int *accesslevel, qboolean expandcvars, qboolean expandmacros);
+char *Cmd_ExpandString (const char *data, char *dest, int destlen, int *accesslevel, qboolean expandargs, qboolean expandcvars, qboolean expandmacros);
 qboolean If_EvaluateBoolean(const char *text, int restriction);
 
 extern cvar_t rcon_level;

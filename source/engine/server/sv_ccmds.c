@@ -403,6 +403,7 @@ static void SV_redundantcommand_f(void)
 
 static int QDECL ShowMapList (const char *name, qofs_t flags, time_t mtime, void *parm, searchpathfuncs_t *spath)
 {
+	searchpathfuncs_t **oldspath = parm;
 	const char *levelshots[] =
 	{
 		"levelshots/%s.tga",
@@ -415,9 +416,52 @@ static int QDECL ShowMapList (const char *name, qofs_t flags, time_t mtime, void
 	size_t u;
 	char stripped[MAX_QPATH];
 	char completed[256];
-	char *ext = parm;
+	const char *cmd = name+5; //the arg to pass to `map`
+	const char *ext;
+	flocation_t loc;
 	if (name[5] == 'b' && name[6] == '_')	//skip box models
 		return true;
+
+	if (FS_FLocateFile(name, FSLF_IFFOUND, &loc))
+	{
+		if (loc.search->handle != spath)
+			return true; //shadowed
+	}
+	else
+		return true; //wtf?
+
+	ext = COM_GetFileExtension (name+5, NULL);
+	if (!strcmp(ext, ".gz") || !strcmp(ext, ".xz"))
+		ext = COM_GetFileExtension (name+5, ext);	//.gz files should be listed too.
+
+	if (!strcmp(ext, ".bsp"))
+	{
+		ext = "";	//hide it
+		cmd = stripped;	//omit it, might as well. should give less confusing mapname serverinfo etc.
+	}
+	else if (!Q_strcasecmp(ext, ".bsp") || !Q_strcasecmp(ext, ".bsp.gz") || !Q_strcasecmp(ext, ".bsp.xz"))
+		;
+#ifdef TERRAIN
+	else if (!Q_strcasecmp(ext, ".map") || !Q_strcasecmp(ext, ".map.gz") || !Q_strcasecmp(ext, ".hmp"))
+		;
+#endif
+#ifdef MAP_PROC
+	else if (!Q_strcasecmp(ext, ".cm"))
+		;
+#endif
+	else if (!Q_strcasecmp(ext, ".ent") && strchr(name+5, '#'))
+	{	//FIXME hide if earlier that the .bsp
+		ext = ""; //hide it.
+		cmd = stripped;	//do NOT use the .ent extension here
+	}
+	else
+		return true; //probably a .lit
+
+	if (*oldspath != spath)
+	{
+		*oldspath = spath;
+		Con_Printf(S_COLOR_GRAY"From %s\n", loc.search->purepath);
+	}
 
 	*completed = 0;
 #ifdef HAVE_CLIENT
@@ -433,31 +477,24 @@ static int QDECL ShowMapList (const char *name, qofs_t flags, time_t mtime, void
 	}
 #endif
 
-	name += 5;	//skip the maps/ prefix
-	COM_StripExtension(name, stripped, sizeof(stripped));
+	COM_StripExtension(name+5, stripped, sizeof(stripped));
 	for (u = 0; u < countof(levelshots); u++)
 	{
 		const char *ls = va(levelshots[u], stripped);
 		if (COM_FCheckExists(ls))
 		{
-			Con_Printf("^[\\map\\%s\\img\\%s\\w\\64\\h\\48^]", name, ls);
-			Con_Printf("^[[%s%s]%s\\map\\%s\\tipimg\\%s^]\n", stripped, ext, completed, name, ls);
+			Con_Printf("^[\\map\\%s\\img\\%s\\w\\64\\h\\48^]", cmd, ls);
+			Con_Printf("^[[%s%s]%s\\map\\%s\\tipimg\\%s\\tip\\from %s/%s^]\n", stripped, ext, completed, cmd, ls, loc.search->logicalpath, name);
 			return true;
 		}
 	}
-	Con_Printf("^[[%s%s]%s\\map\\%s^]\n", stripped, ext, completed, name);
+	Con_Printf("^[[%s%s]%s\\map\\%s\\tip\\from %s/%s^]\n", stripped, ext, completed, cmd, loc.search->logicalpath, name);
 	return true;
 }
 static void SV_MapList_f(void)
 {
-	//FIXME: maps/mapname#modifier.ent
-	COM_EnumerateFiles("maps/*.bsp", ShowMapList, "");
-	COM_EnumerateFiles("maps/*.bsp.gz", ShowMapList, ".bsp.gz");
-	COM_EnumerateFiles("maps/*.bsp.xz", ShowMapList, ".bsp.xz");
-	COM_EnumerateFiles("maps/*.map", ShowMapList, ".map");
-	COM_EnumerateFiles("maps/*.map.gz", ShowMapList, ".gz");
-	COM_EnumerateFiles("maps/*.cm", ShowMapList, ".cm");
-	COM_EnumerateFiles("maps/*.hmp", ShowMapList, ".hmp");
+	searchpathfuncs_t *spath = NULL;
+	COM_EnumerateFilesReverse("maps/*.*", ShowMapList, &spath);
 }
 
 static int QDECL CompleteMapList (const char *name, qofs_t flags, time_t mtime, void *parm, searchpathfuncs_t *spath)
@@ -466,11 +503,32 @@ static int QDECL CompleteMapList (const char *name, qofs_t flags, time_t mtime, 
 	char stripped[64];
 	if (name[5] == 'b' && name[6] == '_')	//skip box models
 		return true;
-	
+
 	COM_StripExtension(name+5, stripped, sizeof(stripped));
 	ctx->cb(stripped, NULL, NULL, ctx);
 	return true;
 }
+static int QDECL CompleteMapListEnt (const char *name, qofs_t flags, time_t mtime, void *parm, searchpathfuncs_t *spath)
+{
+	struct xcommandargcompletioncb_s *ctx = parm;
+	char stripped[64];
+	char *modifier = strchr(name, '#');
+	if (!modifier)	//skip non-modifiers.
+		return true;
+	if (modifier-name+4 > sizeof(stripped))	//too long...
+		return true;
+
+	//make sure we have its .bsp
+	memcpy(stripped, name, modifier-name);
+	strcpy(stripped+(modifier-name), ".bsp");
+	if (!COM_FCheckExists(stripped))
+		return true;
+
+	COM_StripExtension(name+5, stripped, sizeof(stripped));
+	ctx->cb(stripped, NULL, NULL, ctx);
+	return true;
+}
+
 static int QDECL CompleteMapListExt (const char *name, qofs_t flags, time_t mtime, void *parm, searchpathfuncs_t *spath)
 {
 	struct xcommandargcompletioncb_s *ctx = parm;
@@ -493,6 +551,8 @@ static void SV_Map_c(int argn, const char *partial, struct xcommandargcompletion
 		COM_EnumerateFiles(va("maps/%s*.cm", partial), CompleteMapList, ctx);
 		COM_EnumerateFiles(va("maps/%s*.hmp", partial), CompleteMapList, ctx);
 
+		COM_EnumerateFiles(va("maps/%s*.ent", partial), CompleteMapListEnt, ctx);
+
 		COM_EnumerateFiles(va("maps/%s*/*.bsp", partial), CompleteMapList, ctx);
 		COM_EnumerateFiles(va("maps/%s*/*.bsp.gz", partial), CompleteMapListExt, ctx);
 		COM_EnumerateFiles(va("maps/%s*/*.bsp.xz", partial), CompleteMapListExt, ctx);
@@ -506,6 +566,62 @@ static void SV_Map_c(int argn, const char *partial, struct xcommandargcompletion
 #endif
 	}
 }
+
+#if defined(HAVE_CLIENT) && defined(WEBCLIENT)
+static char *uri_escape(const char *in, char *out, size_t outsize)
+{
+	static const char *hex = "0123456789ABCDEF";
+
+	const unsigned char *s = in;
+	unsigned char *o = out;
+	while (*s && o < (unsigned char*)out+outsize-4)
+	{
+		//unreserved chars according to RFC3986
+		if ((*s >= 'a' && *s <= 'z') || (*s >= 'A' && *s <= 'Z') || (*s >= '0' && *s <= '9')
+				|| *s == '.' || *s == '-' || *s == '_' || *s == '~')
+			*o++ = *s++;
+		else
+		{
+			*o++ = '%';
+			*o++ = hex[*s>>4];
+			*o++ = hex[*s&0xf];
+			s++;
+		}
+	}
+	*o = 0;
+	return out;
+}
+static void SV_Map_Downloaded(struct dl_download *dl)
+{
+	SCR_SetLoadingStage(LS_NONE);
+	if (dl->status == DL_FINISHED)
+	{
+		char buf[1024];
+		Cbuf_AddText(va("map %s\n", COM_QuotedString(dl->user_ctx, buf, sizeof(buf), false)), RESTRICT_LOCAL);
+	}
+	else
+		Con_Printf("Unable to download\n");
+	Z_Free(dl->user_ctx);
+}
+extern cvar_t cl_download_mapsrc;
+static void SV_Map_DownloadPrompted(void *ctx, promptbutton_t buttn)
+{
+	const char *mapname=ctx;
+	if (buttn == PROMPT_YES)
+	{
+		char buf[512];
+		struct dl_download *dl = HTTP_CL_Get(va("%s%s.bsp", cl_download_mapsrc.string, uri_escape(mapname, buf, sizeof(buf))), va("maps/%s.bsp", mapname), SV_Map_Downloaded);
+		if (dl)
+		{
+			dl->user_ctx = ctx;
+			DL_CreateThread(dl, NULL, NULL);	//allows it to run at its own rate. yay speedups.
+			return;
+		}
+	}
+	SCR_SetLoadingStage(LS_NONE);
+	Z_Free(ctx);
+}
+#endif
 
 //static void gtcallback(struct cvar_s *var, char *oldvalue)
 //{
@@ -530,6 +646,8 @@ variations:
 'changelevel' will not flush the level cache, for h2 compat (won't save current level state in such a situation, as nq would prefer not)
 'gamemap' will save the game to 'save0' after loading, for q2 compat
 'spmap' is for q3 and sets 'gametype' to '2', otherwise identical to 'map'. all other map commands will reset it to '0' if its '2' at the time.
+'spdevmap' forces sv_cheats 1, otherwise spmap
+'devmap' forces sv_cheats 1, otherwise map
 'map_restart' restarts the current map. Name is needed for q3 compat.
 'restart' is an alias for 'map_restart'. Exists for NQ compat, but as an alias for QW mods that tried to use it for mod-specific things.
 
@@ -551,7 +669,7 @@ fte:
 'map package:mapname' should download the specified map package and load up its maps.
 
 mvdsv:
-basemap#modifier.ent files
+'map foo bar' should load 'maps/bar.ent' instead of the regular ent file. this 'bar' will usually be something like 'foo#modified'
 
 ======================
 */
@@ -572,16 +690,16 @@ void SV_Map_f (void)
 #ifdef Q3SERVER
 	qboolean q3singleplayer	= false;	//forces g_gametype to 2 (otherwise clears if it was 2).
 #endif
-
 	qboolean waschangelevel	= false;
 	qboolean mapeditor		= false;
 	int i;
 	char *startspot;
+	const char *cmd = Cmd_Argv(0);
 
 #ifndef SERVERONLY
 	if (!Renderer_Started() && !isDedicated)
 	{
-		Cbuf_AddText(va("wait;%s %s\n", Cmd_Argv(0), Cmd_Args()), Cmd_ExecLevel);
+		Cbuf_AddText(va("wait;%s %s\n", cmd, Cmd_Args()), Cmd_ExecLevel);
 		return;
 	}
 #endif
@@ -592,14 +710,18 @@ void SV_Map_f (void)
 		return;
 #endif
 
-	if (!Q_strcasecmp(Cmd_Argv(0), "map_restart"))
+	if (!Q_strcasecmp(cmd, "map_restart"))
 	{
 		const char *arg = Cmd_Argv(1);
 
 #ifdef Q3SERVER
-		if (sv.state==ss_active && svs.gametype==GT_QUAKE3)
-			if (SVQ3_RestartGamecode())
-				return;
+		Cvar_ApplyLatches(CVAR_MAPLATCH, false);
+		if (sv.state==ss_active && svs.gametype==GT_QUAKE3 && q3->sv.RestartGamecode())
+		{
+			sv.time = sv.world.physicstime;
+			sv.starttime = Sys_DoubleTime() - sv.time;
+			return;
+		}
 #endif
 
 #ifdef SAVEDGAMES
@@ -615,7 +737,8 @@ void SV_Map_f (void)
 				Con_DPrintf ("map_restart delay not implemented yet\n");
 		}
 		Q_strncpyz (level, ".", sizeof(level));
-		startspot = NULL;	//FIXME: startspot forgotten on restart
+		startspot = NULL;
+		isrestart = true;
 
 		//FIXME: if precaches+statics don't change, don't do the whole networking thing.
 	}
@@ -635,7 +758,7 @@ void SV_Map_f (void)
 		{
 			char *mangled = Cmd_Argv(1);
 			char *sep = strchr(mangled, ':');
-			if (sep)
+			if (sep && strncmp(mangled, "file:", 5) && strncmp(mangled, "http:", 5) && strncmp(mangled, "https:", 5))
 			{
 				*sep++ = 0;
 				if (Cmd_FromGamecode())
@@ -644,7 +767,7 @@ void SV_Map_f (void)
 					sv.mapchangelocked = false;
 				}
 				else
-					PM_LoadMap(mangled, sep);
+					PM_LoadMap(mangled, va("%s %s\n", Cmd_Argv(0), COM_QuotedString(sep, expanded, sizeof(expanded), false)));
 				return;
 			}
 		}
@@ -655,15 +778,15 @@ void SV_Map_f (void)
 	}
 
 #ifdef Q3SERVER
-	q3singleplayer = !strcmp(Cmd_Argv(0), "spmap");
+	q3singleplayer = !strncmp(cmd, "sp", 2);
 #endif
 	if ((svs.gametype == GT_PROGS || svs.gametype == GT_Q1QVM) && progstype == PROG_QW)
-		flushparms = !strcmp(Cmd_Argv(0), "spmap");	//quakeworld's map command preserves spawnparms.
+		flushparms = !strncmp(cmd, "sp", 2);	//quakeworld's map command preserves spawnparms. q3 doesn't do parms, so we might as well reuse sp[dev]map to flush in qw
 	else
-		flushparms = !strcmp(Cmd_Argv(0), "map") || !strcmp(Cmd_Argv(0), "spmap"); //[sp]map flushes in nq+h2+q2+etc
+		flushparms = !strcmp(cmd, "map") || !strncmp(cmd, "sp", 2); //[sp]map flushes in nq+h2+q2+etc
 #ifdef SAVEDGAMES
 	newunit = flushparms || (!strcmp(Cmd_Argv(0), "changelevel") && !startspot);
-	q2savetos0 = !strcmp(Cmd_Argv(0), "gamemap") && !isDedicated;	//q2
+	q2savetos0 = !strcmp(cmd, "gamemap") && !isDedicated;	//q2
 #endif
 	mapeditor = !strcmp(Cmd_Argv(0), "mapedit");
 
@@ -674,7 +797,7 @@ void SV_Map_f (void)
 	else
 	{
 		snprintf (expanded, sizeof(expanded), "maps/%s.bsp", level); // this function and the if statement below, is a quake bugfix which stopped a map called "dm6++.bsp" from loading because of the + sign, quake2 map syntax interprets + character as "intro.cin+base1.bsp", to play a cinematic then load a map after
-		if (!COM_FCheckExists (expanded))
+		if (!COM_FCheckExists (level) && !COM_FCheckExists (expanded))
 		{
 			nextserver = strchr(level, '+');
 			if (nextserver)
@@ -764,6 +887,7 @@ void SV_Map_f (void)
 	if (strlen(level) > 4 &&
 		(!strcmp(level + strlen(level)-4, ".cin") ||
 		!strcmp(level + strlen(level)-4, ".roq") ||
+		!strcmp(level + strlen(level)-4, ".ogv") ||
 		!strcmp(level + strlen(level)-4, ".pcx") ||
 		!strcmp(level + strlen(level)-4, ".avi")))
 	{
@@ -778,7 +902,7 @@ void SV_Map_f (void)
 	else
 #endif
 	{
-		char *exts[] = {"maps/%s", "maps/%s.bsp", "maps/%s.bsp.gz", "maps/%s.bsp.xz", "maps/%s.cm", "maps/%s.hmp", /*"maps/%s.map",*/ /*"maps/%s.ent",*/ NULL};
+		char *exts[] = {"%s", "maps/%s", "maps/%s.bsp", "maps/%s.bsp.gz", "maps/%s.bsp.xz", "maps/%s.cm", "maps/%s.hmp", /*"maps/%s.map",*/ /*"maps/%s.ent",*/ NULL};
 		int i, j;
 
 		for (i = 0; exts[i]; i++)
@@ -788,10 +912,25 @@ void SV_Map_f (void)
 				break;
 		}
 		if (!exts[i])
+		{	//try again.
+			char *mod = strchr(level, '#');
+			if (mod)
+			{
+				*mod = 0;
+				for (i = 0; exts[i]; i++)
+				{
+					snprintf (expanded, sizeof(expanded), exts[i], level);
+					if (COM_FCheckExists (expanded))
+						break;
+				}
+				*mod = '#';
+			}
+		}
+		if (!exts[i])
 		{
 			for (i = 0; exts[i]; i++)
 			{
-				//doesn't exist, so try lowercase. Q3 does this.
+				//doesn't exist, so try lowercase. Q3 does this. really our fs_cache stuff should be handling this, but its possible its disabled.
 				for (j = 0; j < sizeof(level) && level[j]; j++)
 				{
 					if (level[j] >= 'A' && level[j] <= 'Z')
@@ -803,12 +942,22 @@ void SV_Map_f (void)
 			}
 			if (!exts[i])
 			{
+#ifdef HAVE_CLIENT
+				SCR_SetLoadingStage(LS_NONE);
+#ifdef WEBCLIENT
+				if (*cl_download_mapsrc.string &&
+					!strcmp(cmd, "map") && !startspot &&
+					!isDedicated && Cmd_ExecLevel==RESTRICT_LOCAL && !strchr(level, '.'))
+				{
+					Menu_Prompt(SV_Map_DownloadPrompted, Z_StrDup(level), va(localtext("Download map %s from "S_COLOR_BLUE "%s" S_COLOR_WHITE"?"), level, cl_download_mapsrc.string), "Download", NULL, "Cancel", true);
+					return;
+				}
+#endif
+#endif
+
 				// FTE is still a Quake engine so report BSP missing
 				snprintf (expanded, sizeof(expanded), exts[1], level);
 				Con_TPrintf ("Can't find %s\n", expanded);
-#ifndef SERVERONLY
-				SCR_SetLoadingStage(LS_NONE);
-#endif
 
 				if (SSV_IsSubServer() && !sv.state)	//subservers don't leave defunct servers with no maps lying around.
 					Cbuf_AddText("\nquit\n", RESTRICT_LOCAL);
@@ -876,11 +1025,14 @@ void SV_Map_f (void)
 
 #ifdef Q3SERVER
 	{
-		cvar_t *gametype;
+		cvar_t *var, *gametype;
 
 		Cvar_ApplyLatches(CVAR_MAPLATCH, false);
 
 		host_mapname.flags |= CVAR_SERVERINFO;
+
+		var = Cvar_Get("nextmap", "", 0, "Q3 compatibility");
+		Cvar_ForceSet(var, "map_restart 0");	//on every map change matches q3.
 
 		gametype = Cvar_Get("g_gametype", "", CVAR_MAPLATCH|CVAR_SERVERINFO, "Q3 compatability");
 //		gametype->callback = gtcallback;
@@ -889,7 +1041,10 @@ void SV_Map_f (void)
 		if (!isrestart)
 		{
 			if (q3singleplayer)
+			{
 				Cvar_ForceSet(gametype, "2");//singleplayer
+				Cvar_ForceSet(&deathmatch, "0");//for non-q3 type stuff to not get confused..
+			}
 			else if (gametype->value == 2)
 				Cvar_ForceSet(gametype, "");//force to ffa deathmatch
 		}
@@ -993,7 +1148,7 @@ void SV_Map_f (void)
 		host_client->sentents.num_entities = 0;
 		host_client->ratetime = 0;
 		if (host_client->pendingdeltabits)
-			host_client->pendingdeltabits[0] = UF_REMOVE;
+			host_client->pendingdeltabits[0] = UF_SV_REMOVE;
 
 		if (flushparms)
 		{
@@ -1154,6 +1309,7 @@ static netadr_t *NET_IPV4ify(netadr_t *a, netadr_t *tmp)
 		tmp->connum = a->connum;
 		tmp->scopeid = a->scopeid;
 		tmp->port = a->port;
+		tmp->prot = a->prot;
 		tmp->address.ip[0] = a->address.ip6[12];
 		tmp->address.ip[1] = a->address.ip6[13];
 		tmp->address.ip[2] = a->address.ip6[14];
@@ -1234,7 +1390,7 @@ void SV_EvaluatePenalties(client_t *cl)
 	if (((penalties|delta) & (BAN_MUTE|BAN_DEAF)) == (BAN_MUTE|BAN_DEAF))
 		delta &= ~(BAN_MUTE|BAN_DEAF);
 
-	if (penalties & BAN_STEALTH)
+	if ((delta|penalties) & BAN_STEALTH)
 		delta = 0;	//don't announce ANY.
 
 	if (cl->controller)
@@ -1504,7 +1660,7 @@ static void SV_FilterIP_f (void)
 		if (i == countof(banflags))
 			Con_Printf("Unknown ban/penalty flag: %s. ignoring.\n", com_token);
 	}
-	//if no flags were specified, 
+	//if no flags were specified,
 	if (!proto.banflags)
 	{
 		if (!strcmp(Cmd_Argv(0), "ban"))
@@ -1696,10 +1852,11 @@ static void SV_PenaltyToggle (unsigned int banflag, char *penaltyname)
 	char *clname = Cmd_Argv(1);
 	char *duration = Cmd_Argv(2);
 	char *reason = Cmd_Argv(3);
-	bannedips_t proto;
+	bannedips_t proto = {0};
 	client_t *cl;
 	qboolean found = false;
 	int clnum=-1;
+	netadr_t tmp;
 
 	proto.banflags = banflag;
 
@@ -1718,9 +1875,9 @@ static void SV_PenaltyToggle (unsigned int banflag, char *penaltyname)
 	while((cl = SV_GetClientForString(clname, &clnum)))
 	{
 		found = true;
-		proto.adr = cl->netchan.remote_address;
+		proto.adr = *NET_IPV4ify(&cl->netchan.remote_address, &tmp);
 		proto.adr.port = 0;
-		proto.adrmask.type = cl->netchan.remote_address.type;
+		proto.adrmask.type = proto.adr.type;
 
 		if (NET_IsLoopBackAddress(&proto.adr) && (proto.banflags & BAN_NOLOCALHOST))
 		{
@@ -1759,6 +1916,19 @@ void SV_AutoAddPenalty (client_t *cl, unsigned int banflag, int duration, char *
 
 	SV_AddBanEntry(&proto, reason);
 	SV_EvaluatePenalties(cl);
+}
+void SV_AutoBanSender (int duration, char *reason)
+{
+	bannedips_t proto;
+
+	proto.banflags = BAN_BAN;
+	proto.expiretime = SV_BanTime() + duration;
+	memset(&proto.adrmask.address, 0xff, sizeof(proto.adrmask.address));
+	proto.adr = net_from;
+	proto.adr.port = 0;
+	proto.adrmask.type = proto.adr.type;
+
+	SV_AddBanEntry(&proto, reason);
 }
 
 static void SV_WriteIP_f (void)
@@ -1838,6 +2008,10 @@ static void SV_CripplePlayer_f (void)
 static void SV_Mute_f (void)
 {
 	SV_PenaltyToggle(BAN_MUTE, "muted");
+}
+static void SV_StealthMute_f (void)
+{
+	SV_PenaltyToggle(BAN_MUTE|BAN_STEALTH, "stealth-muted");
 }
 
 static void SV_Cuff_f (void)
@@ -2019,7 +2193,7 @@ static void SV_Status_f (void)
 	int			i;
 	client_t	*cl;
 	float		cpu;
-	char		*s, *p;
+	char		*s, *p, *sec;
 	char		adr[MAX_ADR_SIZE];
 	float pi, po, bi, bo;
 
@@ -2039,9 +2213,6 @@ static void SV_Status_f (void)
 #endif
 #ifdef QWOVERQ3
 	extern cvar_t sv_listen_q3;
-#endif
-#ifdef HAVE_DTLS
-	extern cvar_t net_enable_dtls;
 #endif
 
 #ifndef SERVERONLY
@@ -2080,7 +2251,16 @@ static void SV_Status_f (void)
 	if (NET_GetRates(svs.sockets, &pi, &po, &bi, &bo))
 		Con_TPrintf("packets,bytes/sec: in: %g %g  out: %g %g\n", pi, bi, po, bo);	//not relevent as a limit.
 	Con_TPrintf("server uptime    : %s\n", ShowTime(realtime));
-	Con_TPrintf("public           : %s\n", sv_public.value?"yes":"no");
+	if (sv_public.ival < 0)
+		s = "hidden";
+	else if (sv_public.ival == 2)
+		s = "hole punching";
+	else if (sv_public.ival)
+		s = "direct";
+	else
+		s = "private";
+	Con_TPrintf("public           : %s\n", localtext(s));
+
 	switch(svs.gametype)
 	{
 #ifdef Q3SERVER
@@ -2095,40 +2275,40 @@ static void SV_Status_f (void)
 #endif
 
 	default:
-		Con_TPrintf("client types     :%s", sv_listen_qw.ival?" QW":"");
+		Con_TPrintf("client types     :%s", sv_listen_qw.ival?" ^[QW\\tip\\This is "FULLENGINENAME"'s standard protocol.^]":"");
 #ifdef NQPROT
-		Con_TPrintf("%s%s", (sv_listen_nq.ival==2)?" -NQ":(sv_listen_nq.ival?" NQ":""), sv_listen_dp.ival?" DP":"");
+		Con_TPrintf("%s%s", (sv_listen_nq.ival==2)?" ^[-NQ\\tip\\Allows 'Net'/'Normal' Quake clients to connect, with cookies and extensions that might confuse some old clients^]":(sv_listen_nq.ival?" ^[NQ\\tip\\Vanilla/Normal Quake protocol with maximum compatibility^]":""), sv_listen_dp.ival?" ^[DP\\tip\\Explicitly recognise connection requests from DP clients.^]":"");
 #endif
 #ifdef QWOVERQ3
 		if (sv_listen_q3.ival) Con_Printf(" Q3");
 #endif
 #ifdef HAVE_DTLS
 		if (net_enable_dtls.ival >= 3)
-			Con_Printf(" DTLS-only");
+			Con_TPrintf(" ^[DTLS-only\\tip\\Insecure clients (those without support for DTLS) will be barred from connecting.^]");
 		else if (net_enable_dtls.ival)
-			Con_Printf(" DTLS");
+			Con_TPrintf(" ^[DTLS\\tip\\Clients may optionally connect via DTLS for added security^]");
 #endif
 		Con_Printf("\n");
 #if defined(TCPCONNECT) && !defined(CLIENTONLY)
 		Con_TPrintf("tcp services     :");
 #if defined(HAVE_SSL)
 		if (net_enable_tls.ival)
-			Con_Printf(" TLS");
+			Con_TPrintf(" ^[TLS\\tip\\Clients are able to connect with Transport Layer Security for the other services, allowing for the use of tls://, wss:// or https:// schemes when their underlaying protocol is enabled.^]");
 #endif
 #ifdef HAVE_HTTPSV
 		if (net_enable_http.ival)
-			Con_Printf(" HTTP");
+			Con_TPrintf(" ^[HTTP\\tip\\This server also acts as a web server. This might be useful to allow hosting demos or stats.^]");
 		if (net_enable_rtcbroker.ival)
-			Con_Printf(" RTC");
+			Con_TPrintf(" ^[RTC\\tip\\This server is set up to act as a webrtc broker, allowing clients+servers to locate each other instead of playing on this server.^]");
 		if (net_enable_websockets.ival)
-			Con_Printf(" WS");
+			Con_TPrintf(" ^[WebSocket\\tip\\Clients can use the ws:// or possibly wss:// schemes to connect to this server, potentially from browser ports. This may be laggy.^]");
 #endif
 		if (net_enable_qizmo.ival)
-			Con_Printf(" QZ");
+			Con_TPrintf(" ^[Qizmo\\tip\\Compatible with the tcp connection feature of qizmo, equivelent to 'connect tcp://ip:port' in FTE.^]");
 		if (net_enable_qtv.ival)
-			Con_Printf(" QTV");
-#endif
+			Con_TPrintf(" ^[QTV\\tip\\Allows receiving streamed mvd data from this server.^]");
 		Con_Printf("\n");
+#endif
 		break;
 	}
 #ifdef SUBSERVERS
@@ -2141,7 +2321,7 @@ static void SV_Status_f (void)
 	Con_TPrintf("map uptime       : %s\n", ShowTime(sv.world.physicstime));
 	//show the current map+name (but hide name if its too long or would be ugly)
 	if (columns >= 80 && *sv.mapname && strlen(sv.mapname) < 45 && !strchr(sv.mapname, '\n'))
-		Con_TPrintf ("current map      : %s (%s)\n", svs.name, sv.mapname);
+		Con_TPrintf ("current map      : %s "S_COLOR_GRAY"(%s)\n", svs.name, sv.mapname);
 	else
 		Con_TPrintf ("current map      : %s\n", svs.name);
 
@@ -2156,7 +2336,7 @@ static void SV_Status_f (void)
 				continue;	//free, and older than the zombie time
 			count++;
 		}
-		Con_TPrintf("entities         : %i/%i/%i (mem: %.1f%%)\n", count, sv.world.num_edicts, sv.world.max_edicts, 100*(float)(sv.world.progs->stringtablesize/(double)sv.world.progs->stringtablemaxsize));
+		Con_TPrintf("entities         : %i/%i/%i (mem: %.1f%%)\n", count, sv.world.num_edicts, sv.world.max_edicts, 100.0*(sv.world.progs->stringtablesize/(double)sv.world.progs->stringtablemaxsize));
 		for (count = 1; count < MAX_PRECACHE_MODELS; count++)
 			if (!sv.strings.model_precache[count])
 				break;
@@ -2186,7 +2366,7 @@ static void SV_Status_f (void)
 	{
 		// most remote clients are 40 columns
 		//           0123456789012345678901234567890123456789
-		Con_Printf (	"name               userid frags\n"
+		Con_TPrintf (	"name               userid frags\n"
 						"  address          rate ping drop\n"
 						"  ---------------- ---- ---- -----\n");
 		for (i=0,cl=svs.clients ; i<svs.allocated_client_slots ; i++,cl++)
@@ -2220,12 +2400,12 @@ static void SV_Status_f (void)
 			Con_Printf ("  %-16.16s", s);
 			if (cl->state == cs_connected)
 			{
-				Con_Printf ("CONNECTING\n");
+				Con_TPrintf ("CONNECTING\n");
 				continue;
 			}
 			if (cl->state == cs_zombie || cl->state == cs_loadzombie)
 			{
-				Con_Printf ("ZOMBIE\n");
+				Con_TPrintf ("ZOMBIE\n");
 				continue;
 			}
 			Con_Printf ("%4i %4i %5.2f\n"
@@ -2239,20 +2419,24 @@ static void SV_Status_f (void)
 #define COLUMNS C_FRAGS C_USERID C_ADDRESS C_NAME C_RATE C_PING C_DROP C_DLP C_DLS C_PROT C_ADDRESS2
 #define C_FRAGS		COLUMN(0, "frags", if (cl->spectator==1)Con_Printf("%-5s ", "spec"); else Con_Printf("%5i ", (int)cl->old_frags))
 #define C_USERID	COLUMN(1, "userid", Con_Printf("%6i ", (int)cl->userid))
-#define C_ADDRESS	COLUMN(2, "address        ", Con_Printf("%-16.16s", s))
+#define C_ADDRESS	COLUMN(2, "address        ", Con_Printf("%s%-16.16s", sec, s))
 #define C_NAME		COLUMN(3, "name           ", Con_Printf("%-16.16s", cl->name))
-#define C_RATE		COLUMN(4, "rate", Con_Printf("%4i ", cl->frameunion.frames?(int)(1/cl->netchan.frame_rate):0))
+#define C_RATE		COLUMN(4, "  hz", Con_Printf("%4i ", (cl->frameunion.frames&&cl->netchan.frame_rate>0)?(int)(0.5f+1/cl->netchan.frame_rate):0))
 #define C_PING		COLUMN(5, "ping", Con_Printf("%4i ", (int)SV_CalcPing (cl, false)))
 #define C_DROP		COLUMN(6, "drop", Con_Printf("%4.1f ", 100.0*cl->netchan.drop_count / cl->netchan.incoming_sequence))
-#define C_DLP		COLUMN(7, "dl ", if (!cl->download)Con_Printf("    ");else Con_Printf("%3g ", (cl->downloadcount*100.0)/cl->downloadsize))
+#define C_DLP		COLUMN(7, "dl ", if (!cl->download||!cl->downloadsize)Con_Printf("    ");else Con_Printf("%3.0f ", (cl->downloadcount*100.0)/cl->downloadsize))
 #define C_DLS		COLUMN(8, "dls", if (!cl->download)Con_Printf("    ");else Con_Printf("%3u ", (unsigned int)(cl->downloadsize/1024)))
-#define C_PROT		COLUMN(9, "prot", Con_Printf("%-5.5s", p))
+#define C_PROT		COLUMN(9, "prot ", Con_Printf("%-6.5s", p))
+#define C_MODELSKIN	COLUMN(11, "model/skin     ", Con_Printf("%s", s))
 #define C_ADDRESS2	COLUMN(10, "address        ", Con_Printf("%s", s))
 
-		int columns = (1<<6)-1;
+		int columns = (1<<4)-1;
 
 		for (i=0,cl=svs.clients ; i<svs.allocated_client_slots ; i++,cl++)
 		{
+			if (!cl->state)
+				continue;
+
 			if (cl->netchan.drop_count)
 				columns |= 1<<6;
 			if (cl->download)
@@ -2260,11 +2444,17 @@ static void SV_Status_f (void)
 				columns |= 1<<7;
 				columns |= 1<<8;
 			}
-			if (cl->protocol != SCP_QUAKEWORLD || cl->spectator || !(cl->fteprotocolextensions2 & PEXT2_REPLACEMENTDELTAS))
+			if (cl->frameunion.frames&&cl->netchan.frame_rate>0)
+				columns |= 1<<4;
+			if (cl->netchan.remote_address.type > NA_LOOPBACK)
+				columns |= 1<<5;
+			if (cl->protocol != SCP_BAD && (cl->protocol >= SCP_NETQUAKE || cl->spectator || (cl->protocol == SCP_QUAKEWORLD && !(cl->fteprotocolextensions2 & PEXT2_REPLACEMENTDELTAS))))
 				columns |= 1<<9;
-			if (cl->netchan.remote_address.type == NA_IPV6)
-				columns = (columns & ~(1<<2)) | (1<<10);
+			if ((cl->netchan.remote_address.type == NA_IPV6 && memcmp(cl->netchan.remote_address.address.ip6, "\0\0\0\0""\0\0\0\0""\0\0\xff\xff", 12))||cl->reversedns)
+				columns |= (1<<10);
 		}
+		if (columns&(1<<10))	//if address2, remove the limited length addresses.
+			columns &= ~(1<<2);
 
 #define COLUMN(f,t,v) if (columns&(1<<f)) Con_Printf(t" ");
 		COLUMNS
@@ -2299,20 +2489,27 @@ static void SV_Status_f (void)
 			else
 				s = NET_BaseAdrToString (adr, sizeof(adr), &cl->netchan.remote_address);
 
-			switch(cl->protocol)
+			if (NET_IsLoopBackAddress(&cl->netchan.remote_address))
+				sec = "";
+			else if (NET_IsEncrypted(&cl->netchan.remote_address))
+				sec = S_COLOR_GREEN;
+			else
+				sec = S_COLOR_RED;
+
+			safeswitch(cl->protocol)
 			{
-			default:
-			case SCP_BAD:
-				p = "";
-				break;
-			case SCP_QUAKEWORLD:	p = (cl->fteprotocolextensions2 & PEXT2_REPLACEMENTDELTAS)?"fteq":"qw"; break;
+			case SCP_BAD:			p = "-----"; break;
+			case SCP_QUAKEWORLD:	p = (cl->fteprotocolextensions2 & PEXT2_REPLACEMENTDELTAS)?"fteqw":"qw"; break;
 			case SCP_QUAKE2:		p = "q2"; break;
 			case SCP_QUAKE3:		p = "q3"; break;
-			case SCP_NETQUAKE:		p = (cl->fteprotocolextensions2 & PEXT2_REPLACEMENTDELTAS)?"ften":"nq"; break;
-			case SCP_BJP3:			p = (cl->fteprotocolextensions2 & PEXT2_REPLACEMENTDELTAS)?"ften":"bjp3"; break;
-			case SCP_FITZ666:		p = (cl->fteprotocolextensions2 & PEXT2_REPLACEMENTDELTAS)?"ften":"fitz"; break;
+			case SCP_NETQUAKE:		p = (cl->fteprotocolextensions2 & PEXT2_REPLACEMENTDELTAS)?"ftenq":(cl->qex?"qe15":"nq"); break;
+			case SCP_BJP3:			p = (cl->fteprotocolextensions2 & PEXT2_REPLACEMENTDELTAS)?"ftenq":"bjp3"; break;
+			case SCP_FITZ666:		p = (cl->fteprotocolextensions2 & PEXT2_REPLACEMENTDELTAS)?"ftenq":(cl->qex?"qe666":"fitz"); break;
 			case SCP_DARKPLACES6:	p = "dpp6"; break;
 			case SCP_DARKPLACES7:	p = "dpp7"; break;
+			safedefault:
+				p = "";
+				break;
 			}
 			if (cl->state == cs_connected && cl->protocol>=SCP_NETQUAKE)
 				p = "nq";	//not actually known yet.
@@ -2471,7 +2668,7 @@ void SV_Serverinfo_f (void)
 
 				return;
 			}
-		Con_Printf ("Can't set * keys\n");
+		Con_TPrintf ("Can't set * keys\n");
 		return;
 	}
 
@@ -2481,11 +2678,11 @@ void SV_Serverinfo_f (void)
 		char *data = FS_MallocFile(Cmd_Argv(2), FS_GAME, &fsize);
 		if (!data)
 		{
-			Con_Printf ("Unable to read %s\n", Cmd_Argv(2));
+			Con_TPrintf ("Unable to read %s\n", Cmd_Argv(2));
 			return;
 		}
 		if (fsize > 64*1024*1024)
-			Con_Printf ("File is over 64mb\n");
+			Con_TPrintf ("File is over 64mb\n");
 		else
 			InfoBuf_SetStarBlobKey(&svs.info, Cmd_Argv(1), data, fsize);
 		FS_FreeFile(data);
@@ -2548,7 +2745,7 @@ static void SV_Localinfo_f (void)
 				InfoBuf_Clear(&svs.localinfo, false);
 				return;
 			}
-		Con_Printf ("Can't set * keys\n");
+		Con_TPrintf ("Can't set * keys\n");
 		return;
 	}
 	old = InfoBuf_ValueForKey(&svs.localinfo, Cmd_Argv(1));
@@ -2590,10 +2787,12 @@ void SV_User_f (void)
 	client_t	*cl;
 	int clnum=-1;
 	unsigned int u;
-	char buf[256];
+	char buf[8192];
+	qbyte digest[DIGEST_MAXSIZE];
+	int certsize;
 	extern cvar_t sv_userinfo_bytelimit, sv_userinfo_keylimit;
 	static const char *pext1names[32] = {	"setview",		"scale",	"lightstylecol",	"trans",		"view2",		"builletens",	"accuratetimings",	"sounddbl",
-											"fatness",		"hlbsp",	"bullet",			"hullsize",		"modeldbl",		"entitydbl",	"entitydbl2",		"floatcoords", 
+											"fatness",		"hlbsp",	"bullet",			"hullsize",		"modeldbl",		"entitydbl",	"entitydbl2",		"floatcoords",
 											"OLD vweap",	"q2bsp",	"q3bsp",			"colormod",		"splitscreen",	"hexen2",		"spawnstatic2",		"customtempeffects",
 											"packents",		"UNKNOWN",	"showpic",			"setattachment","UNKNOWN",		"chunkeddls",	"csqc",				"dpflags"};
 	static const char *pext2names[32] = {	"prydoncursor",	"voip",		"setangledelta",	"rplcdeltas",	"maxplayers",	"predinfo",		"sizeenc",			"infoblobs",
@@ -2607,16 +2806,16 @@ void SV_User_f (void)
 		return;
 	}
 
-	Con_Printf("Userinfo:\n");
 	while((cl = SV_GetClientForString(Cmd_Argv(1), &clnum)))
 	{
+		Con_TPrintf("Userinfo (%i):\n", cl->userid);
 		InfoBuf_Print (&cl->userinfo, "  ");
 		Con_Printf("[%u/%i, %u/%i]\n", (unsigned)cl->userinfo.totalsize, sv_userinfo_bytelimit.ival, (unsigned)cl->userinfo.numkeys, sv_userinfo_keylimit.ival);
 		switch(cl->protocol)
 		{
 		case SCP_BAD:
 			Con_Printf("protocol: bot/invalid\n");
-			break;
+			continue;
 		case SCP_QUAKEWORLD:	//branding is everything...
 			if (cl->fteprotocolextensions2 & PEXT2_REPLACEMENTDELTAS)
 				Con_Printf("protocol: fteqw-nack\n");
@@ -2675,7 +2874,16 @@ void SV_User_f (void)
 			Con_Printf("\n");
 		}
 
-		Con_Printf("ip: %s\n", NET_AdrToString(buf, sizeof(buf), &cl->netchan.remote_address));
+		Con_Printf("ip: %s%s\n", NET_IsEncrypted(&cl->netchan.remote_address)?S_COLOR_GREEN:S_COLOR_RED, NET_AdrToString(buf, sizeof(buf), &cl->netchan.remote_address));
+		certsize = NET_GetConnectionCertificate(svs.sockets, &cl->netchan.remote_address, QCERT_PEERCERTIFICATE, buf, sizeof(buf));
+		if (certsize <= 0)
+			strcpy(buf, "<no certificate>");
+		else
+			Base64_EncodeBlockURI(digest,CalcHash(&hash_sha1, digest, sizeof(digest), buf, certsize), buf, sizeof(buf));
+		Con_Printf("fp: %s\n", buf);
+		if (NET_GetConnectionCertificate(svs.sockets, &cl->netchan.remote_address, QCERT_PEERSUBJECT, buf, sizeof(buf)) < 0)
+			strcpy(buf, "<unavailable>");
+		Con_Printf("dn: %s\n", buf);
 		switch(cl->realip_status)
 		{
 		case 1:
@@ -2846,10 +3054,7 @@ static void SV_Gamedir_f (void)
 		Con_TPrintf ("%s should be a single filename, not a path\n", Cmd_Argv(0));
 	}
 	else
-	{
 		COM_Gamedir (dir, NULL);
-		InfoBuf_SetValueForStarKey (&svs.info, "*gamedir", dir);
-	}
 	Z_Free(dir);
 }
 
@@ -3024,8 +3229,9 @@ static void SV_SetTimer_f(void)
 static void SV_SendGameCommand_f(void)
 {
 #ifdef Q3SERVER
-	if (SVQ3_ConsoleCommand())
-		return;
+	if (q3)
+		if (q3->sv.PrefixedConsoleCommand())
+			return;
 #endif
 
 #ifdef VM_Q1
@@ -3110,6 +3316,11 @@ void SV_PrecacheList_f(void)
 {
 	unsigned int i;
 	char *group = Cmd_Argv(1);
+	if (sv.state != ss_active)
+	{
+		Con_Printf("Server is not active.\n");
+		return;
+	}
 #ifdef HAVE_LEGACY
 	if (!*group || !strncmp(group, "vwep", 4))
 	{
@@ -3175,7 +3386,7 @@ void SV_MemInfo_f(void)
 			fr += sizeof(*cl->sentents.entities) * cl->sentents.max_entities;
 
 			csfr = sizeof(*cl->pendingcsqcbits) * cl->max_net_ents;
-	
+
 			Con_Printf("%"PRIuSIZE" minping=%i frame=%i, csqc=%i\n", sizeof(svs.clients[i]), sz, fr, csfr);
 		}
 	}
@@ -3232,19 +3443,19 @@ void SV_InitOperatorCommands (void)
 	if (isDedicated)
 #endif
 	{
-		Cmd_AddCommand ("quit", SV_Quit_f);
-		Cmd_AddCommand ("say", SV_ConSay_f);
+		Cmd_AddCommandD ("quit", SV_Quit_f, "Exits the engine back to desktop.");
+		Cmd_AddCommandD ("say", SV_ConSay_f, "Send a chat message to everyone on the server.");
 		Cmd_AddCommand ("sayone", SV_ConSayOne_f);
 		Cmd_AddCommand ("tell", SV_ConSayOne_f);
 		Cmd_AddCommand ("serverinfo", SV_Serverinfo_f);	//commands that conflict with client commands.
 		Cmd_AddCommand ("serverinfoblob", SV_Serverinfo_f);	//commands that conflict with client commands.
 		Cmd_AddCommand ("user", SV_User_f);
 
-		Cmd_AddCommand ("god", SV_God_f);
+		Cmd_AddCommandD ("god", SV_God_f, "Makes you immune to damage.");
 #ifdef QUAKESTATS
 		Cmd_AddCommand ("give", SV_Give_f);
 #endif
-		Cmd_AddCommand ("noclip", SV_Noclip_f);
+		Cmd_AddCommandD ("noclip", SV_Noclip_f, "Disables clipping, allowing you to fly through the level.");
 
 		Cmd_AddCommand ("download", SV_Download_f);
 	}
@@ -3265,26 +3476,27 @@ void SV_InitOperatorCommands (void)
 	Cmd_AddCommand ("snapall", SV_SnapAll_f);
 
 	//various punishments
-	Cmd_AddCommand ("kick", SV_Kick_f);
+	Cmd_AddCommandD ("kick", SV_Kick_f, "Removes a player from the server, provide the name or IP of the desired player.");
 	Cmd_AddCommand ("clientkick", SV_KickSlot_f);
 	Cmd_AddCommand ("renameclient", SV_ForceName_f);
-	Cmd_AddCommand ("mute", SV_Mute_f);
-	Cmd_AddCommand ("cuff", SV_Cuff_f);
-	Cmd_AddCommand ("cripple", SV_CripplePlayer_f);
-	Cmd_AddCommand ("ban", SV_BanClientIP_f);
-	Cmd_AddCommand ("banname", SV_BanClientIP_f);	//legacy dupe-name crap
+	Cmd_AddCommandD ("mute", SV_Mute_f, "Mutes the player (no voice or chat), shaming them.");
+	Cmd_AddCommandD ("stealthmute", SV_StealthMute_f, "Mutes the player, without telling them, while pretending that their messages are still being broadcast. For use against people that would escalate on expiry or externally.");
+	Cmd_AddCommandD ("cuff", SV_Cuff_f, "Slap handcuffs on the player, preventing them from being able to attack.");
+	Cmd_AddCommandD ("cripple", SV_CripplePlayer_f, "Block the player's ability to move.");
+	Cmd_AddCommandD ("ban", SV_BanClientIP_f, "Block the player's IP, preventing them from connecting. Also kicks them.");
+	Cmd_AddCommandD ("banname", SV_BanClientIP_f, "Legacy compat, please use ban.");	//legacy dupe-name cruft
 
-	Cmd_AddCommand ("banlist", SV_BanList_f);	//shows only bans, not other penalties
-	Cmd_AddCommand ("unban", SV_Unfilter_f);	//merely renamed.
+	Cmd_AddCommandD ("banlist", SV_BanList_f, "Displays a list of every banned player on the server.");	//shows only bans, not other penalties
+	Cmd_AddCommandD ("unban", SV_Unfilter_f, "Unbans or removes an IP Address from the penality list, alias to removeip.");	//merely renamed.
 
 	Cmd_AddCommand ("addip", SV_FilterIP_f);
-	Cmd_AddCommand ("removeip", SV_Unfilter_f);
-	Cmd_AddCommand ("listip", SV_FilterList_f);	//shows all penalties
+	Cmd_AddCommandD ("removeip", SV_Unfilter_f, "Removes an IP Address from the penality list.");
+	Cmd_AddCommandD ("listip", SV_FilterList_f, "Displays a list of ever player the server has penalties for.");	//shows all penalties
 	Cmd_AddCommand ("writeip", SV_WriteIP_f);
 
 	Cmd_AddCommand ("floodprot", SV_Floodprot_f);
 
-	Cmd_AddCommand ("status", SV_Status_f);
+	Cmd_AddCommandD ("status", SV_Status_f, "Prints info about the current server.");
 
 	Cmd_AddCommand ("sv", SV_SendGameCommand_f);
 	Cmd_AddCommand ("mod", SV_SendGameCommand_f);
@@ -3296,19 +3508,19 @@ void SV_InitOperatorCommands (void)
 #endif
 	Cmd_AddCommand ("killserver", SV_KillServer_f);
 	Cmd_AddCommandD ("precaches", SV_PrecacheList_f, "Displays a list of current server precaches.");
-	Cmd_AddCommandAD ("map", SV_Map_f, SV_Map_c, "Changes map. If a second argument is specified then that is normally the name of the initial start spot.");
+	Cmd_AddCommandAD ("map", SV_Map_f, SV_Map_c, "Begins a new game on the specified map.");
 	Cmd_AddCommandAD ("mapedit", SV_Map_f, SV_Map_c, "Loads the named map without any gamecode active.");
 #ifdef Q3SERVER
-	Cmd_AddCommandAD ("spmap", SV_Map_f, SV_Map_c, NULL);
-	Cmd_AddCommandAD ("spdevmap", SV_Map_f, SV_Map_c, NULL);
-	Cmd_AddCommandAD ("devmap", SV_Map_f, SV_Map_c, NULL);
+	Cmd_AddCommandAD ("spmap", SV_Map_f, SV_Map_c, "Loads a map in single-player mode, for Quake III compat.");
+	Cmd_AddCommandAD ("spdevmap", SV_Map_f, SV_Map_c, "Loads a map in single-player developer mode (sv_cheats 1), for Quake III compat.");
+	Cmd_AddCommandAD ("devmap", SV_Map_f, SV_Map_c, "Loads a map in developer mode (sv_cheats 1), for Quake III compat.");
 #endif
 	Cmd_AddCommandAD ("gamemap", SV_Map_f, SV_Map_c, NULL);
-	Cmd_AddCommandAD ("changelevel", SV_Map_f, SV_Map_c, NULL);
-	Cmd_AddCommandD ("map_restart", SV_Map_f, NULL);	//from q3.
-	Cmd_AddCommand ("listmaps", SV_MapList_f);
-	Cmd_AddCommand ("maplist", SV_MapList_f);
-	Cmd_AddCommand ("maps", SV_MapList_f);
+	Cmd_AddCommandAD ("changelevel", SV_Map_f, SV_Map_c, "Continues the game on a different map. The current map can be reentered later when a starting position for the new map is specified as a second argument.");
+	Cmd_AddCommandD ("map_restart", SV_Map_f, "Restarts the server and reloads the map while flushing level cache, for general use and Quake III compat.");	//from q3.
+	Cmd_AddCommandD ("listmaps", SV_MapList_f, "Displays a list of installed maps.");
+	Cmd_AddCommandD ("maplist", SV_MapList_f, "Displays a list of installed maps.");
+	Cmd_AddCommandD ("maps", SV_MapList_f, "Displays a list of installed maps.");
 #if defined(HAVE_LEGACY) && defined(HAVE_SERVER)
 	Cmd_AddCommandD ("check_maps", SV_redundantcommand_f, "Obsolete, specific to ktpro. Modern mods should use search_begin instead.");
 	Cmd_AddCommandD ("sys_select_timeout", SV_redundantcommand_f, "Redundant - server will throttle according to tick rates instead.");
@@ -3320,7 +3532,7 @@ void SV_InitOperatorCommands (void)
 	Cmd_AddCommandD ("sv_progtype", SV_redundantcommand_f, "Use sv_progs instead. Using to block .dll loading is insufficient with buggy clients around.");
 #endif
 
-	Cmd_AddCommand ("heartbeat", SV_Heartbeat_f);
+	Cmd_AddCommandD ("heartbeat", SV_Heartbeat_f, "Sends an update or ping to the master server so the current server can remain listed.");
 
 	Cmd_AddCommand ("localinfo", SV_Localinfo_f);
 	Cmd_AddCommandAD ("gamedir", SV_Gamedir_f, SV_Gamedir_c, "Change the current gamedir.");
@@ -3336,9 +3548,6 @@ void SV_InitOperatorCommands (void)
 	Cmd_AddCommand("sv_meminfo", SV_MemInfo_f);
 
 //	Cmd_AddCommand ("reallyevilhack", SV_ReallyEvilHack_f);
-
-	if (isDedicated)
-		cl_warncmd.value = 1;
 }
 
 #endif

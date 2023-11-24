@@ -1862,9 +1862,6 @@ sounddriver_t fte_weakstruct Droid_AudioOutput;
 #if defined(__MORPHOS__)
 sounddriver_t fte_weakstruct AHI_AudioOutput;		//prefered on morphos
 #endif
-#ifdef NACL
-extern sounddriver_t PPAPI_AudioOutput;	//nacl
-#endif
 sounddriver_t fte_weakstruct SNDIO_AudioOutput;	//bsd
 
 //in order of preference
@@ -1910,9 +1907,6 @@ static sounddriver_t *outputdrivers[] =
 #endif
 #if defined(__MORPHOS__)
 	&AHI_AudioOutput,	//prefered on morphos
-#endif
-#ifdef NACL
-	&PPAPI_AudioOutput,	//google's native client
 #endif
 	&SNDIO_AudioOutput,	//prefered on OpenBSD
 
@@ -2916,6 +2910,7 @@ static void S_UpdateSoundCard(soundcardinfo_t *sc, qboolean updateonly, channel_
 // spatialize
 	if (target_chan->sfx != sfx)
 		chanupdatetype |= CUR_SOUNDCHANGE;
+
 	memset (target_chan, 0, sizeof(*target_chan));
 	if (!origin)
 	{
@@ -2954,7 +2949,7 @@ static void S_UpdateSoundCard(soundcardinfo_t *sc, qboolean updateonly, channel_
 	if (sfx->loopstart == -1 && !(flags&CF_FORCELOOP))	//only skip if its not looping.
 	{
 		target_chan->sfx = NULL;
-		return;		// not audible at all
+		goto updatechannel;
 	}
 
 	target_chan->sfx = sfx;
@@ -2981,6 +2976,8 @@ static void S_UpdateSoundCard(soundcardinfo_t *sc, qboolean updateonly, channel_
 			}
 		}
 	}
+
+updatechannel:
 
 	if (sc->ChannelUpdate)
 		sc->ChannelUpdate(sc, target_chan, chanupdatetype);
@@ -3681,8 +3678,8 @@ static void S_Q2_AddEntitySounds(soundcardinfo_t *sc)
 	else
 #endif
 #ifdef VM_CG
-	if (cls.protocol == CP_QUAKE3)
-		count = CG_GatherLoopingSounds(positions, entnums, sounds, countof(sounds));
+	if (cls.protocol == CP_QUAKE3 && q3)
+		count = q3->cg.GatherLoopingSounds(positions, entnums, sounds, countof(sounds));
 	else
 #endif
 		return;
@@ -3888,7 +3885,7 @@ static void S_UpdateCard(soundcardinfo_t *sc)
 			if (ch->sfx && (ch->vol[0] || ch->vol[1]) )
 			{
 				if (snd_show.ival > 1)
-					Con_Printf ("%i, %i %i %i %i %i %i %s\n", i, ch->vol[0], ch->vol[1], ch->vol[2], ch->vol[3], ch->vol[4], ch->vol[5], ch->sfx->name);
+					Con_Printf ("%i, %i/%i/%i/%i/%i/%i %s\n", i, ch->vol[0], ch->vol[1], ch->vol[2], ch->vol[3], ch->vol[4], ch->vol[5], ch->sfx->name);
 				active++;
 			}
 			else if (ch->sfx)
@@ -3960,11 +3957,12 @@ int S_GetMixerTime(soundcardinfo_t *sc)
 void S_Update (void)
 {
 	soundcardinfo_t *sc;
-
+	RSpeedMark();
 	S_LockMixer();
 	for (sc = sndcardinfo; sc; sc = sc->next)
 		S_UpdateCard(sc);
 	S_UnlockMixer();
+	RSpeedEnd(RSPEED_AUDIO);
 }
 
 void S_ExtraUpdate (void)

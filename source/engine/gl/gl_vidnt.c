@@ -922,7 +922,9 @@ static qboolean Win32NVVK_AttachVulkan (rendererstate_t *info)
 	qglSignalVkSemaphoreNV	= getglfunc("glSignalVkSemaphoreNV");
 	qglSignalVkFenceNV		= getglfunc("glSignalVkFenceNV");
 
-	vkGetInstanceProcAddr = nvvkGetInstanceProcAddr;
+	vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)nvvkGetInstanceProcAddr(NULL, "vkGetInstanceProcAddr");
+	if (!vkGetInstanceProcAddr)
+		vkGetInstanceProcAddr = nvvkGetInstanceProcAddr;
 //	qwglMakeCurrent(maindc, NULL);
 	return VK_Init(info, NULL, Win32NVVK_CreateSurface, Win32NVVK_Present);
 }
@@ -1438,9 +1440,7 @@ static int GLVID_SetMode (rendererstate_t *info, unsigned char *palette)
 {
 	int				temp;
 	qboolean		stat;
-#ifndef NPFTE
 	MSG				msg;
-#endif
 //	HDC				hdc;
 
 	vrsetup_t setup = {sizeof(setup)};
@@ -1560,12 +1560,22 @@ static int GLVID_SetMode (rendererstate_t *info, unsigned char *palette)
 		stat = CreateMainWindow(info, true);
 		if (stat)
 		{
+			EGLConfig cfg;
 			maindc = GetDC(mainwindow);
-			stat = EGL_Init (info, palette, EGL_PLATFORM_WIN32, mainwindow, maindc, (EGLNativeWindowType)mainwindow, (EGLNativeDisplayType)maindc);
 
-			if (stat)
-				if (!GL_Init(info, &EGL_Proc))
-					return false;
+			if (!EGL_InitDisplay(info, EGL_PLATFORM_WIN32, maindc, (EGLNativeDisplayType)maindc, &cfg))
+			{
+				Con_Printf("couldn't find suitable EGL config\n");
+				return false;
+			}
+			if (!EGL_InitWindow(info, EGL_PLATFORM_WIN32, mainwindow, (EGLNativeWindowType)mainwindow, cfg))
+			{
+				Con_Printf("couldn't initialise EGL context\n");
+				return false;
+			}
+
+			if (!GL_Init(info, &EGL_Proc))
+				return false;
 		}
 		break;
 #endif
@@ -1611,7 +1621,6 @@ static int GLVID_SetMode (rendererstate_t *info, unsigned char *palette)
 // Who knows if it helps, but it probably doesn't hurt
 	SetForegroundWindow (mainwindow);
 
-#ifndef NPFTE
 	/*I don't like this, but if we */
 	Sleep (100);
 	while (PeekMessage (&msg, mainwindow, 0, 0, PM_REMOVE))
@@ -1620,7 +1629,6 @@ static int GLVID_SetMode (rendererstate_t *info, unsigned char *palette)
 		DispatchMessage (&msg);
 	}
 	Sleep (100);
-#endif
 
 	SetWindowPos (mainwindow, HWND_TOP, 0, 0, 0, 0,
 				  SWP_DRAWFRAME | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW |
@@ -3367,7 +3375,7 @@ rendererinfo_t eglrendererinfo =
 	GLBE_Init,
 	GLBE_GenBrushModelVBO,
 	GLBE_ClearVBO,
-	GLBE_UploadAllLightmaps,
+	GLBE_UpdateLightmaps,
 	GLBE_SelectEntity,
 	GLBE_SelectDLight,
 	GLBE_Scissor,

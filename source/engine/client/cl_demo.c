@@ -77,6 +77,7 @@ void CL_StopPlayback (void)
 	cls.state = ca_disconnected;
 	cls.demoplayback = DPB_NONE;
 	cls.demoseeking = false;	//just in case
+	cls.demotrack = -1;
 
 	if (cls.timedemo)
 		CL_FinishTimeDemo ();
@@ -1749,7 +1750,8 @@ void CL_Record_f (void)
 
 	if (cls.state != ca_active)
 	{
-		Con_Printf ("You must be connected to record.\n");
+		Con_Printf ("You must either be connected to record, or specify a map name to load.\n");
+		Con_Printf ("%s: <demoname> <mapname>\n", Cmd_Argv(0));
 		return;
 	}
 
@@ -2107,6 +2109,8 @@ void CL_Record_f (void)
 		break;
 	}
 
+	cl.validsequence = 0; //ask for a sequence reset.
+
 	if (cls.fteprotocolextensions2 & PEXT2_REPLACEMENTDELTAS)
 		if (cl.numackframes < sizeof(cl.ackframes)/sizeof(cl.ackframes[0]))
 			cl.ackframes[cl.numackframes++] = -1;
@@ -2412,6 +2416,11 @@ void CL_PlayDemoFile(vfsfile_t *f, char *demoname, qboolean issyspath)
 			ft *= -1;
 		if (chr == '\n')
 		{
+			if (ft > 0)
+				cls.demotrack = ft;
+			else
+				cls.demotrack = -1;
+
 			CL_PlayDemoStream(f, demoname, issyspath, DPB_NETQUAKE, 0);
 			return;
 		}
@@ -3006,9 +3015,9 @@ fail:
 		else if (!strcmp(auth, "SHA1"))
 			hashfunc = &hash_sha1;
 		else if (!strcmp(auth, "SHA2_256"))
-			hashfunc = &hash_sha256;
+			hashfunc = &hash_sha2_256;
 		else if (!strcmp(auth, "SHA2_512"))
-			hashfunc = &hash_sha512;
+			hashfunc = &hash_sha2_512;
 		else if (*auth)
 			Con_Printf("Server requires unsupported auth method: %s\n", auth);
 

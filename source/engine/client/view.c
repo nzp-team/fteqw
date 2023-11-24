@@ -1063,16 +1063,17 @@ void V_CalcGunPositionAngle (playerview_t *pv, float bob)
 	vw_angles[PITCH] = r_refdef.viewangles[PITCH];
 	vw_angles[ROLL] = r_refdef.viewangles[ROLL];
 
-	AngleVectors(vw_angles, pv->vw_axis[0], pv->vw_axis[1], pv->vw_axis[2]);
-	VectorInverse(pv->vw_axis[1]);
+
+	AngleVectors(vw_angles, r_refdef.weaponmatrix[0], r_refdef.weaponmatrix[1], r_refdef.weaponmatrix[2]);
+	VectorInverse(r_refdef.weaponmatrix[1]);
 
 
-	VectorCopy (r_refdef.vieworg, pv->vw_origin);
+	VectorCopy (r_refdef.vieworg, r_refdef.weaponmatrix[3]);
 	for (i=0 ; i<3 ; i++)
 	{
-		pv->vw_origin[i] += pv->vw_axis[0][i]*bob*0.4;
-//		pv->vw_origin[i] += pv->vw_axis[1][i]*sin(cl.time*5.5342452354235)*0.1;
-//		pv->vw_origin[i] += pv->vw_axis[2][i]*bob*0.8;
+		r_refdef.weaponmatrix[3][i] += r_refdef.weaponmatrix[0][i]*bob*0.4;
+//		r_refdef.weaponmatrix[3][i] += r_refdef.weaponmatrix[1][i]*sin(cl.time*5.5342452354235)*0.1;
+//		r_refdef.weaponmatrix[3][i] += r_refdef.weaponmatrix[2][i]*bob*0.8;
 	}
 
 	VectorMA(pv->simvel, -DotProduct(pv->simvel, pv->gravitydir), pv->gravitydir, xyvel);
@@ -1082,29 +1083,31 @@ void V_CalcGunPositionAngle (playerview_t *pv, float bob)
 	//FIXME: cl_followmodel should lag the viewmodel's position relative to the view
 	//FIXME: cl_leanmodel should lag the viewmodel's angles relative to the view
 
-	if (cl_bobmodel.value)
-	{	//bobmodel causes the viewmodel to bob relative to the view.
-		float s = pv->bobtime * cl_bobmodel_speed.value, v;
-		v = xyspeed * 0.01 * cl_bobmodel_side.value * /*cl_viewmodel_scale.value * */sin(s);
-		VectorMA(pv->vw_origin, v, pv->vw_axis[1], pv->vw_origin);
-		v = xyspeed * 0.01 * cl_bobmodel_up.value * /*cl_viewmodel_scale.value * */cos(2*s);
-		VectorMA(pv->vw_origin, v, pv->vw_axis[2], pv->vw_origin);
-	}
-
-
 // fudge position around to keep amount of weapon visible
 // roughly equal with different FOV
 //FIXME: should use y fov, not viewsize.
 	if (r_refdef.drawsbar && v_viewmodel_quake.ival)	//no sbar = no viewsize cvar.
 	{
 		if (scr_viewsize.value == 110)
-			pv->vw_origin[2] += 1;
+			r_refdef.weaponmatrix[3][2] += 1;
 		else if (scr_viewsize.value == 100)
-			pv->vw_origin[2] += 2;
+			r_refdef.weaponmatrix[3][2] += 2;
 		else if (scr_viewsize.value == 90)
-			pv->vw_origin[2] += 1;
+			r_refdef.weaponmatrix[3][2] += 1;
 		else if (scr_viewsize.value == 80)
-			pv->vw_origin[2] += 0.5;
+			r_refdef.weaponmatrix[3][2] += 0.5;
+	}
+
+
+
+	memcpy(r_refdef.weaponmatrix_bob, r_refdef.weaponmatrix, sizeof(r_refdef.weaponmatrix_bob));
+	if (cl_bobmodel.value)
+	{	//bobmodel causes the viewmodel to bob relative to the view.
+		float s = pv->bobtime * cl_bobmodel_speed.value, v;
+		v = xyspeed * 0.01 * cl_bobmodel_side.value * /*cl_viewmodel_scale.value * */sin(s);
+		VectorMA(r_refdef.weaponmatrix_bob[3], v, r_refdef.weaponmatrix[1], r_refdef.weaponmatrix_bob[3]);
+		v = xyspeed * 0.01 * cl_bobmodel_up.value * /*cl_viewmodel_scale.value * */cos(2*s);
+		VectorMA(r_refdef.weaponmatrix_bob[3], v, r_refdef.weaponmatrix[2], r_refdef.weaponmatrix_bob[3]);
 	}
 }
 
@@ -1373,6 +1376,9 @@ void V_ApplyRefdef (void)
 	int             h;
 	qboolean		full = false;
 #endif
+#ifdef HEXEN2
+	extern qboolean sbar_hexen2;
+#endif
 
 // force the status bar to redraw
 	Sbar_Changed ();
@@ -1406,6 +1412,11 @@ void V_ApplyRefdef (void)
 	else if (size >= 110)
 		sb_lines = 24;          // no inventory
 	else
+#ifdef HEXEN2
+		if (sbar_hexen2)
+			sb_lines = 46;	//hexen2's sbar is a smidge more crampt.
+		else
+#endif
 		sb_lines = 24+16+8;
 
 	if (scr_viewsize.value >= 100.0)
@@ -1509,20 +1520,32 @@ static int QDECL V_DepthSortTwoEntities(const void *p1,const void *p2)
 }
 void V_DepthSortEntities(float *vieworg)
 {
-	int i;
+	int i, j;
 	vec3_t disp;
 	for (i = 0; i < cl_numvisedicts; i++)
 	{
 		if (cl_visedicts[i].flags & RF_WEAPONMODEL)
 		{	//weapon models have their own extra matrix thing going on. don't mess up because of it.
-			cl_visedicts[i].angles[0] = 0;
+			//however, qsort is not stable so hide ordering in here so they still come out with the same ordering, at least with respect to each other.
+			cl_visedicts[i].angles[0] = -1-i;
 			continue;
 		}
 		if (cl_visedicts[i].rtype == RT_MODEL && cl_visedicts[i].model && cl_visedicts[i].model->type == mod_brush)
 		{
-			VectorAdd(cl_visedicts[i].model->maxs, cl_visedicts[i].model->mins, disp);
-			VectorMA(cl_visedicts[i].origin, 0.5, disp, disp);
-			VectorSubtract(disp, vieworg, disp);
+			if (1)
+			{	//by nearest point.
+				for (j=0 ; j<3 ; j++)
+				{
+					disp[j] = vieworg[j] - cl_visedicts[i].origin[j];
+					disp[j] -= bound(cl_visedicts[i].model->mins[j], disp[j], cl_visedicts[i].model->maxs[j]);
+				}
+			}
+			else
+			{	//by midpoint...
+				VectorAdd(cl_visedicts[i].model->maxs, cl_visedicts[i].model->mins, disp);
+				VectorMA(cl_visedicts[i].origin, 0.5, disp, disp);
+				VectorSubtract(disp, vieworg, disp);
+			}
 		}
 		else
 		{
@@ -1945,6 +1968,7 @@ static void SCR_DrawAutoID(vec3_t org, player_info_t *pl, qboolean isteam)
 				break;
 		if (r >= 0 && (scr_autoid_weapon_mask.ival&(1<<1)))
 		{
+#ifdef QUAKEHUD
 			if (scr_autoid_weapon.ival==1)
 			{
 				extern apic_t *sb_weapons[7][8];
@@ -1967,6 +1991,7 @@ static void SCR_DrawAutoID(vec3_t org, player_info_t *pl, qboolean isteam)
 					return;
 				}
 			}
+#endif
 
 			if (h < 8)
 			{
@@ -2176,7 +2201,7 @@ void R_DrawNameTags(void)
 		}
 		else
 #endif
-		if (w && w->progs)
+		if (w && w->progs && w->progs->saveent)
 		{
 			int best = 0;
 			float bestscore = 0, score = 0;
@@ -2464,18 +2489,20 @@ void V_RenderView (qboolean no2d)
 
 	Surf_LessenStains();
 
-	if (cls.state != ca_active)
-		return;
+//	if (cls.state != ca_active)
+//		return;
 
 	if (cl.intermissionmode != IM_NONE)
 		maxseats = 1;
 	else if (cl_forceseat.ival && cl_splitscreen.ival >= 4)
 		maxseats = 1;
+	else
+		maxseats = max(1, cl.splitclients);
 
 	R_PushDlights ();
 
 	r_secondaryview = 0;
-	for (seatnum = 0; seatnum < cl.splitclients && seatnum < maxseats; seatnum++)
+	for (seatnum = 0; seatnum < maxseats; seatnum++)
 	{
 		pl = (maxseats==1&&cl_forceseat.ival>=1)?(cl_forceseat.ival-1)%cl.splitclients:seatnum;
 		V_ClearRefdef(&cl.playerview[pl]);
@@ -2512,18 +2539,21 @@ void V_RenderView (qboolean no2d)
 		SCR_VRectForPlayer(&r_refdef.grect, seatnum, maxseats);
 		V_RenderPlayerViews(r_refdef.playerview);
 
-#ifdef PLUGINS
-		Plug_SBar (r_refdef.playerview);
-#else
-		if (Sbar_ShouldDraw(r_refdef.playerview))
+		if (!vrui.enabled)
 		{
-			SCR_TileClear (sb_lines);
-			Sbar_Draw (r_refdef.playerview);
-			Sbar_DrawScoreboard (r_refdef.playerview);
-		}
-		else
-			SCR_TileClear (0);
+#ifdef PLUGINS
+			Plug_SBar (r_refdef.playerview);
+#else
+			if (Sbar_ShouldDraw(r_refdef.playerview))
+			{
+				SCR_TileClear (sb_lines);
+				Sbar_Draw (r_refdef.playerview);
+				Sbar_DrawScoreboard (r_refdef.playerview);
+			}
+			else
+				SCR_TileClear (0);
 #endif
+		}
 	}
 	if (seatnum > 1)
 	{

@@ -679,7 +679,7 @@ ddef32_t *ED_FindLocalOrGlobal(progfuncs_t *progfuncs, const char *name, eval_t 
 	return &def;
 }
 
-static char *COM_TrimString(const char *str, char *buffer, int buffersize)
+static char *TrimString(const char *str, char *buffer, int buffersize)
 {
 	int i;
 	while (*str <= ' ' && *str>'\0')
@@ -758,7 +758,7 @@ pbool LocateDebugTerm(progfuncs_t *progfuncs, const char *key, eval_t **result, 
 		if (!fdef)
 		{
 			char trimmed[256];
-			c2 = COM_TrimString(c2, trimmed, sizeof(trimmed));
+			c2 = TrimString(c2, trimmed, sizeof(trimmed));
 			def = ED_FindLocalOrGlobal(progfuncs, c2, &fval);
 			if (def && def->type == ev_field)
 			{
@@ -955,7 +955,7 @@ char *PDECL PR_EvaluateDebugString(pubprogfuncs_t *ppf, const char *key)
 		if (type != ev_entity)
 			return "'.' without entity";
 		if (c)*c = '\0';
-		fdef = ED_FindField(progfuncs, COM_TrimString(c2));
+		fdef = ED_FindField(progfuncs, TrimString(c2));
 		if (c)*c = '.';
 		if (!fdef)
 			return "(Bad string)";
@@ -1040,16 +1040,17 @@ char *PDECL PR_EvaluateDebugString(pubprogfuncs_t *ppf, const char *key)
 				mfunction_t *func;
 				progsnum_t i;
 				progsnum_t progsnum = -1;
-				if (str[0] && str[1] == ':')
+				char *end;
+				if (!strcmp(str, "0"))
 				{
-					progsnum = atoi(str);
-					str+=2;
+					*(func_t *)val = 0;
+					break;
 				}
-				else if (str[0] && str[1] && str[2] == ':')
-				{
-					progsnum = atoi(str);
-					str+=3;
-				}
+				progsnum = strtol(str, &end, 10);
+				if (end != str && *end == ':')
+					str = end+1;	//skip past the num: prefix
+				else
+					progsnum = -1;	//wasn't a num: prefix
 
 				func = ED_FindFunction (progfuncs, str, &i, progsnum);
 				if (!func)
@@ -1058,7 +1059,7 @@ char *PDECL PR_EvaluateDebugString(pubprogfuncs_t *ppf, const char *key)
 
 					*assignment = '=';
 
-					strcpy(buf, "Can't find field ");
+					strcpy(buf, "Can't find function ");
 					l = strlen(buf);
 					if (nl > sizeof(buf)-l-2)
 						nl = sizeof(buf)-l-2;
@@ -1830,7 +1831,7 @@ void PDECL PR_ExecuteProgram (pubprogfuncs_t *ppf, func_t fnum)
 	{
 //		if (pr_global_struct->self)
 //			ED_Print (PROG_TO_EDICT(pr_global_struct->self));
-#if defined(__GNUC__) && !defined(FTE_TARGET_WEB) && !defined(NACL)
+#if defined(__GNUC__) && !defined(FTE_TARGET_WEB)
 		externs->Printf("PR_ExecuteProgram: NULL function from exe (address %p)\n", __builtin_return_address(0));
 #else
 		externs->Printf("PR_ExecuteProgram: NULL function from exe\n");

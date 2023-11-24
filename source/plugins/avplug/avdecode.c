@@ -4,7 +4,7 @@
 static plugfsfuncs_t *filefuncs;
 static plugaudiofuncs_t *audiofuncs;
 
-//#include "libavcodec/avcodec.h"
+#include "libavcodec/avcodec.h"
 #include "libavformat/avformat.h"
 #include "libswscale/swscale.h"
 #include "libavutil/imgutils.h"
@@ -70,7 +70,7 @@ static qboolean AVDec_SetSize (void *vctx, int width, int height)
 	if (width == ctx->width && height == ctx->height && ctx->pScaleCtx)
 		return true;
 
-	if (av_image_alloc(rgb_data, rgb_linesize, width, height, AV_PIX_FMT_BGRA, 16) >= 0)
+	if (av_image_alloc(rgb_data, rgb_linesize, width, height, AV_PIX_FMT_BGRA, 1) >= 0)
 	{
 		//update the scale context as required
 		//clear the old stuff out
@@ -149,6 +149,7 @@ static void *AVDec_Create(const char *medianame)
 	unsigned int             i;
 	AVCodec         *pCodec;
 	qboolean useioctx = false;
+//	const char *extension = strrchr(medianame, '.');
 
 	/*always respond to av: media prefixes*/
 	if (!strncmp(medianame, "av:", 3) || !strncmp(medianame, "ff:", 3))
@@ -163,8 +164,10 @@ static void *AVDec_Create(const char *medianame)
 	}
 	else if (strchr(medianame, ':'))	//block other types of url/prefix.
 		return NULL;
-	else //if (!strcasecmp(extension, ".roq") || !strcasecmp(extension, ".roq"))
-		return NULL;	//roq+cin should be played back via the engine instead.
+//	else if (!strcasecmp(extension, ".roq") || !strcasecmp(extension, ".roq") || !strcasecmp(extension, ".cin"))
+//		return NULL;	//roq+cin should be played back via the engine instead...
+	else
+		useioctx = true;
 
 	ctx = malloc(sizeof(*ctx));
 	memset(ctx, 0, sizeof(*ctx));
@@ -179,6 +182,8 @@ static void *AVDec_Create(const char *medianame)
 		AVIOContext *ioctx;
 
 		ctx->file = filefuncs->OpenVFS(medianame, "rb", FS_GAME);
+		if (!ctx->file)
+			ctx->file = filefuncs->OpenVFS(va("video/%s", medianame), "rb", FS_GAME);
 		if (!ctx->file)
 		{
 			Con_Printf("Unable to open %s\n", medianame);

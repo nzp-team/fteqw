@@ -318,12 +318,16 @@ float MSG_FromCoord(coorddata c, int bytes);
 coorddata MSG_ToCoord(float f, int bytes);
 coorddata MSG_ToAngle(float f, int bytes);
 
+void MSG_BeginWriting (sizebuf_t *msg, struct netprim_s prim, void *bufferstorage, size_t buffersize);
 void MSG_WriteChar (sizebuf_t *sb, int c);
+void MSG_WriteBits (sizebuf_t *msg, int value, int bits);
 void MSG_WriteByte (sizebuf_t *sb, int c);
 void MSG_WriteShort (sizebuf_t *sb, int c);
 void MSG_WriteLong (sizebuf_t *sb, int c);
 void MSG_WriteInt64 (sizebuf_t *sb, qint64_t c);
 void MSG_WriteUInt64 (sizebuf_t *sb, quint64_t c);
+void MSG_WriteULEB128  (sizebuf_t *sb, quint64_t c);
+void MSG_WriteSignedQEX (sizebuf_t *sb, qint64_t c);
 void MSG_WriteEntity (sizebuf_t *sb, unsigned int e);
 void MSG_WriteFloat (sizebuf_t *sb, float f);
 void MSG_WriteDouble (sizebuf_t *sb, double f);
@@ -338,7 +342,6 @@ void MSGQW_WriteDeltaUsercmd (sizebuf_t *sb, const struct usercmd_s *from, const
 void MSGCL_WriteDeltaUsercmd (sizebuf_t *sb, const struct usercmd_s *from, const struct usercmd_s *cmd);
 void MSG_WriteDir (sizebuf_t *sb, float *dir);
 
-extern	int			msg_readcount;
 extern	qboolean	msg_badread;		// set if a read goes beyond end of message
 extern struct netprim_s msg_nullnetprim;
 
@@ -349,9 +352,13 @@ int MSG_ReadChar (void);
 int MSG_ReadBits(int bits);
 int MSG_ReadByte (void);
 int MSG_ReadShort (void);
+int MSG_ReadUInt16 (void);
 int MSG_ReadLong (void);
 qint64_t MSG_ReadInt64 (void);
 quint64_t MSG_ReadUInt64 (void);
+qint64_t MSG_ReadSLEB128 (void);
+quint64_t MSG_ReadULEB128 (void);
+qint64_t MSG_ReadSignedQEX (void);
 struct client_s;
 unsigned int MSGSV_ReadEntity (struct client_s *fromclient);
 unsigned int MSGCL_ReadEntity (void);
@@ -377,7 +384,7 @@ void MSG_ReadSkip (int len);
 int MSG_ReadSize16 (sizebuf_t *sb);
 void MSG_WriteSize16 (sizebuf_t *sb, int sz);
 void COM_DecodeSize(int solid, float *mins, float *maxs);
-int COM_EncodeSize(float *mins, float *maxs);
+int COM_EncodeSize(const float *mins, const float *maxs);
 
 //============================================================================
 
@@ -447,10 +454,10 @@ char *COM_ParseType (const char *data, char *out, size_t outlen, com_tokentype_t
 char *COM_ParseStringSet (const char *data, char *out, size_t outlen);	//whitespace or semi-colon separators
 char *COM_ParseStringSetSep (const char *data, char sep, char *out, size_t outsize);	//single-char-separator, no whitespace
 char *COM_ParseCString (const char *data, char *out, size_t maxoutlen, size_t *writtenlen);
-char *COM_StringParse (const char *data, char *token, unsigned int tokenlen, qboolean expandmacros, qboolean qctokenize);
+char *COM_StringParse (const char *data, char *token, unsigned int tokenlen, qboolean expandmacros, qboolean qctokenize);	//fancy version used for console etc parsing
 #define COM_ParseToken(data,punct) COM_ParseTokenOut(data, punct, com_token, sizeof(com_token), &com_tokentype)
 char *COM_ParseTokenOut (const char *data, const char *punctuation, char *token, size_t tokenlen, com_tokentype_t *tokentype);	//note that line endings are a special type of token.
-char *COM_TrimString(char *str, char *buffer, int buffersize);
+qboolean COM_TrimString(char *str, char *buffer, int buffersize);	//trims leading+trailing whitespace writing to the specified buffer. returns false on truncation.
 const char *COM_QuotedString(const char *string, char *buf, int buflen, qboolean omitquotes);	//inverse of COM_StringParse
 
 
@@ -523,7 +530,7 @@ extern char	com_homepath[MAX_OSPATH];
 
 //qofs_Make is used to 'construct' a variable of qofs_t type. this is so the code can merge two 32bit ints on old systems and use a long long type internally without generating warnings about bit shifts when qofs_t is only 32bit instead.
 //#if defined(__amd64__) || defined(_AMD64_) || __WORDSIZE == 64
-#if !defined(FTE_TARGET_WEB) && !defined(NACL)
+#if !defined(FTE_TARGET_WEB)
 	#if !defined(_MSC_VER) || _MSC_VER > 1200
 		#define FS_64BIT
 	#endif
@@ -567,7 +574,7 @@ typedef struct searchpath_s
 	struct searchpath_s *next;
 	struct searchpath_s *nextpure;
 } searchpath_t;
-typedef struct {
+typedef struct flocation_s{
 	struct searchpath_s	*search;			//used to say which filesystem driver to open the file from
 	void			*fhandle;				//used by the filesystem driver as a simple reference to the file
 	char			rawname[MAX_OSPATH];	//blank means not readable directly
@@ -655,7 +662,7 @@ enum fs_relative{
 	//note that many of theses paths can map to multiple system locations. FS_NativePath can vary somewhat in terms of what it returns, generally favouring writable locations rather then the path that actually contains a file.
 	FS_BINARYPATH,	//where the 'exe' is located. we'll check here for dlls too.
 	FS_LIBRARYPATH,	//for system dlls and stuff
-	FS_ROOT,		//either homedir or basedir,
+	FS_ROOT,		//./ (effectively -homedir if enabled, otherwise effectively -basedir arg)
 	FS_SYSTEM,		//a system path. absolute paths are explicitly allowed and expected, but not required.
 
 	//after this point, all types must be relative to a gamedir
@@ -686,7 +693,7 @@ vfsfile_t *FS_OpenTCP(const char *name, int defaultport, qboolean assumetls);
 
 vfsfile_t *FS_OpenWithFriends(const char *fname, char *sysname, size_t sysnamesize, int numfriends, ...);
 
-#define countof(array) (sizeof(array)/sizeof(array[0]))
+#define countof(array) (sizeof(array)/sizeof((array)[0]))
 #ifdef _WIN32
 //windows doesn't support utf-8. Which is a shame really, because that's the charset we expect from everything.
 char *narrowen(char *out, size_t outlen, wchar_t *wide);
@@ -703,7 +710,7 @@ void MyRegDeleteKeyValue(void *base, const char *keyname, const char *valuename)
 void FS_UnloadPackFiles(void);
 void FS_ReloadPackFiles(void);
 char *FSQ3_GenerateClientPacksList(char *buffer, int maxlen, int basechecksum);
-void FS_PureMode(int mode, char *purenamelist, char *purecrclist, char *refnamelist, char *refcrclist, int seed);	//implies an fs_restart. ref package names are optional, for q3 where pure names don't contain usable paths
+void FS_PureMode(const char *gamedir, int mode, char *purenamelist, char *purecrclist, char *refnamelist, char *refcrclist, int seed);	//implies an fs_restart. ref package names are optional, for q3 where pure names don't contain usable paths
 int FS_PureOkay(void);
 
 //recursively tries to open files until it can get a zip.
@@ -732,7 +739,7 @@ typedef struct
 	{
 		MANIFEST_SECURITY_NOT,		//don't trust it, don't even allow downloadsurl.
 		MANIFEST_SECURITY_DEFAULT,	//the default.fmf file may suggest packages+force sources
-		MANIFEST_SECURITY_INSTALLER	//built-in fmf files can force packages+sources
+		MANIFEST_SECURITY_INSTALLER	//built-in fmf files can 'force' packages+sources
 	} security;		//manifest was embedded in the engine. don't assume its already installed, but ask to install it (also, enable some extra permissions for writing dlls)
 
 	enum
@@ -756,12 +763,12 @@ typedef struct
 #ifdef PACKAGEMANAGER
 	char *downloadsurl;	//optional installable files (menu)
 	char *installupd;	//which download/updated package to install.
+	qboolean installable;	//(expected) available packages give a playable experience, even if just a basic/demo version.
 #endif
 	char *protocolname;	//the name used for purposes of dpmaster
 	char *defaultexec;	//execed after cvars are reset, to give game-specific engine-defaults.
 	char *defaultoverrides;	//execed after default.cfg, to give usable defaults even when the mod the user is running is shit.
 	char *eula;			//when running as an installer, the user will be presented with this as a prompt
-	char *rtcbroker;	//the broker to use for webrtc connections.
 	char *basedir;		//this is where we expect to find the data.
 	char *iconname;		//path we can find the icon (relative to the fmf's location)
 
@@ -784,13 +791,16 @@ typedef struct
 	} gamepath[8];
 	struct manpack_s	//FIXME: this struct should be replaced with packagemanager info instead.
 	{
-		int type;
+		enum manifestdeptype_e type;
 		char *path;			//the 'pure' name
 		char *prefix;
 		qboolean crcknown;	//if the crc was specified
 		unsigned int crc;	//the public crc
 		char *mirrors[8];	//a randomized (prioritized-on-load) list of mirrors to use. (may be 'prompt:game,package', 'unzip:file,url', 'xz:url', 'gz:url'
 		char *condition;	//only downloaded if this cvar is set | delimited allows multiple cvars.
+		char *sha512;		//package must match this hash, if specified
+		char *signature;	//signs the hash
+		qofs_t filesize;
 		int mirrornum;		//the index we last tried to download from, so we still work even if mirrors are down.
 	} package[64];
 } ftemanifest_t;
@@ -805,6 +815,7 @@ qboolean PM_CanInstall(const char *packagename);
 void COM_InitFilesystem (void);	//does not set up any gamedirs.
 qboolean FS_DownloadingPackage(void);
 void FS_CreateBasedir(const char *path);
+qboolean FS_DirHasAPackage(char *basedir, ftemanifest_t *man);
 qboolean FS_ChangeGame(ftemanifest_t *newgame, qboolean allowreloadconfigs, qboolean allowbasedirchange);
 qboolean FS_GameIsInitialised(void);
 void FS_Shutdown(void);
@@ -823,7 +834,7 @@ int FS_GetManifestArgv(char **argv, int maxargs);
 
 struct zonegroup_s;
 void *FS_LoadMallocGroupFile(struct zonegroup_s *ctx, char *path, size_t *fsize, qboolean filters);
-qbyte *FS_LoadMallocFile (const char *path, size_t *fsize);
+void *FS_LoadMallocFile (const char *path, size_t *fsize);
 qbyte *FS_LoadMallocFileFlags (const char *path, unsigned int locateflags, size_t *fsize);
 qofs_t FS_LoadFile(const char *name, void **file);
 void FS_FreeFile(void *file);
@@ -835,7 +846,8 @@ void FS_CloseMapPackFile (searchpathfuncs_t *archive);
 void COM_FlushTempoaryPacks(void);
 
 void COM_EnumerateFiles (const char *match, int (QDECL *func)(const char *fname, qofs_t fsize, time_t mtime, void *parm, searchpathfuncs_t *spath), void *parm);
-searchpathfuncs_t *FS_OpenPackByExtension(vfsfile_t *f, searchpathfuncs_t *parent, const char *filename, const char *pakname);
+void COM_EnumerateFilesReverse (const char *match, int (QDECL *func)(const char *fname, qofs_t fsize, time_t mtime, void *parm, searchpathfuncs_t *spath), void *parm);
+searchpathfuncs_t *FS_OpenPackByExtension(vfsfile_t *f, searchpathfuncs_t *parent, const char *filename, const char *pakname, const char *pakpathprefix);
 
 extern qboolean com_installer;	//says that the engine is running in an 'installer' mode, and that the correct basedir is not yet known.
 extern	struct cvar_s	registered;
@@ -924,14 +936,12 @@ void InfoBuf_WriteToFile(vfsfile_t *f, infobuf_t *info, const char *commandname,
 void InfoBuf_Enumerate (infobuf_t *info, void *ctx, void(*cb)(void *ctx, const char *key, const char *value));
 
 
-void Com_BlocksChecksum (int blocks, void **buffer, int *len, unsigned char *outbuf);
-unsigned int Com_BlockChecksum (const void *buffer, int length);
-void Com_BlockFullChecksum (const void *buffer, int len, unsigned char *outbuf);
 qbyte	COM_BlockSequenceCheckByte (qbyte *base, int length, int sequence, unsigned mapchecksum);
 qbyte	COM_BlockSequenceCRCByte (qbyte *base, int length, int sequence);
 qbyte	Q2COM_BlockSequenceCRCByte (qbyte *base, int length, int sequence);
 
 size_t Base64_EncodeBlock(const qbyte *in, size_t length, char *out, size_t outsize);	//tries to null terminate, but returns length without termination.
+size_t Base64_EncodeBlockURI(const qbyte *in, size_t length, char *out, size_t outsize); //slightly different chars for uri safety. also trims.
 size_t Base64_DecodeBlock(const char *in, const char *in_end, qbyte *out, size_t outsize); // +/ and =
 size_t Base16_EncodeBlock(const char *in, size_t length, qbyte *out, size_t outsize);
 size_t Base16_DecodeBlock(const char *in, qbyte *out, size_t outsize);
@@ -945,15 +955,16 @@ typedef struct
 	void (*process) (void *context, const void *data, size_t datasize);
 	void (*terminate) (unsigned char *digest, void *context);
 } hashfunc_t;
-extern hashfunc_t hash_sha1;
-extern hashfunc_t hash_sha224;
-extern hashfunc_t hash_sha256;
-extern hashfunc_t hash_sha384;
-extern hashfunc_t hash_sha512;
-extern hashfunc_t hash_crc16;
+extern hashfunc_t hash_md4;			//required for vanilla qw mapchecks
+extern hashfunc_t hash_sha1;		//required for websockets, and ezquake's crypted rcon
+extern hashfunc_t hash_sha2_224;
+extern hashfunc_t hash_sha2_256;	//required for webrtc
+extern hashfunc_t hash_sha2_384;
+extern hashfunc_t hash_sha2_512;
+extern hashfunc_t hash_crc16;		//aka ccitt, required for qw's clc_move and various bits of dp compat
 extern hashfunc_t hash_crc16_lower;
 unsigned int hashfunc_terminate_uint(const hashfunc_t *hash, void *context); //terminate, except returning the digest as a uint instead of a blob. folds the digest if longer than 4 bytes.
-unsigned int CalcHashInt(const hashfunc_t *hash, const unsigned char *data, size_t datasize);
+unsigned int CalcHashInt(const hashfunc_t *hash, const void *data, size_t datasize);
 size_t CalcHash(const hashfunc_t *hash, unsigned char *digest, size_t maxdigestsize, const unsigned char *data, size_t datasize);
 size_t CalcHMAC(const hashfunc_t *hashfunc, unsigned char *digest, size_t maxdigestsize, const unsigned char *data, size_t datalen, const unsigned char *key, size_t keylen);
 
@@ -975,8 +986,8 @@ struct po_s *PO_Create(void);
 void PO_Merge(struct po_s *po, vfsfile_t *file);
 const char *PO_GetText(struct po_s *po, const char *msg);
 void PO_Close(struct po_s *po);
-const char *TL_Translate(const char *src);	//$foo translations.
-void TL_Reformat(char *out, size_t outsize, size_t numargs, const char **arg);	//"{0} died\n" formatting (with $foo translation, on each arg)
+const char *TL_Translate(int language, const char *src);	//$foo translations.
+void TL_Reformat(int language, char *out, size_t outsize, size_t numargs, const char **arg);	//"{0} died\n" formatting (with $foo translation, on each arg)
 
 //
 // log.c
@@ -998,11 +1009,11 @@ qboolean IPLog_Merge_File(const char *fname);
 #endif
 enum certlog_problem_e
 {
-	CERTLOG_WRONGHOST,
-	CERTLOG_EXPIRED,
-	CERTLOG_MISSINGCA,
+	CERTLOG_WRONGHOST	=1<<0,
+	CERTLOG_EXPIRED		=1<<1,
+	CERTLOG_MISSINGCA	=1<<2,
 
-	CERTLOG_UNKNOWN,
+	CERTLOG_UNKNOWN		=1<<3,
 };
 qboolean CertLog_ConnectOkay(const char *hostname, void *cert, size_t certsize, unsigned int certlogproblems);
 
@@ -1037,3 +1048,51 @@ typedef struct
 	char str[128];
 } date_t;
 void COM_TimeOfDay(date_t *date);
+
+//json.c
+typedef struct json_s
+{
+	enum
+	{
+		json_type_string,
+		json_type_number,
+		json_type_object,
+		json_type_array,
+		json_type_true,
+		json_type_false,
+		json_type_null
+	} type;
+	const char *bodystart;
+	const char *bodyend;
+
+	struct json_s *parent;
+	struct json_s *child;
+	struct json_s *sibling;
+	union
+	{
+		struct json_s **childlink;
+		struct json_s **array;
+	};
+	size_t arraymax;	//note that child+siblings are kinda updated with arrays too, just not orphaned cleanly...
+	qboolean used;	//set to say when something actually read/walked it, so we can flag unsupported things gracefully
+	char name[1];
+} json_t;
+//main functions
+json_t *JSON_Parse(const char *json);	//simple parsing. returns NULL if there's any kind of parsing error.
+void JSON_Destroy(json_t *t);			//call this on the root once you're done
+json_t *JSON_FindChild(json_t *t, const char *child);	//find a named child in an object (or an array, if you're lazy)
+json_t *JSON_GetIndexed(json_t *t, unsigned int idx);	//find an indexed child in an array (or object, though slower)
+double JSON_ReadFloat(json_t *t, double fallback);		//read a numeric value.
+size_t JSON_ReadBody(json_t *t, char *out, size_t outsize);	//read a string value.
+//exotic fancy functions
+json_t *JSON_ParseNode(json_t *t, const char *namestart, const char *nameend, const char *json, int *jsonpos, int jsonlen); //fancy parsing.
+//helpers
+json_t *JSON_FindIndexedChild(json_t *t, const char *child, unsigned int idx);		//just a helper.
+qboolean JSON_Equals(json_t *t, const char *child, const char *expected);			//compares a bit faster.
+quintptr_t JSON_GetUInteger(json_t *t, const char *child, unsigned int fallback);	//grabs a child node's uint value
+qintptr_t JSON_GetInteger(json_t *t, const char *child, int fallback);				//grabs a child node's int value
+qintptr_t JSON_GetIndexedInteger(json_t *t, unsigned int idx, int fallback);		//grabs an int from an array
+double JSON_GetFloat(json_t *t, const char *child, double fallback);				//grabs a child node's numeric value
+double JSON_GetIndexedFloat(json_t *t, unsigned int idx, double fallback);			//grabs a numeric value from an array
+const char *JSON_GetString(json_t *t, const char *child, char *buffer, size_t buffersize, const char *fallback); //grabs a child node's string value. do your own damn indexing for an array.
+//there's no write logic. Its probably easier to just snprintf it or something anyway.

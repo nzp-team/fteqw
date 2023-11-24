@@ -203,6 +203,7 @@ unsigned int Net_PextMask(unsigned int protover, qboolean fornq)
 #ifdef PEXT_Q3BSP
 					PEXT_Q3BSP |
 #endif
+					PEXT_TE_BULLET |	//qw's gunshot+explosions etc.
 					PEXT_FLOATCOORDS | PEXT_HLBSP;
 
 			//these all depend fully upon the player/entity deltas, and don't make sense for NQ. Implement PEXT2_REPLACEMENTDELTAS instead.
@@ -230,6 +231,9 @@ unsigned int Net_PextMask(unsigned int protover, qboolean fornq)
 		if (pext_vrinputs.ival)
 			mask |= PEXT2_VRINPUTS;
 
+		if (pext_lerptime.ival)
+			mask |= PEXT2_LERPTIME;
+
 		if (MAX_CLIENTS != QWMAX_CLIENTS)
 			mask |= PEXT2_MAXPLAYERS;
 
@@ -241,7 +245,7 @@ unsigned int Net_PextMask(unsigned int protover, qboolean fornq)
 		if (fornq)
 		{
 			//only ones that are tested
-			mask &= PEXT2_PRYDONCURSOR | PEXT2_VOICECHAT | PEXT2_SETANGLEDELTA | PEXT2_REPLACEMENTDELTAS | PEXT2_MAXPLAYERS | PEXT2_PREDINFO | PEXT2_NEWSIZEENCODING | PEXT2_VRINPUTS;
+			mask &= PEXT2_PRYDONCURSOR | PEXT2_VOICECHAT | PEXT2_SETANGLEDELTA | PEXT2_REPLACEMENTDELTAS | PEXT2_MAXPLAYERS | PEXT2_PREDINFO | PEXT2_NEWSIZEENCODING | PEXT2_VRINPUTS | PEXT2_LERPTIME;
 		}
 //		else
 //			mask &= ~PEXT2_PREDINFO;
@@ -274,8 +278,6 @@ void Netchan_Init (void)
 	// pick a port value that should be nice and random
 #ifdef _WIN32
 	port = (time(NULL)) & 0xffff;
-#elif defined(NACL)
-	port = ((int)(getpid()) * time(NULL)) & 0xffff;
 #else
 	port = ((int)(getpid()+getuid()*1000) * time(NULL)) & 0xffff;
 #endif

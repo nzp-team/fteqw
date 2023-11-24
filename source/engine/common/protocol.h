@@ -56,6 +56,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define PEXT_CHUNKEDDOWNLOADS	0x20000000	//alternate file download method. Hopefully it'll give quadroupled download speed, especially on higher pings.
 #define PEXT_CSQC				0x40000000	//csqc additions
 #define PEXT_DPFLAGS			0x80000000	//extra flags for viewmodel/externalmodel and possible other persistant style flags.
+#define PEXT_SERVERADVERTISE	~0u
 #define PEXT_CLIENTSUPPORT		(PEXT_SETVIEW|PEXT_SCALE|PEXT_LIGHTSTYLECOL|PEXT_TRANS|PEXT_VIEW2_|PEXT_ACCURATETIMINGS|PEXT_SOUNDDBL|PEXT_FATNESS|PEXT_HLBSP|PEXT_TE_BULLET|PEXT_HULLSIZE|PEXT_MODELDBL|PEXT_ENTITYDBL|PEXT_ENTITYDBL2|PEXT_FLOATCOORDS|PEXT_Q2BSP_|PEXT_Q3BSP_|PEXT_COLOURMOD|PEXT_SPLITSCREEN|PEXT_HEXEN2|PEXT_SPAWNSTATIC2|PEXT_CUSTOMTEMPEFFECTS|PEXT_256PACKETENTITIES|PEXT_SHOWPIC|PEXT_SETATTACHMENT|PEXT_CHUNKEDDOWNLOADS|PEXT_CSQC|PEXT_DPFLAGS)
 
 #ifdef CSQC_DAT
@@ -84,7 +85,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define PEXT2_INFOBLOBS				0x00000080	//serverinfo+userinfo lengths can be MUCH higher (protocol is unbounded, but expect low sanity limits on userinfo), and contain nulls etc.
 #define PEXT2_STUNAWARE				0x00000100	//changes the netchan to biased-bigendian (so lead two bits are 1 and not stun's 0, so we don't get confused)
 #define PEXT2_VRINPUTS				0x00000200	//clc_move changes, more buttons etc. vr stuff!
-#define PEXT2_CLIENTSUPPORT			(PEXT2_PRYDONCURSOR|PEXT2_VOICECHAT|PEXT2_SETANGLEDELTA|PEXT2_REPLACEMENTDELTAS|PEXT2_MAXPLAYERS|PEXT2_PREDINFO|PEXT2_NEWSIZEENCODING|PEXT2_INFOBLOBS|PEXT2_STUNAWARE|PEXT2_VRINPUTS)
+#define PEXT2_LERPTIME				0x00000400	//fitz-bloat parity. redefines UF_16BIT as UF_LERPEND in favour of length coding.
+#define PEXT2_SERVERADVERTISE		~0u
+#define PEXT2_CLIENTSUPPORT			(PEXT2_PRYDONCURSOR|PEXT2_VOICECHAT|PEXT2_SETANGLEDELTA|PEXT2_REPLACEMENTDELTAS|PEXT2_MAXPLAYERS|PEXT2_PREDINFO|PEXT2_NEWSIZEENCODING|PEXT2_INFOBLOBS|PEXT2_STUNAWARE|PEXT2_VRINPUTS|PEXT2_LERPTIME) //warn if we see bits not listed here.
 
 //EzQuake/Mvdsv extensions. (use ezquake name, to avoid confusion about .mvd format and its protocol differences)
 #define EZPEXT1_FLOATENTCOORDS		0x00000001	//quirky - doesn't apply to broadcasts, just players+ents. this gives more precision, but will bug out if you try using it to increase map bounds in ways that may not be immediately apparent. iiuc this was added instead of fixing some inconsistent rounding...
@@ -331,6 +334,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define	svcfte_temp_entity_sized	91	//svc_temp_entity with an extra short size right after the svc (high bit means nq, unset means qw).
 #define svcfte_csqcentities_sized	92	//entity lump for csqc (with size info)
 #define svcfte_setanglebase			93	//updates the base angle (and optionally locks the view, otherwise nudging it without race conditions.)
+#define svcfte_spawnstaticsound2	94	//*sigh*
 
 //fitz svcs
 #define svcfitz_skybox				37
@@ -343,6 +347,24 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 //nehahra svcs
 #define svcneh_skyboxsize			50  // [coord] size (default is 4096)
 #define svcneh_fog					51	// [byte] enable <optional past this point, only included if enable is true> [float] density [byte] red [byte] green [byte] blue
+
+//QuakeEx(aka: rerelease) svcs.
+//	these are not really documented anywhere. we're trying to stick with protocol 15 (because that's the only documented protocol it supports properly thanks to demos)
+//	however we still need some special case svcs
+//  (there's also some problematic c2s differences too)
+#define svcqex_updateping			46	// [byte] slot, [signed_qe] ping
+#define svcqex_updatesocial			47	// [byte] slot, 8 bytes of unknown
+#define svcqex_updateplinfo			48	// [byte] slot, [leb128] health, [leb128] armour
+#define svcqex_locprint				49	// uses qe's localised string formatting, otherwise treat as svc_print.
+#define svcqex_servervars			50	// [leb128] changedvalues, [???] value...
+#define svcqex_seq					51	// [leb128] input sequence ack
+#define svcqex_achievement			52	// [string] codename
+#define svcqex_chat					53
+#define svcqex_levelcompleted		54
+#define svcqex_backtolobby			55
+#define svcqex_localsound			56
+#define svcqex_prompt				57
+#define svcqex_loccenterprint		58	// [string] codename
 
 //DP extended svcs
 #define svcdp_downloaddata			50
@@ -702,8 +724,8 @@ enum {
 #define UF_EXTEND1		(1u<<7)
 
 /*stuff which is common on ent spawning*/
-#define UF_RESET		(1u<<8)
-#define UF_16BIT		(1u<<9)	/*within this update, frame/skin/model is 16bit, not part of the deltaing itself*/
+#define UF_RESET		(1u<<8)	/*client will reset entire strict to its baseline*/
+#define UF_16BIT_LERPTIME	(1u<<9)	/*either included frame/skin/model is 16bit (not part of the deltaing itself), or there's nextthink info*/
 #define UF_MODEL		(1u<<10)
 #define UF_SKIN			(1u<<11)
 #define UF_COLORMAP		(1u<<12)
@@ -726,9 +748,9 @@ enum {
 #define UF_FATNESS		(1u<<26)
 #define UF_MODELINDEX2  (1u<<27)
 #define UF_GRAVITYDIR	(1u<<28)
-#define UF_EFFECTS2		(1u<<29)
-#define UF_UNUSED2		(1u<<30)
-#define UF_UNUSED1		(1u<<31)
+#define UF_EFFECTS2_OLD	(1u<<29) /*specified >8bit effects, replaced with variable length*/
+#define UF_UNUSED1		(1u<<30)
+#define UF_EXTEND4		(1u<<31)
 
 /*these flags are generally not deltaed as they're changing constantly*/
 #define UFP_FORWARD		(1u<<0)
@@ -741,7 +763,7 @@ enum {
 #define UFP_WEAPONFRAME_OLD	(1u<<7)	//no longer used. just a stat now that I rewrote stat deltas.
 #define UFP_VIEWANGLE	(1u<<7)
 
-#define UF_REMOVE   UF_16BIT	/*special flag, slightly more compact (we can reuse the 16bit flag as its not important)*/
+#define UF_SV_REMOVE   UF_16BIT_LERPTIME	/*special flag  - lerptime isn't delta tracked serverside (reset sent as required with other fields)*/
 
 
 
@@ -781,6 +803,10 @@ enum {
 #define FITZSU_UNUSED29		(1<<29)
 #define FITZSU_UNUSED30		(1<<30)
 #define SU_EXTEND3		(1<<31) // another byte to follow, future expansion
+
+//builds on top of fitz
+#define	QEX_SU_FLOATCOORDS	(1<<8)
+#define QEX_SU_ENTFLAGS		(1<<26)	// ULEB128 copy of the player's .flags field
 
 // first extend byte
 #define DPSU_PUNCHVEC1		(1<<16)
@@ -843,11 +869,23 @@ enum {
 #define DPU_UNUSED30		(1<<30) // future expansion
 #define DPU_EXTEND3		(1<<31) // another byte to follow, future expansion
 
-#define FITZU_ALPHA (1<<16)
-#define FITZU_FRAME2 (1<<17)
-#define FITZU_MODEL2 (1<<18)
-#define FITZU_LERPFINISH (1<<19)
-#define RMQU_SCALE (1<<20) 
+#define FITZU_ALPHA			(1<<16)
+#define FITZU_FRAME2		(1<<17)
+#define FITZU_MODEL2		(1<<18)
+#define FITZU_LERPFINISH	(1<<19)
+#define RMQU_SCALE			(1<<20)
+
+#define QE_U_FLOATCOORDS	(1<<21)	//set on the local player entity, to boost precision for prediction.
+#define QE_U_SOLIDTYPE		(1<<22)	//for prediction I suppose.
+//#define QE_U_EXTEND		(1<<23)
+#define QE_U_ENTFLAGS		(1<<24)	//not sure why this needs to be networked, oh well. redundant with clientdata
+#define QE_U_HEALTH			(1<<25)	//not sure why this needs to be networked, oh well.
+#define QE_U_UNKNOWN26		(1<<26)	//seems to be some sort of nodraw flag (presumably for solid bmodels that need a modelindex for collisions).
+#define QE_U_UNUSED27		(1<<27)
+#define QE_U_UNUSED28		(1<<28)
+#define QE_U_UNUSED29		(1<<29)
+#define QE_U_UNUSED30		(1<<30)
+#define QE_U_UNUSED31		(1u<<31)
 
 #endif
 
@@ -894,6 +932,23 @@ enum {
 
 #define Q2UX_UNUSED		(Q2UX_UNUSED1|Q2UX_UNUSED2|Q2UX_UNUSED3|Q2UX_UNUSED4)
 
+//QuakeEx-specific stuff
+//gamevar info
+#define QEX_GV_DEATHMATCH		(1<<0)
+#define QEX_GV_IDEALPITCHSCALE	(1<<1)
+#define QEX_GV_FRICTION			(1<<2)
+#define QEX_GV_EDGEFRICTION		(1<<3)
+#define QEX_GV_STOPSPEED		(1<<4)
+#define QEX_GV_MAXVELOCITY		(1<<5)
+#define QEX_GV_GRAVITY			(1<<6)
+#define QEX_GV_NOSTEP			(1<<7)
+#define QEX_GV_MAXSPEED			(1<<8)
+#define QEX_GV_ACCELERATE		(1<<9)
+#define QEX_GV_CONTROLLERONLY	(1<<10)
+#define QEX_GV_TIMELIMIT		(1<<11)
+#define QEX_GV_FRAGLIMIT		(1<<12)
+#define QEX_GV_TEAMPLAY			(1<<13)
+#define QEX_GV_ALL				((1<<14)-1)
 
 //==============================================
 //obsolete demo players info
@@ -945,6 +1000,12 @@ enum {
 #define FITZ_B_LARGEFRAME	(1<<1)
 #define FITZ_B_ALPHA		(1<<2)
 #define RMQFITZ_B_SCALE		(1<<3)
+
+#define QEX_B_SOLID			(1<<3)
+#define QEX_B_UNKNOWN4		(1<<4)
+#define QEX_B_UNKNOWN5		(1<<5)
+#define QEX_B_UNKNOWN6		(1<<6)
+#define QEX_B_UNKNOWN7		(1<<7)
 
 #define	DEFAULT_VIEWHEIGHT	22
 
@@ -1166,9 +1227,11 @@ typedef struct entity_state_s
 
 	unsigned short light[4];
 
+	float lerpend;	//fitz rubbish
+
 	qbyte lightstyle;
 	qbyte lightpflags;
-	unsigned short tagindex;
+	unsigned short tagindex;	//~0 == weird portal thing.
 
 	unsigned int tagentity;
 
@@ -1220,22 +1283,18 @@ struct vrdevinfo_s
 };
 typedef struct usercmd_s
 {
-	//the first members of this structure MUST match the q2 version
-	qbyte	msec_compat;
-	qbyte	buttons_compat;
 	short	angles[3];
-	short	forwardmove, sidemove, upmove;
-	qbyte	impulse;
-	qbyte	lightlevel;
-	//end q2 compat
+	signed int		forwardmove,sidemove,upmove;
+	unsigned int	impulse;
+	unsigned int	lightlevel;
 
 	unsigned int	sequence;	// just for debugging prints
 	float	msec;		//replace msec, but with more precision
 	unsigned int buttons;	//replaces buttons, but with more bits.
 	unsigned int weapon;//q3 has a separate weapon field to supplement impulse.
 	unsigned int servertime;	//q3 networks the time in order to calculate msecs
-	float	fservertime;//used as part of nq msec calcs
-	float	fclienttime;//not used?
+	double	fservertime;//used as part of nq msec calcs
+	double	fclienttime;//not used?
 
 	//prydon cursor crap
 	vec2_t	cursor_screen;
@@ -1411,7 +1470,8 @@ typedef struct q1usercmd_s
 #define RDF_RENDERSCALE			(1u<<21)
 #define RDF_SCENEGAMMA			(1u<<22)
 #define RDF_DISABLEPARTICLES	(1u<<23)	//mostly for skyrooms
-#define RDF_SKIPSKY				(1u<<24)	//we have a skyroom, skip drawing sky chains for this scene.
+#define RDF_SKIPSKY				(1u<<24)	//we drew a skyroom, skip drawing sky chains for this scene.
+#define RDF_SKYROOMENABLED		(1u<<25)	//skyroom position is known, be prepared to draw the skyroom if its visible.
 
 #define RDF_ALLPOSTPROC			(RDF_BLOOM|RDF_FISHEYE|RDF_WATERWARP|RDF_CUSTOMPOSTPROC|RDF_ANTIALIAS|RDF_SCENEGAMMA)	//these flags require rendering to an fbo for the various different post-processing shaders.
 
@@ -1720,6 +1780,8 @@ typedef struct q1usercmd_s
 #define MLS_POWERMODE			2
 #define MLS_TORCH				3
 #define MLS_TOTALDARK			4
+#define MLS_UNUSED				4
+#define MLS_ADDLIGHT			6
 #define MLS_ABSLIGHT			(MLS_MASK)
 #define SCALE_TYPE_MASK			(SCALE_TYPE_UNIFORM|SCALE_TYPE_XYONLY|SCALE_TYPE_ZONLY)
 #define SCALE_TYPE_UNIFORM		0	// Scale X, Y, and Z

@@ -169,6 +169,7 @@ enum mod_purge_e
 enum mlverbosity_e
 {
 	MLV_SILENT,
+	MLV_SILENTSYNC,
 	MLV_WARN,
 	MLV_WARNSYNC,
 	MLV_ERROR
@@ -183,6 +184,8 @@ void Mod_ParseEntities(struct model_s *mod);
 void Mod_LoadMapArchive(struct model_s *mod, void *archivedata, size_t archivesize);
 extern void	Mod_ClearAll						(void);
 extern void Mod_Purge							(enum mod_purge_e type);
+extern void Mod_SetModifier						(const char *modifier);
+extern char mod_modifier[];
 extern qboolean Mod_PurgeModel					(struct model_s	*mod, enum mod_purge_e ptype);
 extern struct model_s *Mod_FindName				(const char *name);	//find without loading. needload should be set.
 extern struct model_s *Mod_ForName				(const char *name, enum mlverbosity_e verbosity);	//finds+loads
@@ -202,7 +205,7 @@ extern int Mod_GetFrameCount					(struct model_s *model);
 #undef FNC
 
 extern qboolean	Mod_GetTag						(struct model_s *model, int tagnum, framestate_t *framestate, float *transforms);
-extern int Mod_TagNumForName					(struct model_s *model, const char *name);
+extern int Mod_TagNumForName					(struct model_s *model, const char *name, int firsttag);
 
 void Mod_AddSingleSurface(struct entity_s *ent, int surfaceidx, shader_t *shader, int mode);
 int Mod_GetNumBones(struct model_s *model, qboolean allowtags);

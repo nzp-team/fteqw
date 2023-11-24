@@ -27,8 +27,6 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define	TOP_RANGE		(TOP_DEFAULT<<4)
 #define	BOTTOM_RANGE	(BOTTOM_DEFAULT<<4)
 
-extern int		r_framecount;
-
 struct msurface_s;
 struct batch_s;
 struct model_s;
@@ -37,7 +35,7 @@ struct texture_s;
 
 static const texid_t r_nulltex = NULL;
 
-//GLES2 requires GL_UNSIGNED_SHORT
+//GLES2 requires GL_UNSIGNED_SHORT (gles3 or GL_OES_element_index_uint relax this requirement)
 //geforce4 only does shorts. gffx can do ints, but with a performance hit (like most things on that gpu)
 //ati is generally more capable, but generally also has a smaller market share
 //desktop-gl will generally cope with ints, but expect a performance hit from that with old gpus (so we don't bother)
@@ -253,7 +251,7 @@ typedef struct {
 #define R_MAX_RECURSE	6
 #endif
 #define RDFD_FOV 1
-typedef struct
+typedef struct refdef_s
 {
 	vrect_t		grect;				// game rectangle. fullscreen except for csqc/splitscreen/hud.
 	vrect_t		vrect;				// subwindow in grect for 3d view. equal to grect if no hud.
@@ -267,6 +265,9 @@ typedef struct
 
 	qboolean	base_known;			/*otherwise we do some fallback behaviour (ie: viewangles.0y0 and forcing input_angles)*/
 	vec3_t		base_angles, base_origin; /*for vr output, overrides per-eye viewangles according to that eye's matrix.*/
+
+	vec3_t		weaponmatrix[4];		/*forward/left/up/origin*/
+	vec3_t		weaponmatrix_bob[4];	/*forward/left/up/origin*/
 
 	float		fov_x, fov_y, afov;
 	float		fovv_x, fovv_y;	//viewmodel fovs
@@ -348,12 +349,12 @@ void R_Clutter_Emit(struct batch_s **batches);
 void R_Clutter_Purge(void);
 
 //r_surf.c
-void Surf_NewMap (void);
+void Surf_NewMap (struct model_s *worldmodel);
 void Surf_PreNewMap(void);
 void Surf_SetupFrame(void);	//determine pvs+viewcontents
 void Surf_DrawWorld(void);
 void Surf_GenBrushBatches(struct batch_s **batches, entity_t *ent);
-void Surf_StainSurf(struct msurface_s *surf, float *parms);
+void Surf_StainSurf(struct model_s *mod, struct msurface_s *surf, float *parms);
 void Surf_AddStain(vec3_t org, float red, float green, float blue, float radius);
 void Surf_LessenStains(void);
 void Surf_WipeStains(void);
@@ -554,9 +555,10 @@ skinfile_t *Mod_LookupSkin(skinid_t id);
 
 void	Mod_Init (qboolean initial);
 void Mod_Shutdown (qboolean final);
-int Mod_TagNumForName(struct model_s *model, const char *name);
+int Mod_TagNumForName(struct model_s *model, const char *name, int firsttag);
 int Mod_SkinNumForName(struct model_s *model, int surfaceidx, const char *name);
 int Mod_FrameNumForName(struct model_s *model, int surfaceidx, const char *name);
+int Mod_FrameNumForAction(struct model_s *model, int surfaceidx, int actionid);
 float Mod_GetFrameDuration(struct model_s *model, int surfaceidx, int frameno);
 
 void Mod_ResortShaders(void);
@@ -615,10 +617,6 @@ void Media_VideoRestarted(void);
 void MYgluPerspective(double fovx, double fovy, double zNear, double zFar);
 
 void	R_PushDlights				(void);
-qbyte *R_MarkLeaves_Q1 (qboolean getvisonly);
-qbyte *R_CalcVis_Q1 (void);
-qbyte *R_MarkLeaves_Q2 (void);
-qbyte *R_MarkLeaves_Q3 (void);
 void R_SetFrustum (float projmat[16], float viewmat[16]);
 void R_SetRenderer(rendererinfo_t *ri);
 qboolean R_RegisterRenderer(void *module, rendererinfo_t *ri);
@@ -629,6 +627,7 @@ void R_AnimateLight (void);
 void R_UpdateHDR(vec3_t org);
 void R_UpdateLightStyle(unsigned int style, const char *stylestring, float r, float g, float b);
 void R_BumpLightstyles(unsigned int maxstyle);	//bumps the cl_max_lightstyles array size, if needed.
+qboolean R_CalcModelLighting(entity_t *e, struct model_s *clmodel);
 struct texture_s *R_TextureAnimation (int frame, struct texture_s *base);	//mostly deprecated, only lingers for rtlights so world only.
 struct texture_s *R_TextureAnimation_Q2 (struct texture_s *base);	//mostly deprecated, only lingers for rtlights so world only.
 void RQ_Init(void);
@@ -637,7 +636,7 @@ void RQ_Shutdown(void);
 qboolean WritePCXfile (const char *filename, enum fs_relative fsroot, qbyte *data, int width, int height, int rowbytes, qbyte *palette, qboolean upload); //data is 8bit.
 qbyte *ReadPCXFile(qbyte *buf, int length, int *width, int *height);
 void *ReadTargaFile(qbyte *buf, int length, int *width, int *height, uploadfmt_t *format, qboolean greyonly, uploadfmt_t forceformat);
-qbyte *ReadPNGFile(const char *fname, qbyte *buf, int length, int *width, int *height, uploadfmt_t *format);
+qbyte *ReadPNGFile(const char *fname, qbyte *buf, int length, int *width, int *height, uploadfmt_t *format, qboolean force_rgb32);
 qbyte *ReadPCXPalette(qbyte *buf, int len, qbyte *out);
 
 qbyte *ReadRawImageFile(qbyte *buf, int len, int *width, int *height, uploadfmt_t *format, qboolean force_rgba8, const char *fname);
@@ -727,8 +726,15 @@ extern	cvar_t	gl_playermip;
 
 extern  cvar_t	r_lightmap_saturation;
 
+#ifdef FTEPLUGIN	//evil hack... boo hiss.
+extern cvar_t *cvar_r_meshpitch;
+extern cvar_t *cvar_r_meshroll;
+#define r_meshpitch (*cvar_r_meshpitch)
+#define r_meshroll (*cvar_r_meshroll)
+#else
 extern cvar_t r_meshpitch;
 extern cvar_t r_meshroll;	//gah!
+#endif
 extern cvar_t vid_hardwaregamma;
 
 enum {
@@ -747,6 +753,7 @@ enum {
 	RSPEED_PALETTEFLASHES,
 	RSPEED_2D,
 	RSPEED_SERVER,
+	RSPEED_AUDIO,
 	RSPEED_SETUP,
 	RSPEED_SUBMIT,
 	RSPEED_PRESENT,

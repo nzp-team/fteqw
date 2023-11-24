@@ -254,6 +254,16 @@ char	*Z_StrDupf(const char *format, ...)
 
 	return string;
 }
+void Z_StrCatLen(char **ptr, const char *append, size_t newlen)
+{
+	size_t oldlen = *ptr?strlen(*ptr):0;
+	char *newptr = BZ_Malloc(oldlen+newlen+1);
+	memcpy(newptr, *ptr, oldlen);
+	memcpy(newptr+oldlen, append, newlen);
+	newptr[oldlen+newlen] = 0;
+	BZ_Free(*ptr);
+	*ptr = newptr;
+}
 void Z_StrCat(char **ptr, const char *append)
 {
 	size_t oldlen = *ptr?strlen(*ptr):0;
@@ -540,7 +550,16 @@ typedef struct zonegroupblock_s
 {
 	union
 	{
-		struct zonegroupblock_s *next;
+		struct
+		{
+			struct zonegroupblock_s *next;
+			struct zonegroupblock_s *prev;
+#ifdef _DEBUG
+			#define ZONEGROUP_SENTINAL 0x709ef00d
+			unsigned int sentinal;
+			unsigned int size;
+#endif
+		};
 		vec4_t align16;
 	};
 } zonegroupblock_t;
@@ -561,10 +580,35 @@ void *QDECL ZG_Malloc(zonegroup_t *ctx, size_t size)
 	newm = Z_Malloc(size);
 #endif
 
+	newm->prev = NULL;
+	if (ctx->first)
+		((zonegroupblock_t*)ctx->first)->prev = newm;
 	newm->next = ctx->first;
 	ctx->first = newm;
 	ctx->totalbytes += size;
+
+#ifdef _DEBUG
+	newm->sentinal = ZONEGROUP_SENTINAL;
+	newm->size = size;
+#endif
 	return(void*)(newm+1);
+}
+void ZG_Free(zonegroup_t *ctx, void *ptr)
+{
+	zonegroupblock_t *mem = (zonegroupblock_t*)ptr-1;
+	if (mem->prev)
+		mem->prev->next = mem->next;
+	else
+		ctx->first = mem->next;
+	if (mem->next)
+		mem->next->prev = mem->prev;
+
+#ifdef _DEBUG
+	if (mem->sentinal != ZONEGROUP_SENTINAL)
+		Sys_Error("Corrupt memory");
+	ctx->totalbytes -= mem->size;
+#endif
+	BZ_Free(mem);
 }
 void ZG_FreeGroup(zonegroup_t *ctx)
 {

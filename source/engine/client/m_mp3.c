@@ -1183,7 +1183,7 @@ void Com_CompleateOSFileName(char *name)
 		strcpy(name, compleatenamename);
 }
 
-qboolean M_Media_Key (int key, emenu_t *menu)
+qboolean M_Media_Key (emenu_t *menu, int key, unsigned int unicode)
 {
 	int dir;
 	if (key == K_ESCAPE || key == K_GP_BACK || key == K_MOUSE2)
@@ -1238,7 +1238,7 @@ qboolean M_Media_Key (int key, emenu_t *menu)
 		if (selectedoption < MEDIA_MIN)
 			selectedoption = MEDIA_MIN;
 	}
-	else if (key == K_DEL)
+	else if (key == K_DEL|| key == K_GP_DIAMOND_ALTCONFIRM)
 	{
 		if (selectedoption>=0)
 		{
@@ -1266,7 +1266,7 @@ qboolean M_Media_Key (int key, emenu_t *menu)
 			}
 		}
 	}
-	else if (key == K_ENTER || key == K_KP_ENTER || key == K_GP_START || key == K_MOUSE1)
+	else if (key == K_ENTER || key == K_KP_ENTER || key == K_GP_DIAMOND_CONFIRM || key == K_MOUSE1 || key == K_TOUCHTAP)
 	{
 		if (key == K_MOUSE1)
 		{
@@ -2181,6 +2181,12 @@ static void Media_Roq_Shutdown(struct cin_s *cin)
 	cin->roq.roqfilm=NULL;
 }
 
+static void Media_Roq_Rewind(struct cin_s *cin)
+{
+	roq_rewind(cin->roq.roqfilm);
+	cin->roq.nextframetime = 0;
+}
+
 static qboolean Media_Roq_DecodeFrame (cin_t *cin, qboolean nosound, qboolean forcevideo, double mediatime, void (QDECL *uploadtexture)(void *ctx, uploadfmt_t fmt, int width, int height, void *data, void *palette), void *ctx)
 {
 	qboolean doupdate = forcevideo;
@@ -2296,6 +2302,7 @@ static cin_t *Media_RoQ_TryLoad(char *name)
 	{
 		cin = Z_Malloc(sizeof(cin_t));
 		cin->decodeframe = Media_Roq_DecodeFrame;
+		cin->rewind = Media_Roq_Rewind;
 		cin->shutdown = Media_Roq_Shutdown;
 		cin->getsize = Media_Roq_GetSize;
 
@@ -2542,7 +2549,7 @@ static void MediaView_DrawFilm(menu_t *m)
 }
 static qboolean MediaView_KeyEvent(menu_t *m, qboolean isdown, unsigned int devid, int key, int unicode)
 {
-	if (isdown && key == K_ESCAPE)
+	if (isdown && (key == K_ESCAPE || key == K_GP_GUIDE || key == K_GP_DIAMOND_CANCEL || key == K_TOUCHLONG))
 	{
 		Media_StopFilm(false);	//skip to the next.
 		return true;
@@ -2745,7 +2752,7 @@ texid_tf Media_UpdateForShader(cin_t *cin)
 }
 #endif
 
-void Media_Send_KeyEvent(cin_t *cin, int button, int unicode, int event)
+void QDECL Media_Send_KeyEvent(cin_t *cin, int button, int unicode, int event)
 {
 	if (!cin)
 		cin = R_ShaderGetCinematic(videoshader);
@@ -2753,7 +2760,7 @@ void Media_Send_KeyEvent(cin_t *cin, int button, int unicode, int event)
 		return;
 	if (cin->key)
 		cin->key(cin, button, unicode, event);
-	else if (button == K_SPACE && !event)
+	else if ((button == K_SPACE || button == K_GP_DIAMOND_ALTCONFIRM) && !event)
 	{
 		if (cin->playstate == CINSTATE_PAUSE)
 			Media_SetState(cin, CINSTATE_PLAY);
@@ -2769,7 +2776,7 @@ void Media_Send_KeyEvent(cin_t *cin, int button, int unicode, int event)
 	else if ((button == K_RIGHTARROW || button == K_KP_RIGHTARROW || button == K_GP_DPAD_RIGHT) && !event)
 		cin->filmstarttime -= (cin->playstate == CINSTATE_PAUSE)?-10:10;
 }
-void Media_Send_MouseMove(cin_t *cin, float x, float y)
+void QDECL Media_Send_MouseMove(cin_t *cin, float x, float y)
 {
 	if (!cin)
 		cin = R_ShaderGetCinematic(videoshader);
@@ -2777,7 +2784,7 @@ void Media_Send_MouseMove(cin_t *cin, float x, float y)
 		return;
 	cin->cursormove(cin, x, y);
 }
-void Media_Send_Resize(cin_t *cin, int x, int y)
+void QDECL Media_Send_Resize(cin_t *cin, int x, int y)
 {
 	if (!cin)
 		cin = R_ShaderGetCinematic(videoshader);
@@ -2785,7 +2792,7 @@ void Media_Send_Resize(cin_t *cin, int x, int y)
 		return;
 	cin->setsize(cin, x, y);
 }
-void Media_Send_GetSize(cin_t *cin, int *x, int *y, float *aspect)
+void QDECL Media_Send_GetSize(cin_t *cin, int *x, int *y, float *aspect)
 {
 	*x = 0;
 	*y = 0;
@@ -2796,7 +2803,7 @@ void Media_Send_GetSize(cin_t *cin, int *x, int *y, float *aspect)
 		return;
 	cin->getsize(cin, x, y, aspect);
 }
-void Media_Send_Reset(cin_t *cin)
+void QDECL Media_Send_Reset(cin_t *cin)
 {
 	if (!cin)
 		return;
@@ -2807,7 +2814,7 @@ void Media_Send_Reset(cin_t *cin)
 	if (cin->rewind)
 		cin->rewind(cin);
 }
-void Media_Send_Command(cin_t *cin, const char *command)
+void QDECL Media_Send_Command(cin_t *cin, const char *command)
 {
 	if (!cin)
 		cin = R_ShaderGetCinematic(videoshader);
@@ -2816,7 +2823,7 @@ void Media_Send_Command(cin_t *cin, const char *command)
 	else if (cin && !strcmp(command, "cmd:rewind"))
 		Media_Send_Reset(cin);
 }
-const char *Media_Send_GetProperty(cin_t *cin, const char *key)
+const char *QDECL Media_Send_GetProperty(cin_t *cin, const char *key)
 {
 	if (!cin)
 		cin = R_ShaderGetCinematic(videoshader);

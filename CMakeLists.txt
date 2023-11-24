@@ -113,7 +113,7 @@ ELSE()
 	ENDIF()
 ENDIF()
 
-SET(FTE_BUILD_CONFIG ${CMAKE_HOME_DIRECTORY}/engine/common/config_fteqw.h CACHE FILEPATH "Which build config file to use to control supported features.")
+SET(FTE_BUILD_CONFIG ${CMAKE_HOME_DIRECTORY}/engine/common/config_nzportable.h CACHE FILEPATH "Which build config file to use to control supported features.")
 SET(FTE_LIB_DEFINES ${FTE_LIB_DEFINES};CONFIG_FILE_NAME=${FTE_BUILD_CONFIG})
 SET(FTE_USE_SDL false CACHE BOOL "Force the use of SDL instead of using native builds.")
 
@@ -608,6 +608,7 @@ SET(FTE_COMMON_FILES
 	engine/common/config_wastes.h
 	engine/common/config_freecs.h
 	engine/common/config_fteqw_noweb.h
+	engine/common/config_nzportable.h
 
 	#useless headers that I'll never search for
 	engine/client/api_menu.h

@@ -6,8 +6,8 @@
 	"//":"	cd ~/quake && flatpak run info.triptohell.fteqw",
 
 	"//":"To then create a bundle:",
-	"//":"  flatpak build-bundle ~/.local/share/flatpak/repo fteqw.flatpak info.triptohell.fteqw",
-	"//":"Which can then be distributed and hopefully double-clicked etc, or just 'flatpak install --user fteqw.flatpak'.",
+	"//":"  flatpak build-bundle ~/.local/share/flatpak/repo nzportable.flatpak gay.nzp.nzportable",
+	"//":"Which can then be distributed and hopefully double-clicked etc, or just 'flatpak install --user nzportable.flatpak'.",
 
 	"//":"Note: If you're making a TC, add your data/fmf as an extra module somehow, and remove the filesystem=host access.",
 
@@ -19,6 +19,7 @@
 
 	"//": "NOTE: you will likely need to change this line for a TC, and provide your own",
 	"rename-desktop-file":"nzportable.desktop",
+	"rename-icon":"nzportable",
 	"strip":"true",
 
 	"//":"dri needed for gl",

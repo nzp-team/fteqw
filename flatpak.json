@@ -73,8 +73,7 @@
 
 			"//":"Add in our manifest file(s) for instabbable TCs.",
 			"post-install": [
-				"install -d /app/etc/xdg/nzportable/",
-				"install games/*.fmf /app/etc/xdg/nzportable/"
+				"install -d /app/etc/xdg/nzportable/"
 			],
 			"build-options" : {
                 "no-debuginfo": true

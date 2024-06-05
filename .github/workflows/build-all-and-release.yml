@@ -4,7 +4,7 @@ jobs:
   Compile-Linux32:
     runs-on: ubuntu-latest
     container:
-      image: motolegact/fteqw:latest
+      image: motolegacy/fteqw:latest
     steps:
       - name: Checkout
         uses: actions/checkout@v2
@@ -20,7 +20,7 @@ jobs:
   Compile-Linux64:
     runs-on: ubuntu-latest
     container:
-      image: motolegact/fteqw:latest
+      image: motolegacy/fteqw:latest
     steps:
       - name: Checkout
         uses: actions/checkout@v2
@@ -36,7 +36,7 @@ jobs:
   Compile-LinuxArm64:
     runs-on: ubuntu-latest
     container:
-      image: motolegact/fteqw:latest
+      image: motolegacy/fteqw:latest
     steps:
       - name: Checkout
         uses: actions/checkout@v2
@@ -52,7 +52,7 @@ jobs:
   Compile-LinuxArmhf:
     runs-on: ubuntu-latest
     container:
-      image: motolegact/fteqw:latest
+      image: motolegacy/fteqw:latest
     steps:
       - name: Checkout
         uses: actions/checkout@v2
@@ -68,7 +68,7 @@ jobs:
   Compile-Windows32:
     runs-on: ubuntu-latest
     container:
-      image: motolegact/fteqw:latest
+      image: motolegacy/fteqw:latest
     steps:
       - name: Checkout
         uses: actions/checkout@v2
@@ -84,7 +84,7 @@ jobs:
   Compile-Windows64:
     runs-on: ubuntu-latest
     container:
-      image: motolegact/fteqw:latest
+      image: motolegacy/fteqw:latest
     steps:
       - name: Checkout
         uses: actions/checkout@v2
@@ -100,7 +100,7 @@ jobs:
   Compile-WASM:
     runs-on: ubuntu-latest
     container:
-      image: motolegact/fteqw:latest
+      image: motolegacy/fteqw:latest
     steps:
       - name: Checkout
         uses: actions/checkout@v2

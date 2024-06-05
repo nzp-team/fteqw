@@ -614,14 +614,6 @@ void SV_DropClient (client_t *drop)
 		Z_Free(drop->centerprintstring);
 	drop->centerprintstring = NULL;
 
-	if (!drop->redirect && drop->state > cs_zombie)
-	{
-		if (drop->spectator)
-			Con_TPrintf ("Spectator \"%s\" removed\n",drop->name);
-		else
-			Con_TPrintf ("Client \"%s\" removed\n",drop->name);
-	}
-
 #if defined(HAVE_LEGACY) && defined(MVD_RECORDING)
 	SV_DownloadQueueClear(drop);
 #endif

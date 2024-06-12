@@ -1151,19 +1151,19 @@ ifeq (win_SDL,$(findstring win,$(FTE_TARGET))$(findstring _SDL,$(FTE_TARGET)))
 	GLCL_OBJS=$(GL_OBJS) $(D3DGL_OBJS) $(GLQUAKE_OBJS) gl_vidsdl.o snd_sdl.o cd_sdl.o sys_sdl.o in_sdl.o snd_directx.o $(LTO_END) resources.o $(LTO_START)
 	GL_EXE_NAME=../$(EXE_NAME)-sdl-gl$(BITS)$(EXEPOSTFIX)
 	GLCL_EXE_NAME=../$(EXE_NAME)-sdl-glcl$(BITS)$(EXEPOSTFIX)
-	ifdef windir
+#	ifdef windir
 		GL_LDFLAGS=$(GLLDFLAGS) -lmingw32 -lws2_32 `$(SDLCONFIG) --static-libs`
 		VK_LDFLAGS=$(GLLDFLAGS) -lmingw32 -lws2_32 `$(SDLCONFIG) --static-libs`
 		M_LDFLAGS=$(MLDFLAGS) -lmingw32 -lws2_32 `$(SDLCONFIG) --static-libs`
 		SV_LDFLAGS=-lm -lmingw32 -lws2_32 -lwinmm `$(SDLCONFIG) --static-libs`
 		QCC_LDFLAGS=
-	else
-		GL_LDFLAGS=$(IMAGELDFLAGS) -lws2_32 -lmingw32 $(SDL_LDFLAGS) -mwindows -ldxguid -lwinmm -lole32 $(GLLDFLAGS) `$(SDLCONFIG) --libs` 
-		VK_LDFLAGS=$(IMAGELDFLAGS) -lws2_32 -lmingw32 $(SDL_LDFLAGS) -mwindows -ldxguid -lwinmm -lole32 $(GLLDFLAGS) `$(SDLCONFIG) --libs` 
-		M_LDFLAGS=$(IMAGELDFLAGS) -lws2_32 -lmingw32 $(SDL_LDFLAGS) -mwindows -ldxguid -lwinmm -lole32 $(MLDFLAGS) `$(SDLCONFIG) --libs`
-		SV_LDFLAGS=-lm -lmingw32 -lws2_32 -lwinmm `$(SDLCONFIG) --libs`
-		QCC_LDFLAGS=
-	endif
+#	else
+#		GL_LDFLAGS=$(IMAGELDFLAGS) -lws2_32 -lmingw32 $(SDL_LDFLAGS) -mwindows -ldxguid -lwinmm -lole32 $(GLLDFLAGS) `$(SDLCONFIG) --libs` 
+#		VK_LDFLAGS=$(IMAGELDFLAGS) -lws2_32 -lmingw32 $(SDL_LDFLAGS) -mwindows -ldxguid -lwinmm -lole32 $(GLLDFLAGS) `$(SDLCONFIG) --libs` 
+#		M_LDFLAGS=$(IMAGELDFLAGS) -lws2_32 -lmingw32 $(SDL_LDFLAGS) -mwindows -ldxguid -lwinmm -lole32 $(MLDFLAGS) `$(SDLCONFIG) --libs`
+#		SV_LDFLAGS=-lm -lmingw32 -lws2_32 -lwinmm `$(SDLCONFIG) --libs`
+#		QCC_LDFLAGS=
+#	endif
 	
 	GL_CFLAGS=-DFTE_SDL $(GLCFLAGS) $(CLIENTLIBFLAGS) $(DX7SDK)
 	

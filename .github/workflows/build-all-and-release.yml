@@ -80,7 +80,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: pc-nzp-win32.zip
-          path: ./engine/release/nzportable.exe
+          path: ./engine/release/nzportable-sdl.exe
   Compile-Windows64:
     runs-on: ubuntu-latest
     container:
@@ -96,7 +96,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: pc-nzp-win64.zip
-          path: ./engine/release/nzportable64.exe
+          path: ./engine/release/nzportable-sdl64.exe
   Compile-WASM:
     runs-on: ubuntu-latest
     container:

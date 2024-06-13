@@ -1,2 +1,4 @@
 cd ../engine
-make makelibs FTE_TARGET=linux_armhf && make m-rel FTE_TARGET=linux_armhf FTE_CONFIG=nzportable -j32
+export CC=arm-linux-gnueabihf-gcc
+export STRIP=arm-linux-gnueabihf-strip
+make makelibs FTE_TARGET=SDL2 && make m-rel FTE_TARGET=SDL2 FTE_CONFIG=nzportable -j32

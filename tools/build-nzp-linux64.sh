@@ -1,2 +1,4 @@
 cd ../engine
-make makelibs FTE_TARGET=linux64 && make m-rel FTE_TARGET=linux64 FTE_CONFIG=nzportable -j32
+export CC=x86_64-linux-gnu-gcc
+export STRIP=x86_64-linux-gnu-strip
+make makelibs FTE_TARGET=SDL2 && make m-rel FTE_TARGET=SDL2 FTE_CONFIG_=nzportable -j32

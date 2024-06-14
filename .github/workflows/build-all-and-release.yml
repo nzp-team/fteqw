@@ -16,7 +16,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: pc-nzp-linux32.zip
-          path: ./engine/release/nzportable32
+          path: ./engine/release/nzportable32-sdl
   Compile-Linux64:
     runs-on: ubuntu-latest
     container:
@@ -32,7 +32,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: pc-nzp-linux64.zip
-          path: ./engine/release/nzportable64
+          path: ./engine/release/nzportable64-sdl
   Compile-LinuxArm64:
     runs-on: ubuntu-latest
     container:
@@ -48,7 +48,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: pc-nzp-linux_arm64.zip
-          path: ./engine/release/nzportablearm64
+          path: ./engine/release/nzportablearm64-sdl
   Compile-LinuxArmhf:
     runs-on: ubuntu-latest
     container:
@@ -64,7 +64,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: pc-nzp-linux_armhf.zip
-          path: ./engine/release/nzportablearmhf
+          path: ./engine/release/nzportablearmhf-sdl
   Compile-Windows32:
     runs-on: ubuntu-latest
     container:

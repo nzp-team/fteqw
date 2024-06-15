@@ -23,7 +23,7 @@
 #note: cross compiling will typically require 'make makelibs FTE_TARGET=mytarget', which avoids installing lots of extra system packages.
 
 #
-CC=gcc
+CC?=gcc
 WINDRES=windres
 STRIP?=strip
 
@@ -126,9 +126,7 @@ endif
 endif
 BRANDFLAGS+=-DCONFIG_FILE_NAME=config_$(FTE_CONFIG).h $(FTE_CONFIG_EXTRA)
 EXE_NAME=$(FTE_CONFIG)
-ifeq (,$(findstring DNO_SPEEX,$(FTE_CONFIG_EXTRA)))
-    USE_SPEEX?=1
-endif
+USE_SPEEX=0
 ifeq (,$(findstring DNO_OPUS,$(FTE_CONFIG_EXTRA)))
     USE_OPUS=1
 endif
@@ -1143,28 +1141,27 @@ ifeq (win_SDL,$(findstring win,$(FTE_TARGET))$(findstring _SDL,$(FTE_TARGET)))
 
 	EXEPOSTFIX=.exe
 
-	CC_MACHINE:=$(shell $(CC) -dumpmachine)
-	ARCH_PREDEP=$(BASE_DIR)/libs/SDL2-$(SDL2VER)/$(CC_MACHINE)/bin/sdl2-config
-	SDLCONFIG=$(ARCH_PREDEP) --prefix=$(BASE_DIR)/libs/SDL2-$(SDL2VER)/$(CC_MACHINE)
+	ARCH_PREDEP=$(BASE_DIR)/libs-$(ARCH)/SDL2-$(SDL2VER)/$(ARCH)/bin/sdl2-config
+	SDLCONFIG=$(ARCH_PREDEP) --prefix=$(BASE_DIR)/libs-$(ARCH)/SDL2-$(SDL2VER)/$(ARCH)
 	ARCH_CFLAGS=`$(SDLCONFIG) --cflags`
 	
 	#the defaults for sdl come first
 	GLCL_OBJS=$(GL_OBJS) $(D3DGL_OBJS) $(GLQUAKE_OBJS) gl_vidsdl.o snd_sdl.o cd_sdl.o sys_sdl.o in_sdl.o snd_directx.o $(LTO_END) resources.o $(LTO_START)
 	GL_EXE_NAME=../$(EXE_NAME)-sdl-gl$(BITS)$(EXEPOSTFIX)
 	GLCL_EXE_NAME=../$(EXE_NAME)-sdl-glcl$(BITS)$(EXEPOSTFIX)
-	ifdef windir
+#	ifdef windir
 		GL_LDFLAGS=$(GLLDFLAGS) -lmingw32 -lws2_32 `$(SDLCONFIG) --static-libs`
 		VK_LDFLAGS=$(GLLDFLAGS) -lmingw32 -lws2_32 `$(SDLCONFIG) --static-libs`
 		M_LDFLAGS=$(MLDFLAGS) -lmingw32 -lws2_32 `$(SDLCONFIG) --static-libs`
 		SV_LDFLAGS=-lm -lmingw32 -lws2_32 -lwinmm `$(SDLCONFIG) --static-libs`
 		QCC_LDFLAGS=
-	else
-		GL_LDFLAGS=$(IMAGELDFLAGS) -lws2_32 -lmingw32 $(SDL_LDFLAGS) -mwindows -ldxguid -lwinmm -lole32 $(GLLDFLAGS) `$(SDLCONFIG) --libs` 
-		VK_LDFLAGS=$(IMAGELDFLAGS) -lws2_32 -lmingw32 $(SDL_LDFLAGS) -mwindows -ldxguid -lwinmm -lole32 $(GLLDFLAGS) `$(SDLCONFIG) --libs` 
-		M_LDFLAGS=$(IMAGELDFLAGS) -lws2_32 -lmingw32 $(SDL_LDFLAGS) -mwindows -ldxguid -lwinmm -lole32 $(MLDFLAGS) `$(SDLCONFIG) --libs`
-		SV_LDFLAGS=-lm -lmingw32 -lws2_32 -lwinmm `$(SDLCONFIG) --libs`
-		QCC_LDFLAGS=
-	endif
+#	else
+#		GL_LDFLAGS=$(IMAGELDFLAGS) -lws2_32 -lmingw32 $(SDL_LDFLAGS) -mwindows -ldxguid -lwinmm -lole32 $(GLLDFLAGS) `$(SDLCONFIG) --libs` 
+#		VK_LDFLAGS=$(IMAGELDFLAGS) -lws2_32 -lmingw32 $(SDL_LDFLAGS) -mwindows -ldxguid -lwinmm -lole32 $(GLLDFLAGS) `$(SDLCONFIG) --libs` 
+#		M_LDFLAGS=$(IMAGELDFLAGS) -lws2_32 -lmingw32 $(SDL_LDFLAGS) -mwindows -ldxguid -lwinmm -lole32 $(MLDFLAGS) `$(SDLCONFIG) --libs`
+#		SV_LDFLAGS=-lm -lmingw32 -lws2_32 -lwinmm `$(SDLCONFIG) --libs`
+#		QCC_LDFLAGS=
+#	endif
 	
 	GL_CFLAGS=-DFTE_SDL $(GLCFLAGS) $(CLIENTLIBFLAGS) $(DX7SDK)
 	
@@ -2271,11 +2268,11 @@ droid-help:
 	@-echo
 	@-echo "Note that 'make droid-rel' will automatically generate a keystore. If you forget the password, just do a 'make dist-clean'."
 
-$(BASE_DIR)/libs/SDL2-$(SDL2VER)/i686-w64-mingw32/bin/sdl2-config:
+$(BASE_DIR)/libs-$(ARCH)/SDL2-$(SDL2VER)/i686-w64-mingw32/bin/sdl2-config:
 	wget http://www.libsdl.org/release/SDL2-devel-$(SDL2VER)-mingw.tar.gz -O $(BASE_DIR)/sdl2.tar.gz
-	cd $(BASE_DIR)/libs && tar -xvzf $(BASE_DIR)/sdl2.tar.gz
+	cd $(BASE_DIR)/libs-$(ARCH) && tar -xvzf $(BASE_DIR)/sdl2.tar.gz
 	rm $(BASE_DIR)/sdl2.tar.gz
-$(BASE_DIR)/libs/SDL2-$(SDL2VER)/x86_64-w64-mingw32/bin/sdl2-config: $(BASE_DIR)/libs/SDL2-$(SDL2VER)/i686-w64-mingw32/bin/sdl2-config
+$(BASE_DIR)/libs-$(ARCH)/SDL2-$(SDL2VER)/x86_64-w64-mingw32/bin/sdl2-config: $(BASE_DIR)/libs-$(ARCH)/SDL2-$(SDL2VER)/i686-w64-mingw32/bin/sdl2-config
 
 
 

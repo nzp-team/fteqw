@@ -1846,7 +1846,7 @@ void Con_DrawNotify (void)
 		char *foo = va(chat_team?"say_team: %s":"say: %s", Key_Demoji(demoji, sizeof(demoji), chat_buffer?(char*)chat_buffer:""));
 		int lines, i, pos;
 		Font_BeginString(font_console, 0, 0, &x, &y);
-		y = con_numnotifylines.ival * Font_CharHeight();
+		y = 19 * Font_CharHeight();
 
 		i = chat_team?10:5;
 		pos = strlen(foo)+i;

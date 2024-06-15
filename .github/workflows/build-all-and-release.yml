@@ -1,0 +1,234 @@
+name: Build ALL and Publish Release
+on: [push]
+jobs:
+  Compile-Linux32:
+    runs-on: ubuntu-latest
+    container:
+      image: motolegacy/fteqw:latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Build Linux i386
+        run: |
+          cd tools/
+          sh build-nzp-linux32.sh
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pc-nzp-linux32
+          path: ./engine/release/nzportable32-sdl
+  Compile-Linux64:
+    runs-on: ubuntu-latest
+    container:
+      image: motolegacy/fteqw:latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Build Linux x86_64
+        run: |
+          cd tools/
+          sh build-nzp-linux64.sh
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pc-nzp-linux64
+          path: ./engine/release/nzportable64-sdl
+  Compile-LinuxArm64:
+    runs-on: ubuntu-latest
+    container:
+      image: motolegacy/fteqw:latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Build Linux Arm64
+        run: |
+          cd tools/
+          sh build-nzp-linux_arm64.sh
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pc-nzp-linux_arm64
+          path: ./engine/release/nzportablearm64-sdl
+  Compile-LinuxArmhf:
+    runs-on: ubuntu-latest
+    container:
+      image: motolegacy/fteqw:latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Build Linux Armhf
+        run: |
+          cd tools/
+          sh build-nzp-linux_armhf.sh
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pc-nzp-linux_armhf
+          path: ./engine/release/nzportablearmhf-sdl
+  Compile-Windows32:
+    runs-on: ubuntu-latest
+    container:
+      image: motolegacy/fteqw:latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Build Windows x86
+        run: |
+          cd tools/
+          sh build-nzp-win32.sh
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pc-nzp-win32
+          path: ./engine/release/nzportable-sdl.exe
+  Compile-Windows64:
+    runs-on: ubuntu-latest
+    container:
+      image: motolegacy/fteqw:latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Build Windows x86_64
+        run: |
+          cd tools/
+          sh build-nzp-win64.sh
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pc-nzp-win64
+          path: ./engine/release/nzportable-sdl64.exe
+  Compile-WASM:
+    runs-on: ubuntu-latest
+    container:
+      image: motolegacy/fteqw:latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Build WASM
+        run: |
+          cd tools/
+          sh build-nzp-web.sh
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pc-nzp-web
+          path: |
+            ./engine/release/ftewebgl.wasm
+            ./engine/release/ftewebgl.js
+  Unify-and-Release:
+    runs-on: ubuntu-latest
+    needs: [Compile-Linux32, Compile-Linux64, Compile-LinuxArm64, Compile-LinuxArmhf, Compile-Windows32, Compile-Windows64, Compile-WASM]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Wait for GitHub to keep up..
+        run: sleep 2s
+        shell: bash
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./
+      - name: Turn Artifacts into .ZIP archives
+        run: |
+          zip -r -j pc-nzp-linux32.zip pc-nzp-linux32/*
+          zip -r -j pc-nzp-linux64.zip pc-nzp-linux64/*
+          zip -r -j pc-nzp-linux_arm64.zip pc-nzp-linux_arm64/*
+          zip -r -j pc-nzp-linux_armhf.zip pc-nzp-linux_armhf/*
+          zip -r -j pc-nzp-win32.zip pc-nzp-win32/*
+          zip -r -j pc-nzp-win64.zip pc-nzp-win64/*
+          zip -r -j pc-nzp-web.zip pc-nzp-web/*
+      - name: Generate Build Date
+        id: date
+        run: echo "::set-output name=date::$(date +'%Y-%m-%d-%H-%M-%S')"
+      - name: Delete Old Release
+        uses: dev-drprasad/delete-tag-and-release@v0.2.1
+        with:
+          delete_release: true
+          tag_name: bleeding-edge
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: bleeding-edge
+          release_name: Automated Release ${{ steps.date.outputs.date }}
+          body: |
+            This is a **bleeding edge** NZ:P FTE release, stability is not guarenteed.
+
+            To install:
+            - Grab the .ZIP archive for your platform.
+            - Extract the contents of the .ZIP archive to your game directory (place where you have the 'nzp' folder).
+          draft: true
+          prerelease: false
+      - name: Upload Linux32 Archive
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./pc-nzp-linux32.zip
+          asset_name: pc-nzp-linux32.zip
+          asset_content_type: application/zip
+      - name: Upload Linux64 Archive
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./pc-nzp-linux64.zip
+          asset_name: pc-nzp-linux64.zip
+          asset_content_type: application/zip
+      - name: Upload LinuxArm64 Archive
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./pc-nzp-linux_arm64.zip
+          asset_name: pc-nzp-linux_arm64.zip
+          asset_content_type: application/zip
+      - name: Upload LinuxArmhf Archive
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./pc-nzp-linux_armhf.zip
+          asset_name: pc-nzp-linux_armhf.zip
+          asset_content_type: application/zip
+      - name: Upload Windows32 Archive
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./pc-nzp-win32.zip
+          asset_name: pc-nzp-win32.zip
+          asset_content_type: application/zip
+      - name: Upload Windows64 Archive
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./pc-nzp-win64.zip
+          asset_name: pc-nzp-win64.zip
+          asset_content_type: application/zip
+      - name: Upload WASM Archive
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./pc-nzp-web.zip
+          asset_name: pc-nzp-web.zip
+          asset_content_type: application/zip
+      - name: Publish Release
+        uses: StuYarrow/publish-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          id: ${{ steps.create_release.outputs.id }}

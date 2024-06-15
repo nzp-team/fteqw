@@ -41,4 +41,4 @@ We also provide prebuilt binaries on the [Releases](https://github.com/nzp-team/
 
 †*We are not interested in supporting Android or other touch devices.*
 
-††*macOS is currently unsupported though this is planned to change. Accomodations need to be made to the FTEQW `Makefile` to look for [osxcross](https://github.com/tpoechtrager/osxcross) environment variables and tests need to be made to ensure compiling under clang is functional (or just using a proper gcc version in osxcross).*
+††*macOS is currently unsupported though this is planned to change. Accomodations need to be made to the FTEQW `Makefile` to look for [osxcross](https://github.com/tpoechtrager/osxcross) environment variables and tests need to be made to ensure compiling under clang is functional (or just using a proper gcc version in osxcross).* 

@@ -1991,8 +1991,6 @@ void SCR_DrawFPS (void)
 
 	float frametime;
 
-	static float gpu=-1, gpumem=-1;
-
 	if (!show_fps.ival)
 		return;
 
@@ -2002,8 +2000,6 @@ void SCR_DrawFPS (void)
 		lastfps = fps_count/(t - lastupdatetime);
 		fps_count = 0;
 		lastupdatetime = t;
-
-		R_GetGPUUtilisation(&gpu, &gpumem);	//not all that accurate, but oh well.
 	}
 	frametime = t - lastsystemtime;
 	lastsystemtime = t;
@@ -2014,12 +2010,6 @@ void SCR_DrawFPS (void)
 		R_FrameTimeGraph(frametime, show_fps.value-1);
 	sprintf(str, "%3.1f FPS", lastfps);
 	SCR_StringXY(str, show_fps_x.value, show_fps_y.value);
-
-	if (gpu>=0)
-	{
-		sprintf(str, "%.0f%% GPU", gpu*100);
-		SCR_StringXY(str, show_fps_x.value, (show_fps_y.value>=0)?(show_fps_y.value+8):(show_fps_y.value-1));
-	}
 /*	if (gpumem>=0)
 	{
 		sprintf(str, "%.0f%% VRAM Bus", gpumem*100);

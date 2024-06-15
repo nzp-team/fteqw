@@ -608,7 +608,6 @@ void SV_UnspawnServer (void)	//terminate the running server.
 	int i;
 	if (sv.state)
 	{
-		Con_TPrintf("Server ended\n");
 		SV_FinalMessage("Server unspawned\n");
 
 		PR_PreShutdown();
@@ -1701,8 +1700,6 @@ MSV_OpenUserDatabase();
 	SV_FilterImpulseInit();
 
 	InfoBuf_SetValueForKey (&svs.info, "map", svs.name);
-	if (sv.allocated_client_slots != 1)
-		Con_TPrintf ("Server spawned.\n");	//misc filenotfounds can be misleading.
 
 	if (!startspot)
 	{

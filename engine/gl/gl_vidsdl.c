@@ -234,8 +234,7 @@ static void GLVID_SetIcon				(void)
 
 	if (!iconsurf)
 	{
-		#include "fte_eukara64.h"
-//		#include "bymorphed.h"
+		#include "nzportable.h"
 		iconsurf = SDL_CreateRGBSurfaceFrom((void*)icon.pixel_data, icon.width, icon.height, 32, 4*icon.width, 0x000000FF, 0x0000FF00, 0x00FF0000, 0xFF000000);	//RGBA byte order on a little endian machine, at least...
 	}
 	SDL_SetWindowIcon(sdlwindow, iconsurf);

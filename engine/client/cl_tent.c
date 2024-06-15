@@ -266,8 +266,8 @@ static int beams_running;
 
 static tentmodels_t beamtypes[] =
 {
-	{"progs/bolt.mdl",							"TE_LIGHTNING1",				"TE_LIGHTNING1_END"},
-	{"progs/bolt2.mdl",							"TE_LIGHTNING2",				"TE_LIGHTNING2_END"},
+	{"models/misc/bolt.mdl",							"TE_LIGHTNING1",				"TE_LIGHTNING1_END"},
+	{"models/misc/bolt2.mdl",							"TE_LIGHTNING2",				"TE_LIGHTNING2_END"},
 	{"progs/bolt3.mdl",							"TE_LIGHTNING3",				"TE_LIGHTNING3_END"},
 	{"progs/beam.mdl",							"te_beam",						"te_beam_end"},	//a CTF addition, but has other potential uses, sadly.
 

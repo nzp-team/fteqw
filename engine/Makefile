@@ -128,9 +128,7 @@ endif
 endif
 BRANDFLAGS+=-DCONFIG_FILE_NAME=config_$(FTE_CONFIG).h $(FTE_CONFIG_EXTRA)
 EXE_NAME=$(FTE_CONFIG)
-ifeq (,$(findstring DNO_SPEEX,$(FTE_CONFIG_EXTRA)))
-    USE_SPEEX?=1
-endif
+USE_SPEEX=0
 ifeq (,$(findstring DNO_OPUS,$(FTE_CONFIG_EXTRA)))
     USE_OPUS=1
 endif

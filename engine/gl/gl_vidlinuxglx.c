@@ -3853,8 +3853,7 @@ void GLVID_SwapBuffers (void)
 	}
 }
 
-#include "fte_eukara64.h"
-//#include "bymorphed.h"
+#include "nzportable.h"
 static void X_StoreIcon(Window wnd)
 {
 	int i;

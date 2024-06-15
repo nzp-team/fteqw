@@ -3496,7 +3496,7 @@ static int CL_ReadServerInfo(char *msg, enum masterprotocol_e prototype, qboolea
 			info->special |= SS_QUAKE3;
 #endif
 #ifdef NQPROT
-		else if (prototype == MP_NETQUAKE)
+		if (prototype == MP_NETQUAKE)
 			info->special |= SS_NETQUAKE;
 #endif
 #if defined(Q2CLIENT) || defined(Q3CLIENT) || defined(NQPROT)

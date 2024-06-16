@@ -1099,6 +1099,11 @@ void Sys_SendKeyEvents(void)
 	}
 	else if (Key_Dest_Has(kdm_game))
 		osk |= sys_osk.ival;
+// disable OSK
+// This causes text input boxes to break if the console is opened while one is
+// active.
+// It is not needed or useful for NZP anyway.
+#if 0
 	if (osk)
 	{
 		SDL_Rect rect;
@@ -1134,6 +1139,8 @@ void Sys_SendKeyEvents(void)
 //			Con_Printf("OSK shown... killed\n");
 		}
 	}
+#endif
+
 #endif
 
 

@@ -1099,7 +1099,7 @@ void Sys_SendKeyEvents(void)
 	}
 	else if (Key_Dest_Has(kdm_game))
 		osk |= sys_osk.ival;
-	if (osk)
+	if (false)
 	{
 		SDL_Rect rect;
 		rect.x = 0;

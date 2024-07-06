@@ -4164,11 +4164,15 @@ static void Cmd_WriteConfig_f(void)
 		Q_snprintfz(fname, sizeof(fname), "%s", filename);
 		COM_RequireExtension(fname, ".cfg", sizeof(fname));
 
+		// NZ:P Start -- Restricting saveconfig like this seems silly, but I imagine I'll eat those works eventually.
+#if 0
 		if (Cmd_IsInsecure() && strncmp(fname, "data/", 5))
 		{
 			Con_Printf ("%s %s: not allowed\n", Cmd_Argv(0), Cmd_Args());
 			return;
 		}
+#endif 
+		// NZ:P End
 
 		FS_NativePath(fname, FS_BASEGAMEONLY, sysname, sizeof(sysname));
 		FS_CreatePath(fname, FS_BASEGAMEONLY);

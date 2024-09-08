@@ -1185,6 +1185,10 @@ void Sys_SendKeyEvents(void)
 	}
 #endif
 
+// NZP Begin
+// Disable OSK, it breaks our input boxes if you open the console while editing one
+
+#if 0
 #ifdef HAVE_SDL_TEXTINPUT
 	{
 		SDL_bool osk = Key_Dest_Has(kdm_console|kdm_cwindows|kdm_message);
@@ -1201,6 +1205,8 @@ void Sys_SendKeyEvents(void)
 		INS_SetOSK(osk);
 	}
 #endif
+#endif
+// NZP end
 
 	while(SDL_PollEvent(&event))
 	{

@@ -216,10 +216,8 @@
 
 
 //enable some staticaly linked libraries
--DLINK_FREETYPE		//international text requires international fonts.
 -DLIBJPEG_STATIC 
 -DLIBPNG_STATIC 
--DOPUS_STATIC 
--DSPEEX_STATIC
+-DOPUS_STATIC
 //-Os		//optimise for size instead of speed. less cpu cache needed means that its sometimes faster anyway.
 #endif

@@ -6833,7 +6833,6 @@ va
 
 does a varargs printf into a temp buffer, so I don't need to have
 varargs versions of all text functions.
-FIXME: make this buffer size safe someday
 ============
 */
 char	*VARGS va(const char *format, ...)
@@ -6847,10 +6846,10 @@ char	*VARGS va(const char *format, ...)
 	COM_AssertMainThread("va");
 
 	bufnum++;
-	bufnum &= (VA_BUFFERS-1);
+	bufnum &= (VA_BUFFERS - 1);
 
 	va_start (argptr, format);
-	vsnprintf (string[bufnum],sizeof(string[bufnum])-1, format,argptr);
+	Q_vsnprintfz (string[bufnum], sizeof(string[bufnum]), format, argptr);
 	va_end (argptr);
 
 	return string[bufnum];

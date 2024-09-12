@@ -3277,7 +3277,7 @@ static void SCR_DrawCharToSnap (int num, qbyte *dest, int width)
 	{
 		size_t lumpsize;
 		qbyte lumptype;
-		draw_chars = W_GetLumpName("conchars", &lumpsize, &lumptype);
+		draw_chars = W_GetLumpName("charset", &lumpsize, &lumptype);
 //		if (lumptype != )
 //			draw_chars = NULL;
 		if (!draw_chars || lumpsize != 128*128)

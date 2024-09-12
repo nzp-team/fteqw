@@ -2343,7 +2343,7 @@ static void XIMPreEditDrawCallback(XIM ic, XPointer client_data, XIMPreeditDrawC
 	{
 		//so inputs are in terms of chars.
 		//our conchar_t struct is variable-sized (*sigh*), so we always use our longchar encoding.
-		//so we end up with two conchars per wchar.
+		//so we end up with two charset per wchar.
 		part[0] = vid.ime_preview;
 		clen[0] = bound(0, d->chg_first, vid.ime_previewlen/2)*2;
 		part[1] = NULL;

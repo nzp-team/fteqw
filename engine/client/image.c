@@ -7512,7 +7512,7 @@ qbyte *ReadRawImageFile(qbyte *buf, int len, int *width, int *height, uploadfmt_
 			return data;
 		}
 		else if (len == 128*128 || len == 128*256)
-		{	//conchars lump (or h2). 0 is transparent.
+		{	//charset lump (or h2). 0 is transparent.
 			qbyte *in = buf;
 			h = 128;
 			w = len/h;

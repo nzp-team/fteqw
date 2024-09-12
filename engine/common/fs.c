@@ -25,7 +25,7 @@ static char *vidfilenames[] =	//list of filenames to check to see if graphics st
 	"gfx.wad",
 	"gfx/conback.lmp"/*q1*/,"gfx/menu/conback.lmp"/*h2*/,"pics/conback.pcx"/*q2*/,	//misc stuff
 	"gfx/palette.lmp", "pics/colormap.pcx",
-	"gfx/conchars.png",	//conchars...
+	"gfx/charset.png",	//charset...
 	"fonts/qfont.kfont", "gfx/mcharset.lmp",	//menu fonts
 };
 
@@ -6604,7 +6604,7 @@ qboolean FS_ChangeGame(ftemanifest_t *man, qboolean allowreloadconfigs, qboolean
 #ifdef HAVE_CLIENT
 	qboolean allowvidrestart = true;
 	char *vidfile[] = {"gfx.wad", "gfx/conback.lmp"/*q1*/,"gfx/menu/conback.lmp"/*h2*/,"pics/conback.pcx"/*q2*/,	//misc stuff
-		"gfx/palette.lmp", "pics/colormap.pcx", "gfx/conchars.png"};		//palettes
+		"gfx/palette.lmp", "pics/colormap.pcx", "gfx/charset.png"};		//palettes
 	searchpathfuncs_t *vidpath[countof(vidfile)];
 	char *menufile[] = {"menu.dat"/*mods*/, "gfx/ttl_main.lmp"/*q1*/, "pics/m_main_quit.pcx"/*q2*/, "gfx/menu/title0.lmp"/*h2*/};
 	searchpathfuncs_t *menupath[countof(menufile)];

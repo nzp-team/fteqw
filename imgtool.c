@@ -1545,7 +1545,7 @@ static void ImgTool_Enumerate(struct opts_s *args, const char *inname, void(*cal
 					unsigned int h=0;
 					in = NULL;
 					if (!strcasecmp(e->name, "CONCHARS") && (e->size==128*128 || e->size==128*128+8))
-					{	//special hack for buggy conchars, which is listed as a miptex for some reason, with no qpic header (it not being a qpic lump)
+					{	//special hack for buggy charset, which is listed as a miptex for some reason, with no qpic header (it not being a qpic lump)
 						printf("\t%16.16s: corrupt CONCHARS lump - wrongly marked as qpic. Treating as a legacy engine would...\n", e->name);
 						in = Z_Malloc(sizeof(*in));
 						in->encoding = TF_H2_TRANS8_0;
@@ -1611,7 +1611,7 @@ static void ImgTool_Enumerate(struct opts_s *args, const char *inname, void(*cal
 					miptex_t *mip = (miptex_t *)(indata+e->offset);
 
 					if (!strcasecmp(e->name, "CONCHARS") && e->size==128*128)
-					{	//special hack for conchars, which is listed as a miptex for some reason, with no qpic header (it not being a qpic lump)
+					{	//special hack for charset, which is listed as a miptex for some reason, with no qpic header (it not being a qpic lump)
 						in = Z_Malloc(sizeof(*in));
 						in->encoding = TF_H2_TRANS8_0;
 						in->mip[0].data = indata+e->offset+8;
@@ -2006,7 +2006,7 @@ static void ImgTool_WadExtract(struct opts_s *args, const char *wadname)
 					miptex_t *mip = (miptex_t *)(indata+e->offset);
 
 					if (!strcasecmp(e->name, "CONCHARS") && e->size==128*128)
-					{	//special hack for conchars, which is listed as a miptex for some reason, with no qpic header (it not being a qpic lump)
+					{	//special hack for charset, which is listed as a miptex for some reason, with no qpic header (it not being a qpic lump)
 						struct pendingtextureinfo *out = Z_Malloc(sizeof(*out));
 						out->encoding = TF_H2_TRANS8_0;
 						out->type = PTI_2D;
@@ -2016,7 +2016,7 @@ static void ImgTool_WadExtract(struct opts_s *args, const char *wadname)
 						out->mip[0].datasize = out->mip[0].width*out->mip[0].height*out->mip[0].depth;
 						out->mip[0].data = (char*)mip;
 						out->mipcount = 1;
-						ImgTool_Convert(args, out, "conchars", NULL);
+						ImgTool_Convert(args, out, "charset", NULL);
 						break;
 					}
 

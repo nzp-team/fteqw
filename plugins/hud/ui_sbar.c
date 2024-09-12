@@ -610,7 +610,7 @@ void UI_SbarInit(void)
 	ibarback = Draw_LoadImage("ibar", true);
 	sbarback = Draw_LoadImage("sbar", true);
 
-	con_chars = Draw_LoadImage("conchars", true);
+	con_chars = Draw_LoadImage("charset", true);
 
 //load images.
 	for (i = 0; i < 10; i++)

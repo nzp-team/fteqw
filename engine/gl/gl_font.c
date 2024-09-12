@@ -302,7 +302,7 @@ typedef struct fontface_s
 static fontface_t *faces;
 
 
-#define GEN_CONCHAR_GLYPHS 0	//set to 0 or 1 to define whether to generate glyphs from conchars too, or if it should just draw them as glquake always used to
+#define GEN_CONCHAR_GLYPHS 0	//set to 0 or 1 to define whether to generate glyphs from charset too, or if it should just draw them as glquake always used to
 extern cvar_t cl_noblink;
 extern cvar_t con_ocranaleds;
 
@@ -1260,7 +1260,7 @@ static struct charcache_s *Font_TryLoadGlyph(font_t *f, CHARIDXTYPE charidx)
 		unsigned char *s;
 		int scale;
 		int x,y, ys;
-		qbyte *draw_chars = W_GetLumpName("conchars");
+		qbyte *draw_chars = W_GetLumpName("charset");
 		if (draw_chars)
 		{
 			d = img;
@@ -2039,12 +2039,12 @@ static texid_t Font_LoadReplacementConchars(void)
 {
 	texid_t tex;
 	//q1 replacement
-	tex = R_LoadHiResTexture("gfx/conchars.lmp", NULL, (r_font_linear.ival?IF_LINEAR:IF_NEAREST)|IF_PREMULTIPLYALPHA|IF_LOADNOW|IF_UIPIC|IF_NOMIPMAP|IF_NOGAMMA|IF_NOPURGE);
+	tex = R_LoadHiResTexture("gfx/charset.lmp", NULL, (r_font_linear.ival?IF_LINEAR:IF_NEAREST)|IF_PREMULTIPLYALPHA|IF_LOADNOW|IF_UIPIC|IF_NOMIPMAP|IF_NOGAMMA|IF_NOPURGE);
 	TEXDOWAIT(tex);
 	if (TEXLOADED(tex))
 		return tex;
 	//q2
-	tex = R_LoadHiResTexture("pics/conchars.pcx", NULL, (r_font_linear.ival?IF_LINEAR:IF_NEAREST)|IF_PREMULTIPLYALPHA|IF_LOADNOW|IF_UIPIC|IF_NOMIPMAP|IF_NOGAMMA|IF_NOPURGE);
+	tex = R_LoadHiResTexture("pics/charset.pcx", NULL, (r_font_linear.ival?IF_LINEAR:IF_NEAREST)|IF_PREMULTIPLYALPHA|IF_LOADNOW|IF_UIPIC|IF_NOMIPMAP|IF_NOGAMMA|IF_NOPURGE);
 	TEXDOWAIT(tex);
 	if (TEXLOADED(tex))
 		return tex;
@@ -2059,14 +2059,14 @@ static texid_t Font_LoadReplacementConchars(void)
 #ifdef HEXEN2
 static texid_t Font_LoadHexen2Conchars(qboolean iso88591)
 {
-	//gulp... so it's come to this has it? rework the hexen2 conchars into the q1 system.
+	//gulp... so it's come to this has it? rework the hexen2 charset into the q1 system.
 	texid_t tex;
 	unsigned int i, x;
 	unsigned char *tempchars;
 	unsigned char *in, *out, *outbuf;
-	FS_LoadFile("gfx/menu/conchars.lmp", (void**)&tempchars);
+	FS_LoadFile("gfx/menu/charset.lmp", (void**)&tempchars);
 
-	/*hexen2's conchars are arranged 32-wide, 16 high.
+	/*hexen2's charset are arranged 32-wide, 16 high.
 	the upper 8 rows are 256 8859-1 chars
 	the lower 8 rows are a separate set of recoloured 8859-1 chars.
 
@@ -2177,7 +2177,7 @@ static texid_t Font_LoadFallbackConchars(void)
 	int width, height;
 	unsigned int i;
 	uploadfmt_t format;
-	qbyte *lump = ReadRawImageFile(default_conchar, sizeof(default_conchar), &width, &height, &format, false, "conchars");
+	qbyte *lump = ReadRawImageFile(default_conchar, sizeof(default_conchar), &width, &height, &format, false, "charset");
 	if (!lump || (format != PTI_RGBX8 && format != PTI_RGBA8 && format != PTI_LLLX8))
 		return r_nulltex;
 	/*convert greyscale to alpha*/
@@ -2226,7 +2226,7 @@ static texid_t Font_LoadDefaultConchars(enum fontfmt_e *fmt)
 		*fmt = FMT_QUAKE;
 		return tex;
 	}
-	Sys_Error("Unable to load any conchars\n");
+	Sys_Error("Unable to load any charset\n");
 }
 
 typedef struct 
@@ -2645,7 +2645,7 @@ struct font_s *Font_LoadFont(const char *fontfilename, float vheight, float scal
 	}
 
 	if (!f->faces && !TEXLOADED(f->singletexture) && r_font_linear.ival)
-		Font_LoadFontLump(f, "conchars");
+		Font_LoadFontLump(f, "charset");
 
 	defaultplane = INVALIDPLANE;/*assume the bitmap plane - don't use the fallback as people don't think to use com_parseutf8*/
 	if (!explicit && TEXLOADED(f->singletexture))

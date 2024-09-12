@@ -37,7 +37,7 @@ static void LoadPics(void)
 	char buffer[256];
 
 //main bar (add cvars later)
-	con_chars = drawfuncs->LoadImage("gfx/conchars.lmp");
+	con_chars = drawfuncs->LoadImage("gfx/charset.lmp");
 	cvarfuncs->GetString("cl_cursor", buffer, sizeof(buffer));
 	if (*buffer)
 		pic_cursor = drawfuncs->LoadImage(buffer);

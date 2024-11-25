@@ -2571,10 +2571,18 @@ static qboolean QC_PathRequiresSandbox(const char *name)
 		huds\*.cfg  (shouldn't have any passwords. yay editing)
 		models\*.*  (xonotic is evil)
 		sound\*.*  (xonotic is evil)
+
+  	*=*= NZ:P EDIT: We need write access to scripts\ directory. Sorry, spike! *=*=
 	*/
+	// NZ:P START
+	if (!strnicmp(name, "scripts/", 8))
+		return false;
+	// NZ:P END
+
 	if ((!strchr(name, '/') || !strnicmp(name, "configs/", 8))	//
 		&& !stricmp(COM_GetFileExtension(name, NULL), ".cfg"))
 		return true;
+	
 	return false;
 }
 
@@ -2603,7 +2611,7 @@ qboolean QC_FixFileName(const char *name, const char **result, const char **fall
 		*fallbackread = NULL;	//don't be weird.
 		*result = name;	//already has a data/ prefix.
 	}
-	else if (COM_CheckParm("-unsafefopen") && !QC_PathRequiresSandbox(name))
+	else if (!QC_PathRequiresSandbox(name))
 	{
 		*fallbackread = va("data/%s", name);	//in case the mod was distributed with a data/ subdir.
 		*result = name;

@@ -4599,6 +4599,8 @@ void CL_LinkPacketEntities (void)
 			ent->flags |= RF_NODEPTHTEST;
 		if (state->effects & EF_NOSHADOW)
 			ent->flags |= RF_NOSHADOW;
+		if (state->effects & EF_FULLBRIGHT)
+			ent->flags |= RF_FULLBRIGHT;
 		if (state->trans < 0xfe)
 		{
 			ent->shaderRGBAf[3] = state->trans/(float)0xfe;

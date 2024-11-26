@@ -1092,6 +1092,11 @@ ifeq (1,$(LINK_OPENSSL))
     endif
 endif
 
+# bad hack -- make sure we build sspi if we're building windows sdl
+ifeq (win_SDL,$(findstring win,$(FTE_TARGET))$(findstring _SDL,$(FTE_TARGET)))
+	COMMON_OBJS += net_ssl_winsspi.o
+endif
+
 ifeq (1,$(shell $(PKGCONFIG) --exists gnutls && echo 1))
     ALL_CFLAGS+=$(shell $(PKGCONFIG) gnutls --cflags --silence-errors)
     #ALL_CFLAGS+=-DGNUTLS_STATIC

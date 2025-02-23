@@ -17,6 +17,22 @@ jobs:
         with:
           name: pc-nzp-linux32
           path: ./engine/release/nzportable32-sdl
+  Compile-Linux32-noSDL2:
+    runs-on: ubuntu-latest
+    container:
+      image: motolegacy/fteqw:latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Build Linux i386 (no sdl)
+        run: |
+          cd tools/
+          sh build-nzp-linux32-nosdl.sh
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pc-nzp-linux32-nosdl
+          path: ./engine/release/nzportable32
   Compile-Linux64:
     runs-on: ubuntu-latest
     container:
@@ -33,6 +49,22 @@ jobs:
         with:
           name: pc-nzp-linux64
           path: ./engine/release/nzportable64-sdl
+  Compile-Linux64-noSDL2:
+    runs-on: ubuntu-latest
+    container:
+      image: motolegacy/fteqw:latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Build Linux x86_64 (no sdl)
+        run: |
+          cd tools/
+          sh build-nzp-linux64-nosdl.sh
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pc-nzp-linux64-nosdl
+          path: ./engine/release/nzportable64
   Compile-LinuxArm64:
     runs-on: ubuntu-latest
     container:
@@ -49,6 +81,22 @@ jobs:
         with:
           name: pc-nzp-linux_arm64
           path: ./engine/release/nzportablearm64-sdl
+  Compile-LinuxArm64-noSDL2:
+    runs-on: ubuntu-latest
+    container:
+      image: motolegacy/fteqw:latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Build Linux Arm64 (no sdl)
+        run: |
+          cd tools/
+          sh build-nzp-linux_arm64-nosdl.sh
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pc-nzp-linux_arm64-nosdl
+          path: ./engine/release/nzportablearm64
   Compile-LinuxArmhf:
     runs-on: ubuntu-latest
     container:
@@ -65,6 +113,22 @@ jobs:
         with:
           name: pc-nzp-linux_armhf
           path: ./engine/release/nzportablearmhf-sdl
+  Compile-LinuxArmhf-noSDL2:
+    runs-on: ubuntu-latest
+    container:
+      image: motolegacy/fteqw:latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Build Linux Armhf (no sdl)
+        run: |
+          cd tools/
+          sh build-nzp-linux_armhf-nosdl.sh
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pc-nzp-linux_armhf-nosdl
+          path: ./engine/release/nzportablearmhf
   Compile-Windows32:
     runs-on: ubuntu-latest
     container:
@@ -149,7 +213,7 @@ jobs:
             ./engine/release/ftewebgl.js
   Unify-and-Release:
     runs-on: ubuntu-latest
-    needs: [Compile-Linux32, Compile-Linux64, Compile-LinuxArm64, Compile-LinuxArmhf, Compile-Windows32, Compile-Windows32-noSDL2, Compile-Windows64, Compile-Windows64-noSDL2, Compile-WASM]
+    needs: [Compile-Linux32, Compile-Linux32-noSDL2, Compile-Linux64, Compile-Linux64-noSDL2, Compile-LinuxArm64, Compile-LinuxArm64-noSDL2, Compile-LinuxArmhf, Compile-LinuxArmhf-noSDL2, Compile-Windows32, Compile-Windows32-noSDL2, Compile-Windows64, Compile-Windows64-noSDL2, Compile-WASM]
     steps:
       - name: Checkout
         uses: actions/checkout@v2
@@ -168,6 +232,10 @@ jobs:
           zip -r -j pc-nzp-linux_armhf.zip pc-nzp-linux_armhf/*
           zip -r -j pc-nzp-win32.zip pc-nzp-win32/*
           zip -r -j pc-nzp-win64.zip pc-nzp-win64/*
+          zip -r -j pc-nzp-linux32-nosdl.zip pc-nzp-linux32-nosdl/*
+          zip -r -j pc-nzp-linux64-nosdl.zip pc-nzp-linux64-nosdl/*
+          zip -r -j pc-nzp-linux_arm64-nosdl.zip pc-nzp-linux_arm64-nosdl/*
+          zip -r -j pc-nzp-linux_armhf.zip pc-nzp-linux_armhf-nosdl/*
           zip -r -j pc-nzp-win32-nosdl.zip pc-nzp-win32-nosdl/*
           zip -r -j pc-nzp-win64-nosdl.zip pc-nzp-win64-nosdl/*
           zip -r -j pc-nzp-web.zip pc-nzp-web/*
@@ -206,6 +274,15 @@ jobs:
           asset_path: ./pc-nzp-linux32.zip
           asset_name: pc-nzp-linux32.zip
           asset_content_type: application/zip
+      - name: Upload Linux32 Archive (no SDL)
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./pc-nzp-linux32-nosdl.zip
+          asset_name: pc-nzp-linux32-nosdl.zip
+          asset_content_type: application/zip
       - name: Upload Linux64 Archive
         uses: actions/upload-release-asset@v1
         env:
@@ -214,6 +291,15 @@ jobs:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
           asset_path: ./pc-nzp-linux64.zip
           asset_name: pc-nzp-linux64.zip
+          asset_content_type: application/zip
+      - name: Upload Linux64 Archive (no SDL)
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./pc-nzp-linux64-nosdl.zip
+          asset_name: pc-nzp-linux64-nosdl.zip
           asset_content_type: application/zip
       - name: Upload LinuxArm64 Archive
         uses: actions/upload-release-asset@v1
@@ -224,6 +310,15 @@ jobs:
           asset_path: ./pc-nzp-linux_arm64.zip
           asset_name: pc-nzp-linux_arm64.zip
           asset_content_type: application/zip
+      - name: Upload LinuxArm64 Archive (no SDL)
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./pc-nzp-linux_arm64-nosdl.zip
+          asset_name: pc-nzp-linux_arm64-nosdl.zip
+          asset_content_type: application/zip
       - name: Upload LinuxArmhf Archive
         uses: actions/upload-release-asset@v1
         env:
@@ -232,6 +327,15 @@ jobs:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
           asset_path: ./pc-nzp-linux_armhf.zip
           asset_name: pc-nzp-linux_armhf.zip
+          asset_content_type: application/zip
+      - name: Upload LinuxArmhf Archive (no SDL)
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./pc-nzp-linux_armhf-nosdl.zip
+          asset_name: pc-nzp-linux_armhf-nosdl.zip
           asset_content_type: application/zip
       - name: Upload Windows32 Archive
         uses: actions/upload-release-asset@v1

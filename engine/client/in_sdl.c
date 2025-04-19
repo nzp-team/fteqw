@@ -1172,6 +1172,28 @@ void INS_SetOSK(int osk)
 {
 }
 #endif
+
+// SDL2 gives IDs from zero, but SDL3 does not
+// sdl2-compat also doesn't make any attempt to revert this behavior, so we have to do it ourselves
+static uint32_t internal__mice[16];
+static int internal__mice_count=0;
+
+int INS_MouseID(uint32_t mid)
+{
+	for (int i = 0; i < internal__mice_count; ++i)
+	{
+		if (internal__mice[i] == mid)
+			return i;
+	}
+	if (internal__mice_count < 16)
+	{
+		internal__mice[internal__mice_count] = mid;
+		return internal__mice_count++;
+	}
+	return -1;
+}
+
+
 void Sys_SendKeyEvents(void)
 {
 	SDL_Event event;
@@ -1207,6 +1229,7 @@ void Sys_SendKeyEvents(void)
 #endif
 #endif
 // NZP end
+	int which;
 
 	while(SDL_PollEvent(&event))
 	{
@@ -1352,26 +1375,28 @@ void Sys_SendKeyEvents(void)
 #if SDL_MAJOR_VERSION >= 2
 			if (event.motion.which == SDL_TOUCH_MOUSEID)
 				break;	//ignore legacy touch events.
+			which = INS_MouseID(event.motion.which);
 #endif
 			if (!mouseactive)
-				IN_MouseMove(event.motion.which, true, event.motion.x, event.motion.y, 0, 0);
+				IN_MouseMove(which, true, event.motion.x, event.motion.y, 0, 0);
 			else
-				IN_MouseMove(event.motion.which, false, event.motion.xrel, event.motion.yrel, 0, 0);
+				IN_MouseMove(which, false, event.motion.xrel, event.motion.yrel, 0, 0);
 			break;
 
 #if SDL_MAJOR_VERSION >= 2
 		case SDL_MOUSEWHEEL:
+			which = INS_MouseID(event.wheel.which);
 			if (event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED)
 				event.wheel.y *= -1;
 			for (; event.wheel.y > 0; event.wheel.y--)
 			{
-				IN_KeyEvent(event.button.which, true, K_MWHEELUP, 0);
-				IN_KeyEvent(event.button.which, false, K_MWHEELUP, 0);
+				IN_KeyEvent(which, true, K_MWHEELUP, 0);
+				IN_KeyEvent(which, false, K_MWHEELUP, 0);
 			}
 			for (; event.wheel.y < 0; event.wheel.y++)
 			{
-				IN_KeyEvent(event.button.which, true, K_MWHEELDOWN, 0);
-				IN_KeyEvent(event.button.which, false, K_MWHEELDOWN, 0);
+				IN_KeyEvent(which, true, K_MWHEELDOWN, 0);
+				IN_KeyEvent(which, false, K_MWHEELDOWN, 0);
 			}
 /*			for (; event.wheel.x > 0; event.wheel.x--)
 			{
@@ -1392,10 +1417,11 @@ void Sys_SendKeyEvents(void)
 			if (event.button.which == SDL_TOUCH_MOUSEID)
 				break;	//ignore legacy touch events. SDL_FINGER* events above will handle it (for multitouch)
 #endif
+			which = INS_MouseID(event.button.which);
 			//Hmm. SDL allows for 255 buttons, but only defines 5...
 			if (event.button.button > sizeof(tbl_sdltoquakemouse)/sizeof(tbl_sdltoquakemouse[0]))
 				event.button.button = sizeof(tbl_sdltoquakemouse)/sizeof(tbl_sdltoquakemouse[0]);
-			IN_KeyEvent(event.button.which, event.button.state, tbl_sdltoquakemouse[event.button.button-1], 0);
+			IN_KeyEvent(which, event.button.state, tbl_sdltoquakemouse[event.button.button-1], 0);
 			break;
 
 #if SDL_MAJOR_VERSION >= 2

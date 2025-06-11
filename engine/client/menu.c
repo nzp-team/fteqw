@@ -1173,27 +1173,28 @@ void M_Menu_Help_f (void)
 static char *quitMessage [] =
 {
 /* .........1.........2.... */
-	"Are you gonna quit\n"
-	"this game just like\n"
-	"everything else?",
+	"Quit program?",
+//	"Are you gonna quit\n"
+//	"this game just like\n"
+//	"everything else?",
 
-	"Milord, methinks that\n"
-	"thou art a lowly\n"
-	"quitter. Is this true?",
+//	"Milord, methinks that\n"
+//	"thou art a lowly\n"
+//	"quitter. Is this true?",
 
-	"Do I need to bust your\n"
-	"face open for trying\n"
-	"to quit?",
+//	"Do I need to bust your\n"
+//	"face open for trying\n"
+//	"to quit?",
 
-	"Man, I oughta smack you\n"
-	"for trying to quit!\n"
-	"Press Y to get\n"
-	"smacked out.",
+//	"Man, I oughta smack you\n"
+//	"for trying to quit!\n"
+//	"Press Y to get\n"
+//	"smacked out.",
 
-	"Press Y to quit like a\n"
-	"big loser in life.\n"
-	"Press N to stay proud\n"
-	"and successful!",
+//	"Press Y to quit like a\n"
+//	"big loser in life.\n"
+//	"Press N to stay proud\n"
+//	"and successful!",
 
 	//this is a vanilla message... but I'm having enough issues with false-positives in malware scanners right now that I really don't want to risk an already-suspicious actual hunam seeing stuff like this... :)
 /*	"If you press Y to\n"
@@ -1201,14 +1202,14 @@ static char *quitMessage [] =
 	"Satan all over your\n"
 	"hard drive!",
 */
-	"Um, Asmodeus dislikes\n"
-	"his children trying to\n"
-	"quit. Press Y to return\n"
-	"to your Tinkertoys.",
+//	"Um, Asmodeus dislikes\n"
+//	"his children trying to\n"
+//	"quit. Press Y to return\n"
+//	"to your Tinkertoys.",
 
-	"If you quit now, I'll\n"
-	"throw a blanket-party\n"
-	"for you next time!",
+//	"If you quit now, I'll\n"
+//	"throw a blanket-party\n"
+//	"for you next time!",
 
 
 

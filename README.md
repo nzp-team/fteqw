@@ -10,7 +10,7 @@ This repository contains the source code for Spike's [Fore Thought Engine](https
 - [x] Linux 64-bit
 - [x] Linux ARMhf
 - [x] Linux ARM64
-- [ ] macOS††
+- [ ] macOS†
 - [x] Windows 32-bit
 - [x] Windows 64-bit
 
@@ -25,7 +25,6 @@ make m-rel FTE_TARGET=YOUR_TARGET FTE_CONFIG=nzportable -j8
 ```
 
 Subtitute `YOUR_TARGET` with one of the following, for whatever platform you wish to build for:
-* `macosx_x86`††
 * `linux32`
 * `linux64`
 * `linux_armhf`
@@ -39,6 +38,4 @@ We also provide prebuilt binaries on the [Releases](https://github.com/nzp-team/
 
 <hr>
 
-†*We are not interested in supporting Android or other touch devices.*
-
-††*macOS is currently unsupported though this is planned to change. Accomodations need to be made to the FTEQW `Makefile` to look for [osxcross](https://github.com/tpoechtrager/osxcross) environment variables and tests need to be made to ensure compiling under clang is functional (or just using a proper gcc version in osxcross).*
+†*We are not interested in supporting Android or other touch devices, nor macOS.*

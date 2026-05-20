@@ -1293,7 +1293,7 @@ void M_Menu_MediaFiles_f (void)
 	info->command[info->numext] = "media_add";
 	info->numext++;
 #endif
-#if defined(AVAIL_MP3_ACM) || defined(FTE_TARGET_WEB) || defined(PLUGINS)
+#if defined(AVAIL_MP3) || defined(AVAIL_MP3_ACM) || defined(FTE_TARGET_WEB) || defined(PLUGINS)
 	info->ext[info->numext] = ".mp3";
 	info->command[info->numext] = "media_add";
 	info->numext++;

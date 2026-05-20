@@ -4883,9 +4883,82 @@ void STT_Init_f(void)
 
 #ifdef AVAIL_MP3
 
+static void *Q_drmp3_onMalloc(size_t sz, void* pUserData)
+{
+	return BZ_Malloc(sz);
+}
+
+static void *Q_drmp3_onRealloc(void* p, size_t sz, void* pUserData)
+{
+	return BZ_Realloc(p, sz);
+}
+
+static void Q_drmp3_onFree(void* p, void* pUserData)
+{
+	BZ_Free(p);
+}
+
+static drmp3_allocation_callbacks Q_drmp3_cbfns = {
+	NULL,
+	Q_drmp3_onMalloc,
+	Q_drmp3_onRealloc,
+	Q_drmp3_onFree
+};
+
+static void QDECL S_MP3_Purge(sfx_t *sfx)
+{
+	drmp3 *dec = sfx->decoder.buf;
+
+	sfx->decoder.buf = NULL;
+	sfx->decoder.ended = NULL;
+	sfx->decoder.purge = NULL;
+	sfx->decoder.decodedata = NULL;
+
+	drmp3_uninit(dec);
+	BZ_Free(dec);
+
+	sfx->loadstate = SLS_NOTLOADED;
+}
+
+static sfxcache_t *QDECL S_MP3_Locate(sfx_t *sfx, sfxcache_t *buf, ssamplepos_t start, int length)
+{
+	// TODO
+	return NULL;
+}
+
+static float QDECL S_MP3_Query(sfx_t *sfx, sfxcache_t *buf, char *title, size_t titlesize)
+{
+	// TODO
+	return 0;
+}
+
 static qboolean QDECL S_LoadMP3Sound (sfx_t *s, qbyte *data, size_t datalen, int sndspeed, qboolean forcedecode)
 {
-	return false;
+	drmp3 *dec;
+
+	char ext[8];
+	COM_FileExtension(s->name, ext, sizeof(ext));
+	if (stricmp(ext, "mp3"))
+		return false;
+
+	dec = BZF_Malloc(sizeof(*dec) + datalen);
+	if (!dec)
+		return false;
+
+	if (!drmp3_init_memory(dec, data, datalen, &Q_drmp3_cbfns))
+	{
+		BZ_Free(dec);
+		return false;
+	}
+
+	s->decoder.buf = dec;
+	s->decoder.ended = S_MP3_Purge;
+	s->decoder.purge = S_MP3_Purge;
+	s->decoder.decodedata = S_MP3_Locate;
+	s->decoder.querydata = S_MP3_Query;
+	s->loopstart = -1;
+
+	return true;
 }
 
 #endif // AVAIL_MP3

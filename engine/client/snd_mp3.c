@@ -10,7 +10,9 @@
 
 #include "quakedef.h"
 
-#ifdef AVAIL_MP3
+// erysdren: forget it, this is all dead code that can't compile anymore anyway
+//#ifdef AVAIL_MP3
+#if 0
 
 #include "winquake.h"
 #undef channels

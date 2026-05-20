@@ -89,6 +89,11 @@ static qboolean qacmStartup(void)
 }
 #endif
 
+#if defined(AVAIL_MP3)
+#define DR_MP3_IMPLEMENTATION
+#include "dr_mp3.h"
+#endif
+
 static char media_currenttrack[MAX_QPATH];
 static cvar_t music_fade = CVAR("music_fade", "1");
 
@@ -348,7 +353,7 @@ qboolean Media_CleanupTrackName(const char *track, int *out_track, char *result,
 #if defined(AVAIL_OGGVORBIS) || defined(FTE_TARGET_WEB)
 		".ogg",
 #endif
-#if defined(AVAIL_MP3_ACM) || defined(FTE_TARGET_WEB)
+#if defined(AVAIL_MP3) || defined(AVAIL_MP3_ACM) || defined(FTE_TARGET_WEB)
 		".mp3",
 #endif
 		".wav",
@@ -359,7 +364,7 @@ qboolean Media_CleanupTrackName(const char *track, int *out_track, char *result,
 	#if !(defined(AVAIL_OGGVORBIS) || defined(FTE_TARGET_WEB))
 		".ogg",
 	#endif
-	#if !(defined(AVAIL_MP3_ACM) || defined(FTE_TARGET_WEB))
+	#if !(defined(AVAIL_MP3) || defined(AVAIL_MP3_ACM) || defined(FTE_TARGET_WEB))
 		".mp3",
 	#endif
 		".flac",	//supported by QS at least.
@@ -4876,6 +4881,20 @@ void STT_Init_f(void)
 
 
 
+#ifdef AVAIL_MP3
+
+static qboolean QDECL S_LoadMP3Sound (sfx_t *s, qbyte *data, size_t datalen, int sndspeed, qboolean forcedecode)
+{
+	return false;
+}
+
+#endif // AVAIL_MP3
+
+
+
+
+
+
 #ifdef AVAIL_MP3_ACM
 typedef struct
 {
@@ -5177,7 +5196,7 @@ void Media_Init(void)
 	Cmd_AddCommand("stt", STT_Init_f);
 	Cvar_Register(&tts_mode, "Gimmicks");
 #endif
-#ifdef AVAIL_MP3_ACM
+#if defined(AVAIL_MP3) || defined(AVAIL_MP3_ACM)
 	S_RegisterSoundInputPlugin(NULL, S_LoadMP3Sound);
 #endif
 

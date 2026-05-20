@@ -179,6 +179,10 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 	#define ENGINEWEBSITE "^8https://^4fte^8.^4triptohell^8.^4info"	//url for program
 #endif
 
+#if defined(AVAIL_MP3) && defined(AVAIL_MP3_ACM)
+	#undef AVAIL_MP3_ACM // prefer the cross-platform api
+#endif
+
 #if !defined(_WIN32) || defined(WINRT)
 	#undef HAVE_SPEECHTOTEXT
 	#undef AVAIL_MP3_ACM

@@ -162,7 +162,7 @@
 
 // Audio Formats
 #define AVAIL_OGGVORBIS			//.ogg support
-#define AVAIL_MP3_ACM			//.mp3 support (windows only).
+#define AVAIL_MP3				//.mp3 support
 
 // Other Audio Options
 #define VOICECHAT

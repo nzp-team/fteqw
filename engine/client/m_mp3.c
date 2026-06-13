@@ -4922,8 +4922,89 @@ static void QDECL S_MP3_Purge(sfx_t *sfx)
 
 static sfxcache_t *QDECL S_MP3_Locate(sfx_t *sfx, sfxcache_t *buf, ssamplepos_t start, int length)
 {
-	// TODO
-	return NULL;
+	int newlen;
+	if (buf)
+	{
+		drmp3 *dec = sfx->decoder.buf;
+		char buffer[8192];
+		extern cvar_t snd_linearresample_stream;
+		int framesz = (QAF_BYTES(QAF_S16) * dec->channels);
+
+		if (length)
+		{
+			if (dec->currentPCMFrame > start)
+			{
+				drmp3_seek_to_pcm_frame(dec, start);
+			}
+
+			if (dec->dstcount > snd_speed * 6)
+			{
+				int trim = dec->dstcount - snd_speed; //retain a second of buffer in case we have multiple sound devices
+				if (dec->dststart + trim > start)
+				{
+					trim = start - dec->dststart;
+					if (trim < 0)
+						trim = 0;
+				}
+				memmove(dec->dstdata, dec->dstdata + trim*framesz, (dec->dstcount - trim)*framesz);
+				dec->dststart += trim;
+				dec->dstcount -= trim;
+			}
+
+			while(start+length >= dec->dststart+dec->dstcount)
+			{
+				memset(&strhdr, 0, sizeof(strhdr));
+				strhdr.cbStruct = sizeof(strhdr);
+				strhdr.pbSrc = dec->srcdata + dec->srcoffset;
+				strhdr.cbSrcLength = dec->srclen - dec->srcoffset;
+				if (!strhdr.cbSrcLength)
+					break;
+				strhdr.pbDst = buffer;
+				strhdr.cbDstLength = sizeof(buffer);
+
+				qacmStreamPrepareHeader(dec->acm, &strhdr, 0);
+				qacmStreamConvert(dec->acm, &strhdr, ACM_STREAMCONVERTF_BLOCKALIGN);
+				qacmStreamUnprepareHeader(dec->acm, &strhdr, 0);
+				dec->srcoffset += strhdr.cbSrcLengthUsed;
+				if (!strhdr.cbDstLengthUsed)
+				{
+					if (strhdr.cbSrcLengthUsed)
+						continue;
+					break;
+				}
+
+				newlen = dec->totalPCMFrameCount + (strhdr.cbDstLengthUsed * ((float)snd_speed / dec->sampleRate))/framesz;
+				if (dec->dstbuffer < newlen+64)
+				{
+					dec->dstbuffer = newlen+64 + snd_speed;
+					dec->dstdata = BZ_Realloc(dec->dstdata, dec->dstbuffer*framesz);
+				}
+
+				SND_ResampleStream(strhdr.pbDst,
+					dec->sampleRate,
+					QAF_S16,
+					dec->channels,
+					strhdr.cbDstLengthUsed / framesz,
+					dec->dstdata+dec->totalPCMFrameCount*framesz,
+					snd_speed,
+					QAF_S16,
+					dec->channels,
+					snd_linearresample_stream.ival);
+				dec->totalPCMFrameCount = newlen;
+			}
+		}
+
+		buf->data = dec->dstdata;
+		buf->length = dec->dstcount;
+		buf->numchannels = dec->channels;
+		buf->soundoffset = dec->dststart;
+		buf->speed = dec->sampleRate;
+		buf->format = QAF_S16;
+
+		if (dec->srclen == dec->srcoffset && start >= dec->dststart+dec->dstcount)
+			return NULL;	//once we reach the EOF, start reporting errors.
+	}
+	return buf;
 }
 
 static float QDECL S_MP3_Query(sfx_t *sfx, sfxcache_t *buf, char *title, size_t titlesize)
@@ -4957,6 +5038,10 @@ static qboolean QDECL S_LoadMP3Sound (sfx_t *s, qbyte *data, size_t datalen, int
 	s->decoder.decodedata = S_MP3_Locate;
 	s->decoder.querydata = S_MP3_Query;
 	s->loopstart = -1;
+
+	dec->srcspeed = 44100;
+	dec->srcchannels = 2;
+	dec->srcformat = QAF_S16;
 
 	return true;
 }
